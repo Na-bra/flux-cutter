@@ -16,11 +16,37 @@ class BoundingBox:
 
 
 @dataclass(frozen=True)
+class FaceLandmarks:
+    """Five facial landmark points in absolute pixel coordinates.
+
+    Order matches the YuNet output: right eye, left eye, nose tip,
+    right mouth corner, left mouth corner.
+    """
+
+    right_eye: tuple[float, float]
+    left_eye: tuple[float, float]
+    nose_tip: tuple[float, float]
+    mouth_right: tuple[float, float]
+    mouth_left: tuple[float, float]
+
+    def as_tuple(self) -> tuple[float, ...]:
+        """Flatten to (x, y) * 5, the layout cv2.FaceRecognizerSF expects."""
+        return (
+            *self.right_eye,
+            *self.left_eye,
+            *self.nose_tip,
+            *self.mouth_right,
+            *self.mouth_left,
+        )
+
+
+@dataclass(frozen=True)
 class FaceDetection:
     """Contains the data for a single detected face."""
 
     box: BoundingBox
     confidence: float
+    landmarks: FaceLandmarks | None = None
 
 
 class FaceDetector:
@@ -127,7 +153,25 @@ class FaceDetector:
         return canvas, scale, pad_x, pad_y
 
     @staticmethod
+    def _map_point(x: float, y: float, scale: float, pad_x: int, pad_y: int) -> tuple[float, float]:
+        return ((x - pad_x) / scale, (y - pad_y) / scale)
+
+    @classmethod
+    def _map_landmarks(
+        cls, face: np.ndarray, scale: float, pad_x: int, pad_y: int
+    ) -> FaceLandmarks:
+        points = [cls._map_point(face[i], face[i + 1], scale, pad_x, pad_y) for i in range(4, 14, 2)]
+        return FaceLandmarks(
+            right_eye=points[0],
+            left_eye=points[1],
+            nose_tip=points[2],
+            mouth_right=points[3],
+            mouth_left=points[4],
+        )
+
+    @classmethod
     def _map_detection(
+        cls,
         face: np.ndarray,
         scale: float,
         pad_x: int,
@@ -159,6 +203,7 @@ class FaceDetector:
                 y_max=y_max_clamped,
             ),
             confidence=confidence,
+            landmarks=cls._map_landmarks(face, scale, pad_x, pad_y),
         )
 
     def detect(self, image: np.ndarray) -> list[FaceDetection]:

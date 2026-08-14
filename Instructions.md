@@ -29,7 +29,7 @@ The immediate goal is to prove the core technical workflow — detection, groupi
 
 | Stage | Input → Output | Proves |
 |:-----:|-----------------|--------|
-| **0.1** | Video → frame extraction → face detection → face gallery | Faces can be reliably detected and displayed |
+| **0.1** | Video → frame extraction → face detection → face gallery | Faces can be reliably detected, cropped, and displayed |
 | **0.2** | Face gallery → selected person → grouping → timestamps | Detections can be clustered per-identity and located in time |
 | **0.3** | Timestamps → clip extraction → nearby-clip merging | Clip boundaries and merge logic behave sensibly |
 | **0.4** | Merged clips → final video export | End-to-end pipeline produces a usable output file |
@@ -120,9 +120,79 @@ Track unresolved technical choices here as they come up, and resolve them in the
 | Decision | Needed by | Status |
 |---|---|---|
 | Face detection library (e.g. `face_recognition`, `mediapipe`, `insightface`) | 0.1 | Resolved: OpenCV DNN + YuNet 2026may on CPU. Best practical precision/throughput tradeoff on the test footage. |
-| Clustering approach for grouping detections into identities | 0.2 | Not yet decided |
+| Face embedding model for identity grouping | 0.2 | Resolved: OpenCV Zoo SFace (`face_recognition_sface_2021dec.onnx`) via `cv2.FaceRecognizerSF`. Same ecosystem as YuNet (consumes its landmarks directly for alignment via `alignCrop`), zero new dependencies, CPU-only, cross-platform. |
+| Clustering approach for grouping detections into identities | 0.2 | Resolved: incremental nearest-centroid matching (not a clustering framework) with an absolute cosine-similarity floor *and* a margin over the second-best group, so ties fall through to a new group instead of forcing a merge. See accuracy notes below. |
 | Video I/O / frame extraction tooling (e.g. OpenCV, PyAV) | 0.1 | Resolved: PyAV for loader/frame extraction. It already works reliably with the sample video. |
-| GUI toolkit for the face gallery view | 0.1 | Not yet decided |
+| GUI toolkit for the face gallery view | 0.1 | Resolved for prototype 0.1: simple saved gallery montage via OpenCV grid rendering. |
+| Appearance-interval strategy (detections -> timestamps) | 0.2/0.3 boundary | Resolved: real per-detection PTS timestamps (already carried on `FaceObservation.source_timestamp`) grouped into contiguous spans by a sampling-derived gap tolerance, then padded by a sampling-derived amount and clamped to video bounds. No new frame decoding or tracking added. See accuracy notes below. |
 | Clip extraction / merge tooling (e.g. FFmpeg via subprocess vs. a Python wrapper) | 0.3 | Not yet decided |
 
 Update the Status column as each is resolved, and note *why* — a one-line rationale is enough to save re-litigating it later.
+
+---
+
+## 7. Stage 0.2 Accuracy Notes (Identity Grouping)
+
+OpenCV Zoo documents 0.363 cosine similarity as SFace's verification
+threshold on standard benchmarks. Running the actual test video through
+the pipeline (`python app/main.py group ...`) at that value produced one
+clearly wrong merge: 7 detections spanning nearly the full clip got
+chained into a single group via centroid drift, even though the pairwise
+cosine similarity between most of those 7 crops was only 0.15-0.48 (well
+below threshold) — only two adjacent-timestamp pairs were genuinely the
+same shot (0.75 and 0.48). Visually, the merged group mixed at least two
+different men who happened to share an open-mouth/teeth-baring
+expression.
+
+Raising `DEFAULT_SIMILARITY_THRESHOLD` to 0.45 (`app/faces/grouper.py`)
+broke that cluster apart into its constituent identities while still
+correctly merging genuine same-shot repeats a few seconds apart (verified
+by re-cropping and visually inspecting each multi-detection group). Above
+~0.55, even same-shot repeats 0.5s apart stopped merging — recall dropped
+without a corresponding gain in precision. 0.45 with a 0.05 margin was
+the best point found on this footage: no observed false merges, some
+missed matches (an actor's later scenes sometimes seeding a new group
+instead of rejoining an earlier one), which is the intended tradeoff per
+the "false merge is worse than a missed match" requirement for this
+stage.
+
+This was validated on one ~23s test clip; treat 0.45 as a starting point
+to re-check once more/longer footage is available, not a universal
+constant.
+
+---
+
+## 8. Appearance Timestamp Notes (`app/video/timeline.py`)
+
+Detections already carry the real decoded-frame PTS in seconds
+(`app/video/frames.py` sets `timestamp = float(frame.time)`, not a
+reconstructed `sample_index * interval`), so `build_appearance_intervals`
+didn't need to touch timestamp derivation — only decide which nearby
+detections belong to one contiguous appearance.
+
+Both the gap tolerance (how far apart two detections can be before
+they're treated as separate appearances) and the padding (how much
+buffer to add around each appearance) are derived from the actual
+`--interval` used for that run, not fixed constants:
+
+- gap tolerance defaults to `2 x sample_interval` — one missed sample is
+  tolerated as noise before splitting into a new appearance.
+- padding defaults to `0.5 x sample_interval` — a detection only proves
+  the person was on screen within about half a sampling step of it.
+
+Validated against the real test clip at `--interval 0.5`: a person
+correctly grouped as one identity across 4 detections at
+10.5s/12.0s/12.5s/17.0s produced 3 separate appearance intervals rather
+than one 10.5s-17.0s span, because pulling the actual frames at those
+timestamps shows two distinct shots (a close-up, then a wider lab-coat
+shot) with a real cut between them — confirming the gap-based split was
+correct, not a bug. A second, closely-spaced pair (11.0s/11.5s, the same
+shot) correctly merged into one appearance. See the stage-2/3 boundary
+final report in conversation history for the full validation transcript.
+
+Known limitation: none of this has frame-level precision — a boundary is
+only known to within about half a sampling interval, since frames
+between samples were never inspected. At the current default
+`--interval 1.0`, that's a ~0.5s fuzz band on every boundary. Tightening
+`--interval` narrows it at the cost of more detection/embedding work per
+run.

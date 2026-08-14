@@ -45,7 +45,7 @@ flux-cutter/
 │       └── loader.py
 ├── assets/
 │   ├── models/
-│   │   └── haarcascade_frontalface_default.xml
+│   │   └── face_detection_yunet_2026may.onnx
 │   └── test-videos/
 │       └── test.mp4
 ├── tests/
@@ -76,18 +76,22 @@ If you are using a different Python version, make sure it is compatible with the
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install av numpy pytest opencv-python
+python -m pip install av numpy pytest opencv-python pillow
 ```
 
-### 3. Download the YuNet model
+### 3. Download the YuNet and SFace models
 
-The detector uses the official OpenCV Zoo YuNet model. Download it once and keep it in the repository-local model directory:
+The detector uses the official OpenCV Zoo YuNet model, and identity grouping uses the OpenCV Zoo SFace model. Download both once and keep them in the repository-local model directory:
 
 ```bash
 mkdir -p assets/models
 curl -L --fail -o assets/models/face_detection_yunet_2026may.onnx \
 	https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
+curl -L --fail -o assets/models/face_recognition_sface_2021dec.onnx \
+	https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
 ```
+
+Both models load through `opencv-python`'s DNN module (`cv2.FaceDetectorYN` / `cv2.FaceRecognizerSF`), so no extra Python package is needed beyond what's already installed.
 
 ### 4. Validate the loader
 
@@ -103,6 +107,58 @@ You should see metadata similar to:
 {'width': 2160, 'height': 2160, 'codec': 'h264', 'frames': 701, 'duration': 23.366666666666667, 'fps': 30.0}
 ```
 
+### 5. Generate a face gallery
+
+The gallery command samples real frames, detects faces once per frame, crops each detected face with a small padding, and saves a simple thumbnail grid:
+
+```bash
+python app/main.py gallery assets/test-videos/test.mp4 --interval 1.0 --output-dir output/face-gallery
+```
+
+You can also select an item while generating the gallery:
+
+```bash
+python app/main.py gallery assets/test-videos/test.mp4 --interval 1.0 --select-index 0
+```
+
+### 6. Group detections into identities
+
+The group command runs the same sampling and detection pass, embeds each face with SFace, and groups them into per-identity clusters using nearest-centroid matching with a similarity floor and a margin over the runner-up group (to avoid forcing an ambiguous match). It saves one representative thumbnail per identified person:
+
+```bash
+python app/main.py group assets/test-videos/test.mp4 --interval 1.0 --output-dir output/face-groups
+```
+
+Grouping behavior is tunable:
+
+```bash
+python app/main.py group assets/test-videos/test.mp4 \
+	--similarity-threshold 0.45 \
+	--margin-threshold 0.05 \
+	--min-confidence 0.7 \
+	--min-face-size 40
+```
+
+See [Instructions.md](Instructions.md#7-stage-02-accuracy-notes-identity-grouping) for how these defaults were chosen against the real test footage.
+
+### 7. Compute appearance timestamps for one person
+
+Once you know which person card you want (from the `group` command's output or montage), the `timestamps` command runs the same grouping pass and converts that one person's detections into appearance intervals — contiguous spans of time they're on screen, gap-split, padded, and clamped to the video's duration:
+
+```bash
+python app/main.py timestamps assets/test-videos/test.mp4 --interval 0.5 --select-index 0
+```
+
+`--select-index` refers to the same ordering shown by `group` (largest identity group first). Gap tolerance and padding default to sampling-derived values (`2x` and `0.5x` the `--interval`, respectively) but can be overridden:
+
+```bash
+python app/main.py timestamps assets/test-videos/test.mp4 --interval 0.5 --select-index 0 \
+	--gap-tolerance 1.5 \
+	--appearance-padding 0.3
+```
+
+See [Instructions.md](Instructions.md#8-appearance-timestamp-notes-appvideotimelinepy) for why those defaults are tied to the sampling interval rather than fixed constants.
+
 ## Troubleshooting
 
 ### The virtual environment is broken or packages are missing
@@ -115,7 +171,7 @@ rm -rf .venv
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install av numpy pytest opencv-python
+python -m pip install av numpy pytest opencv-python pillow
 ```
 
 ### YuNet model is missing
@@ -128,6 +184,16 @@ FileNotFoundError: YuNet model not found
 
 download the model with the command in the setup section and keep it at `assets/models/face_detection_yunet_2026may.onnx`.
 
+### SFace model is missing
+
+If you see this error:
+
+```python
+FileNotFoundError: SFace model not found
+```
+
+download it with the command in the setup section and keep it at `assets/models/face_recognition_sface_2021dec.onnx`. This only affects the `group` command; `info`, `extract`, `detect`, and `gallery` don't need it.
+
 ### Detector settings
 
 The validated detector configuration is:
@@ -139,6 +205,10 @@ The validated detector configuration is:
 - top_k: `5000`
 
 This was the best precision and throughput balance we observed on the real 2160 by 2160 test video.
+
+### Gallery notes
+
+Gallery thumbnails use a default padding ratio of `0.08` around each detection and a `192x192` thumbnail canvas. The gallery also applies a simple representative-sampling pass so it does not flood the grid with near-duplicate detections from adjacent sampled frames.
 
 ### MediaPipe crashes or fails to import
 
@@ -189,6 +259,8 @@ pytest tests -q
 This project is currently expected to pass all checks in the included suite. The test coverage validates the actual sample video in `assets/test-videos/test.mp4` and confirms that the face detector finds a face in real footage while ignoring blank frames.
 
 The current detector configuration is YuNet on CPU with a `640x640` detection canvas and a `0.6` confidence threshold, which was the best precision/throughput tradeoff observed on the test footage.
+
+The gallery stage uses the same real sample video and the already-validated detector output; it only adds cropping, thumbnail generation, representative sampling, and grid rendering.
 
 ## Notes
 
