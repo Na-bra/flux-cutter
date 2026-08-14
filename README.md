@@ -60,7 +60,7 @@ flux-cutter/
 
 ## Setup
 
-This project is currently validated on Python 3.12 and uses OpenCV for face detection instead of MediaPipe.
+This project is currently validated on Python 3.12 and uses OpenCV YuNet running on CPU for face detection instead of MediaPipe.
 
 ### 1. Create a virtual environment
 
@@ -76,17 +76,17 @@ If you are using a different Python version, make sure it is compatible with the
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install av numpy pytest opencv-python-headless
+python -m pip install av numpy pytest opencv-python
 ```
 
-### 3. Download the Haar cascade model
+### 3. Download the YuNet model
 
-Some OpenCV installs do not include the face XML files. This project includes a project-local fallback model and also checks the packaged OpenCV model path first.
+The detector uses the official OpenCV Zoo YuNet model. Download it once and keep it in the repository-local model directory:
 
 ```bash
 mkdir -p assets/models
-curl -L --fail -o assets/models/haarcascade_frontalface_default.xml \
-  https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml
+curl -L --fail -o assets/models/face_detection_yunet_2026may.onnx \
+	https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
 ```
 
 ### 4. Validate the loader
@@ -115,30 +115,34 @@ rm -rf .venv
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install av numpy pytest opencv-python-headless
+python -m pip install av numpy pytest opencv-python
 ```
 
-### OpenCV face cascade is missing
+### YuNet model is missing
 
-This is the most common real issue on stripped-down OpenCV installs. The detector checks `cv2.data.haarcascades` first, then falls back to the repo-local XML file at `assets/models/haarcascade_frontalface_default.xml`.
-
-If the fallback file is missing, this error appears:
+If you see this error:
 
 ```python
-FileNotFoundError: OpenCV face cascade not found
+FileNotFoundError: YuNet model not found
 ```
 
-Fix it with:
+download the model with the command in the setup section and keep it at `assets/models/face_detection_yunet_2026may.onnx`.
 
-```bash
-mkdir -p assets/models
-curl -L --fail -o assets/models/haarcascade_frontalface_default.xml \
-  https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml
-```
+### Detector settings
+
+The validated detector configuration is:
+
+- model: `assets/models/face_detection_yunet_2026may.onnx`
+- input size: `640x640`
+- confidence threshold: `0.6`
+- NMS threshold: `0.3`
+- top_k: `5000`
+
+This was the best precision and throughput balance we observed on the real 2160 by 2160 test video.
 
 ### MediaPipe crashes or fails to import
 
-This project no longer depends on MediaPipe. Earlier iterations hit environment-specific native crashes and version mismatches on macOS. The current implementation uses OpenCV Haar cascades, which is the supported path in this repo.
+This project no longer depends on MediaPipe. Earlier iterations hit environment-specific native crashes and version mismatches on macOS. The current implementation uses OpenCV YuNet, which is the supported path in this repo.
 
 If you still have MediaPipe packages installed from a previous setup, remove them before continuing:
 
@@ -148,7 +152,7 @@ python -m pip uninstall -y mediapipe
 
 ### Duplicate FFmpeg/av libraries on macOS
 
-You may see warnings about duplicate `libavdevice` symbols when both OpenCV and PyAV are installed. This is usually noisy but not fatal if the app still runs. The project is validated with the current combination of `opencv-python-headless` and `av`.
+You may see warnings about duplicate `libavdevice` symbols when both OpenCV and PyAV are installed. This is usually noisy but not fatal if the app still runs. The project is validated with the current combination of `opencv-python` and `av`.
 
 If the app becomes unstable, recreate the environment and reinstall cleanly as noted above.
 
@@ -183,6 +187,8 @@ pytest tests -q
 ```
 
 This project is currently expected to pass all checks in the included suite. The test coverage validates the actual sample video in `assets/test-videos/test.mp4` and confirms that the face detector finds a face in real footage while ignoring blank frames.
+
+The current detector configuration is YuNet on CPU with a `640x640` detection canvas and a `0.6` confidence threshold, which was the best precision/throughput tradeoff observed on the test footage.
 
 ## Notes
 

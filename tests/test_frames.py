@@ -9,7 +9,7 @@ from app.video.loader import load_video
 VIDEO_PATH = Path(__file__).resolve().parents[1] / "assets" / "test-videos" / "test.mp4"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def video_container():
     """Fixture to open and close a video container for tests."""
     container = load_video(VIDEO_PATH)

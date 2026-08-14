@@ -119,9 +119,9 @@ Track unresolved technical choices here as they come up, and resolve them in the
 
 | Decision | Needed by | Status |
 |---|---|---|
-| Face detection library (e.g. `face_recognition`, `mediapipe`, `insightface`) | 0.1 | Not yet decided |
+| Face detection library (e.g. `face_recognition`, `mediapipe`, `insightface`) | 0.1 | Resolved: OpenCV DNN + YuNet 2026may on CPU. Best practical precision/throughput tradeoff on the test footage. |
 | Clustering approach for grouping detections into identities | 0.2 | Not yet decided |
-| Video I/O / frame extraction tooling (e.g. OpenCV, PyAV) | 0.1 | Not yet decided |
+| Video I/O / frame extraction tooling (e.g. OpenCV, PyAV) | 0.1 | Resolved: PyAV for loader/frame extraction. It already works reliably with the sample video. |
 | GUI toolkit for the face gallery view | 0.1 | Not yet decided |
 | Clip extraction / merge tooling (e.g. FFmpeg via subprocess vs. a Python wrapper) | 0.3 | Not yet decided |
 

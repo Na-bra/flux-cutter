@@ -24,44 +24,142 @@ class FaceDetection:
 
 
 class FaceDetector:
-    """A lightweight face detector backed by OpenCV Haar cascades."""
+    """A lightweight face detector backed by OpenCV YuNet on CPU."""
 
-    @staticmethod
-    def _resolve_cascade_path() -> Path:
-        """Find the Haar cascade XML in the environment or repository."""
-        candidates = []
+    DEFAULT_MODEL_FILENAME = "face_detection_yunet_2026may.onnx"
+    DEFAULT_MODEL_SOURCE = (
+        "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/"
+        "face_detection_yunet_2026may.onnx"
+    )
 
-        if hasattr(cv2, "data") and hasattr(cv2.data, "haarcascades"):
-            candidates.append(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
-
-        project_root = Path(__file__).resolve().parents[2]
-        candidates.append(project_root / "assets" / "models" / "haarcascade_frontalface_default.xml")
-
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        searched = ", ".join(str(path) for path in candidates)
-        raise FileNotFoundError(
-            "OpenCV face cascade not found. Checked: " + searched + "."
-        )
-
-    def __init__(self, min_detection_confidence: float = 0.5):
+    def __init__(
+        self,
+        model_path: str | Path | None = None,
+        input_size: tuple[int, int] = (640, 640),
+        confidence_threshold: float = 0.6,
+        nms_threshold: float = 0.3,
+        top_k: int = 5000,
+    ):
         """
         Initializes the detector.
 
         Args:
-            min_detection_confidence: Minimum confidence threshold used to accept a
-                detection. OpenCV Haar cascades do not return a confidence score,
-                so the score is approximated from detection size and filtered
-                against this threshold.
+            model_path: Path to the YuNet ONNX model. If omitted, uses the
+                repository-local model in assets/models.
+            input_size: Detection resolution as (width, height). The detector
+                resizes frames with letterboxing to this size before inference.
+            confidence_threshold: Minimum confidence threshold used to accept
+                a detection.
+            nms_threshold: Non-max suppression threshold.
+            top_k: Maximum number of candidate boxes to keep before NMS.
         """
-        self.min_detection_confidence = float(min_detection_confidence)
+        if not hasattr(cv2, "FaceDetectorYN"):
+            raise ImportError(
+                "This OpenCV build does not expose cv2.FaceDetectorYN. "
+                "Install a full OpenCV package with DNN support."
+            )
 
-        cascade_path = self._resolve_cascade_path()
-        self._cascade = cv2.CascadeClassifier(str(cascade_path))
-        if self._cascade.empty():
-            raise FileNotFoundError(f"Failed to load OpenCV face cascade from {cascade_path}.")
+        self.input_size = self._normalize_input_size(input_size)
+        self.confidence_threshold = float(confidence_threshold)
+        self.nms_threshold = float(nms_threshold)
+        self.top_k = int(top_k)
+        self.model_path = self._resolve_model_path(model_path)
+        self._detector = self._create_detector()
+
+    @staticmethod
+    def _normalize_input_size(input_size: tuple[int, int]) -> tuple[int, int]:
+        width, height = input_size
+        if width <= 0 or height <= 0:
+            raise ValueError("input_size must contain positive width and height")
+        return int(width), int(height)
+
+    @classmethod
+    def _default_model_path(cls) -> Path:
+        return Path(__file__).resolve().parents[2] / "assets" / "models" / cls.DEFAULT_MODEL_FILENAME
+
+    @classmethod
+    def _resolve_model_path(cls, model_path: str | Path | None) -> Path:
+        resolved_path = Path(model_path) if model_path is not None else cls._default_model_path()
+        if resolved_path.is_file():
+            return resolved_path
+
+        raise FileNotFoundError(
+            f"YuNet model not found at '{resolved_path}'. Download the official model from {cls.DEFAULT_MODEL_SOURCE}."
+        )
+
+    def _create_detector(self):
+        backend_id = cv2.dnn.DNN_BACKEND_OPENCV
+        target_id = cv2.dnn.DNN_TARGET_CPU
+
+        try:
+            return cv2.FaceDetectorYN.create(
+                model=str(self.model_path),
+                config="",
+                input_size=self.input_size,
+                score_threshold=self.confidence_threshold,
+                nms_threshold=self.nms_threshold,
+                top_k=self.top_k,
+                backend_id=backend_id,
+                target_id=target_id,
+            )
+        except cv2.error as exc:
+            raise ImportError(
+                "OpenCV could not initialize the YuNet face detector. "
+                "Make sure the installed cv2 package includes DNN support."
+            ) from exc
+
+    @staticmethod
+    def _letterbox(image: np.ndarray, target_size: tuple[int, int]) -> tuple[np.ndarray, float, int, int]:
+        """Resize an image to fit inside target_size while preserving aspect ratio."""
+        target_width, target_height = target_size
+        image_height, image_width = image.shape[:2]
+
+        scale = min(target_width / image_width, target_height / image_height)
+        resized_width = max(1, int(round(image_width * scale)))
+        resized_height = max(1, int(round(image_height * scale)))
+
+        resized = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LINEAR)
+        canvas = np.zeros((target_height, target_width, 3), dtype=image.dtype)
+
+        pad_x = (target_width - resized_width) // 2
+        pad_y = (target_height - resized_height) // 2
+        canvas[pad_y : pad_y + resized_height, pad_x : pad_x + resized_width] = resized
+        return canvas, scale, pad_x, pad_y
+
+    @staticmethod
+    def _map_detection(
+        face: np.ndarray,
+        scale: float,
+        pad_x: int,
+        pad_y: int,
+        frame_width: int,
+        frame_height: int,
+    ) -> FaceDetection | None:
+        x_min, y_min, width, height = face[:4]
+        confidence = float(face[14])
+
+        mapped_x_min = int(round((x_min - pad_x) / scale))
+        mapped_y_min = int(round((y_min - pad_y) / scale))
+        mapped_x_max = int(round((x_min + width - pad_x) / scale))
+        mapped_y_max = int(round((y_min + height - pad_y) / scale))
+
+        x_min_clamped = max(0, min(frame_width, mapped_x_min))
+        y_min_clamped = max(0, min(frame_height, mapped_y_min))
+        x_max_clamped = max(0, min(frame_width, mapped_x_max))
+        y_max_clamped = max(0, min(frame_height, mapped_y_max))
+
+        if x_min_clamped >= x_max_clamped or y_min_clamped >= y_max_clamped:
+            return None
+
+        return FaceDetection(
+            box=BoundingBox(
+                x_min=x_min_clamped,
+                y_min=y_min_clamped,
+                x_max=x_max_clamped,
+                y_max=y_max_clamped,
+            ),
+            confidence=confidence,
+        )
 
     def detect(self, image: np.ndarray) -> list[FaceDetection]:
         """
@@ -73,46 +171,31 @@ class FaceDetector:
         Returns:
             A list of FaceDetection objects for each face found.
         """
-        if image is None:
+        if image is None or image.ndim != 3 or image.shape[2] < 3:
             return []
 
-        if image.ndim == 3:
-            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = image
+        frame_height, frame_width = image.shape[:2]
+        detection_image, scale, pad_x, pad_y = self._letterbox(image, self.input_size)
+        self._detector.setInputSize(self.input_size)
 
-        height, width = gray.shape[:2]
-        faces = self._cascade.detectMultiScale(
-            gray,
-            scaleFactor=1.1,
-            minNeighbors=5,
-            minSize=(30, 30),
-        )
+        _, faces = self._detector.detect(detection_image)
+        if faces is None:
+            return []
 
         detections = []
-        for x, y, w, h in faces:
-            area = w * h
-            frame_area = max(width * height, 1)
-            confidence = min(0.99, 0.5 + (area / frame_area) * 10.0)
-            confidence = max(0.0, min(0.99, confidence))
-
-            if confidence < self.min_detection_confidence:
+        for face in faces:
+            confidence = float(face[14])
+            if confidence < self.confidence_threshold:
                 continue
 
-            x_min = max(0, int(x))
-            y_min = max(0, int(y))
-            x_max = min(width, int(x + w))
-            y_max = min(height, int(y + h))
+            detection = self._map_detection(face, scale, pad_x, pad_y, frame_width, frame_height)
+            if detection is not None:
+                detections.append(detection)
 
-            detections.append(
-                FaceDetection(
-                    box=BoundingBox(x_min=x_min, y_min=y_min, x_max=x_max, y_max=y_max),
-                    confidence=float(confidence),
-                )
-            )
-
+        detections.sort(key=lambda detection: detection.confidence, reverse=True)
         return detections
 
     def close(self):
         """Cleans up the detector resources."""
-        self._cascade = None
+        self._detector = None
+        return None
