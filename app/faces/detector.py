@@ -15,6 +15,30 @@ class BoundingBox:
     y_max: int
 
 
+def intersection_over_union(box_a: BoundingBox, box_b: BoundingBox) -> float:
+    """Overlap ratio between two boxes, in [0.0, 1.0].
+
+    Lives next to BoundingBox rather than in any one consumer because both
+    the gallery's duplicate-suppression and the tracker's frame-to-frame
+    linking need it.
+    """
+    x_min = max(box_a.x_min, box_b.x_min)
+    y_min = max(box_a.y_min, box_b.y_min)
+    x_max = min(box_a.x_max, box_b.x_max)
+    y_max = min(box_a.y_max, box_b.y_max)
+
+    intersection_width = max(0, x_max - x_min)
+    intersection_height = max(0, y_max - y_min)
+    intersection_area = intersection_width * intersection_height
+
+    area_a = (box_a.x_max - box_a.x_min) * (box_a.y_max - box_a.y_min)
+    area_b = (box_b.x_max - box_b.x_min) * (box_b.y_max - box_b.y_min)
+    union_area = area_a + area_b - intersection_area
+    if union_area <= 0:
+        return 0.0
+    return intersection_area / union_area
+
+
 @dataclass(frozen=True)
 class FaceLandmarks:
     """Five facial landmark points in absolute pixel coordinates.
@@ -220,7 +244,14 @@ class FaceDetector:
             return []
 
         frame_height, frame_width = image.shape[:2]
-        detection_image, scale, pad_x, pad_y = self._letterbox(image, self.input_size)
+        # YuNet is an OpenCV DNN model and was trained on BGR input. Frames
+        # arrive here as RGB (extract_frames decodes rgb24), so the channels
+        # must be swapped before inference. Feeding RGB straight through still
+        # finds most faces -- detection is largely structural -- but it costs
+        # recall and, more importantly, landmark precision, which SFace's
+        # alignCrop depends on for a usable identity embedding.
+        bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        detection_image, scale, pad_x, pad_y = self._letterbox(bgr_image, self.input_size)
         self._detector.setInputSize(self.input_size)
 
         _, faces = self._detector.detect(detection_image)

@@ -135,7 +135,7 @@ Update the Status column as each is resolved, and note *why* — a one-line rati
 
 OpenCV Zoo documents 0.363 cosine similarity as SFace's verification
 threshold on standard benchmarks. Running the actual test video through
-the pipeline (`python app/main.py group ...`) at that value produced one
+the pipeline (`python -m app group ...`) at that value produced one
 clearly wrong merge: 7 detections spanning nearly the full clip got
 chained into a single group via centroid drift, even though the pairwise
 cosine similarity between most of those 7 crops was only 0.15-0.48 (well

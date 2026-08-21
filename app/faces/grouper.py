@@ -28,6 +28,23 @@ def cosine_similarity(embedding_a: np.ndarray, embedding_b: np.ndarray) -> float
     return float(np.dot(embedding_a, embedding_b))
 
 
+def mean_embedding(embeddings: list[np.ndarray]) -> np.ndarray:
+    """L2-normalized mean of several embeddings.
+
+    Used both for a group's running centroid and for a track's averaged
+    identity vector: a single frame's SFace embedding on hard footage
+    (profile, motion blur, harsh key light) is noisy enough that
+    same-person pairs routinely fall below the similarity floor, while the
+    mean over several frames is a much steadier estimate.
+    """
+    stacked = np.stack(embeddings)
+    centroid = stacked.mean(axis=0)
+    norm = float(np.linalg.norm(centroid))
+    if norm > 0:
+        centroid = centroid / norm
+    return centroid.astype(np.float32)
+
+
 @dataclass(frozen=True)
 class FaceObservation:
     """A single embedded face detection, ready for identity grouping."""
@@ -130,29 +147,35 @@ class IdentityGrouper:
         second_best_similarity = similarities[ranked_indices[1]] if len(ranked_indices) > 1 else -1.0
         return best_index, best_similarity, second_best_similarity
 
-    def _start_group(self, observation: FaceObservation) -> int:
+    def _start_group(self, observations: list[FaceObservation]) -> int:
         group = FaceIdentityGroup(
             group_id=self._next_group_id,
-            observations=[observation],
-            representative_embedding=observation.embedding.copy(),
-            representative_observation=observation,
+            observations=list(observations),
+            representative_embedding=observations[0].embedding.copy(),
+            representative_observation=observations[0],
         )
         self.groups.append(group)
         self._next_group_id += 1
+        self._recompute_group(group)
         return group.group_id
 
-    def _update_group(self, group: FaceIdentityGroup, observation: FaceObservation) -> None:
-        group.observations.append(observation)
+    def _recompute_group(self, group: FaceIdentityGroup) -> None:
+        """Refreshes a group's centroid and representative from its members.
 
-        embeddings = np.stack([obs.embedding for obs in group.observations])
-        centroid = embeddings.mean(axis=0)
-        norm = np.linalg.norm(centroid)
-        if norm > 0:
-            centroid = centroid / norm
-        group.representative_embedding = centroid.astype(np.float32)
+        The centroid is the mean over every member observation, so a group
+        built from tracks is weighted by how long each track ran rather
+        than treating a one-frame track and a thirty-frame one as equals.
+        """
+        group.representative_embedding = mean_embedding(
+            [obs.embedding for obs in group.observations]
+        )
+        group.representative_observation = max(group.observations, key=_observation_quality)
 
-        if _observation_quality(observation) > _observation_quality(group.representative_observation):
-            group.representative_observation = observation
+    def _update_group(
+        self, group: FaceIdentityGroup, observations: list[FaceObservation]
+    ) -> None:
+        group.observations.extend(observations)
+        self._recompute_group(group)
 
     def add(self, observation: FaceObservation) -> int | None:
         """
@@ -170,7 +193,35 @@ class IdentityGrouper:
             self.unassigned.append(observation)
             return None
 
-        best_index, best_similarity, second_best_similarity = self._best_match(observation.embedding)
+        return self._assign(observation.embedding, [observation])
+
+    def add_track(self, track) -> int | None:
+        """
+        Assigns a whole face track to an identity group as one unit.
+
+        Matching uses the track's averaged embedding rather than any single
+        frame's, which is the point of tracking: an average over several
+        frames is a much steadier identity estimate than one noisy
+        observation, so it clears the similarity floor far more reliably.
+        Unreliable observations are dropped from the track first so a few
+        bad frames cannot drag the average around.
+
+        Returns:
+            The assigned group_id, or None if nothing in the track was
+            reliable enough to group.
+        """
+        reliable = [obs for obs in track.observations if self._is_reliable(obs)]
+        if not reliable:
+            self.unassigned.extend(track.observations)
+            return None
+
+        return self._assign(mean_embedding([obs.embedding for obs in reliable]), reliable)
+
+    def _assign(
+        self, query_embedding: np.ndarray, observations: list[FaceObservation]
+    ) -> int:
+        """Matches one embedding against existing groups and files the observations."""
+        best_index, best_similarity, second_best_similarity = self._best_match(query_embedding)
 
         is_confident_match = (
             best_index is not None
@@ -180,7 +231,7 @@ class IdentityGrouper:
 
         if is_confident_match:
             group = self.groups[best_index]
-            self._update_group(group, observation)
+            self._update_group(group, observations)
             return group.group_id
 
-        return self._start_group(observation)
+        return self._start_group(observations)

@@ -4,7 +4,7 @@ from math import ceil
 import cv2
 import numpy as np
 
-from app.faces.detector import BoundingBox, FaceDetection
+from app.faces.detector import BoundingBox, FaceDetection, intersection_over_union
 from app.faces.grouper import FaceIdentityGroup
 
 
@@ -147,24 +147,6 @@ def generate_thumbnail(
     return canvas
 
 
-def _intersection_over_union(box_a: BoundingBox, box_b: BoundingBox) -> float:
-    x_min = max(box_a.x_min, box_b.x_min)
-    y_min = max(box_a.y_min, box_b.y_min)
-    x_max = min(box_a.x_max, box_b.x_max)
-    y_max = min(box_a.y_max, box_b.y_max)
-
-    intersection_width = max(0, x_max - x_min)
-    intersection_height = max(0, y_max - y_min)
-    intersection_area = intersection_width * intersection_height
-
-    area_a = (box_a.x_max - box_a.x_min) * (box_a.y_max - box_a.y_min)
-    area_b = (box_b.x_max - box_b.x_min) * (box_b.y_max - box_b.y_min)
-    union_area = area_a + area_b - intersection_area
-    if union_area <= 0:
-        return 0.0
-    return intersection_area / union_area
-
-
 def _select_representative_candidates(
     candidates: list[_GalleryCandidate],
     max_items: int,
@@ -181,7 +163,7 @@ def _select_representative_candidates(
         for chosen in selected:
             if abs(candidate.source_timestamp - chosen.source_timestamp) > minimum_timestamp_gap_seconds:
                 continue
-            if _intersection_over_union(candidate.bounding_box, chosen.bounding_box) >= duplicate_iou_threshold:
+            if intersection_over_union(candidate.bounding_box, chosen.bounding_box) >= duplicate_iou_threshold:
                 is_duplicate = True
                 break
 

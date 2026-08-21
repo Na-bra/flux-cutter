@@ -11,11 +11,12 @@ The intended workflow is:
 1. Load a video file
 2. Extract frames for inspection
 3. Detect human faces in each frame
-4. Group detections that belong to the same person
-5. Show the detected people in a face gallery
-6. Let the user choose a target person
-7. Find every matching appearance in the timeline
-8. Merge nearby clips and export the final result
+4. Link detections across consecutive frames into face tracks
+5. Group tracks that belong to the same person
+6. Show the detected people in a face gallery
+7. Let the user choose a target person
+8. Find every matching appearance in the timeline
+9. Merge nearby clips and export the final result
 
 The codebase is organized around this stage-by-stage workflow, with separate modules for video handling, face detection, grouping, and UI interactions.
 
@@ -35,6 +36,8 @@ flux-cutter/
 │   ├── faces/
 │   │   ├── __init__.py
 │   │   ├── detector.py
+│   │   ├── embedder.py
+│   │   ├── tracker.py
 │   │   └── grouper.py
 │   ├── ui/
 │   │   ├── __init__.py
@@ -112,27 +115,37 @@ You should see metadata similar to:
 The gallery command samples real frames, detects faces once per frame, crops each detected face with a small padding, and saves a simple thumbnail grid:
 
 ```bash
-python app/main.py gallery assets/test-videos/test.mp4 --interval 1.0 --output-dir output/face-gallery
+python -m app gallery assets/test-videos/test.mp4 --interval 1.0 --output-dir output/face-gallery
 ```
 
 You can also select an item while generating the gallery:
 
 ```bash
-python app/main.py gallery assets/test-videos/test.mp4 --interval 1.0 --select-index 0
+python -m app gallery assets/test-videos/test.mp4 --interval 1.0 --select-index 0
 ```
 
 ### 6. Group detections into identities
 
-The group command runs the same sampling and detection pass, embeds each face with SFace, and groups them into per-identity clusters using nearest-centroid matching with a similarity floor and a margin over the runner-up group (to avoid forcing an ambiguous match). It saves one representative thumbnail per identified person:
+The group command runs the same sampling and detection pass, embeds each face with SFace, links detections into face tracks, and groups those tracks into per-identity clusters using nearest-centroid matching with a similarity floor and a margin over the runner-up group (to avoid forcing an ambiguous match). It saves one representative thumbnail per identified person:
 
 ```bash
-python app/main.py group assets/test-videos/test.mp4 --interval 1.0 --output-dir output/face-groups
+python -m app group assets/test-videos/test.mp4 --interval 0.25 --output-dir output/face-groups
 ```
+
+Grouping quality depends heavily on the sampling interval, because tracking is what makes it work. Denser sampling gives the tracker consecutive frames it can actually link, and a track's averaged embedding is far more reliable than any single frame's. On the test video:
+
+| `--interval` | detections | tracks | identity groups |
+| ------------ | ---------- | ------ | --------------- |
+| 1.0s         | 23         | 17     | 11              |
+| 0.5s         | 49         | 34     | 23              |
+| 0.25s        | 88         | 35     | 14              |
+
+At 1.0s, shots cut and faces jump between samples, so tracks mostly degenerate to length 1 and the stage does nothing. Prefer 0.25s or denser for real grouping work.
 
 Grouping behavior is tunable:
 
 ```bash
-python app/main.py group assets/test-videos/test.mp4 \
+python -m app group assets/test-videos/test.mp4 \
 	--similarity-threshold 0.45 \
 	--margin-threshold 0.05 \
 	--min-confidence 0.7 \
@@ -146,13 +159,13 @@ See [Instructions.md](Instructions.md#7-stage-02-accuracy-notes-identity-groupin
 Once you know which person card you want (from the `group` command's output or montage), the `timestamps` command runs the same grouping pass and converts that one person's detections into appearance intervals — contiguous spans of time they're on screen, gap-split, padded, and clamped to the video's duration:
 
 ```bash
-python app/main.py timestamps assets/test-videos/test.mp4 --interval 0.5 --select-index 0
+python -m app timestamps assets/test-videos/test.mp4 --interval 0.5 --select-index 0
 ```
 
 `--select-index` refers to the same ordering shown by `group` (largest identity group first). Gap tolerance and padding default to sampling-derived values (`2x` and `0.5x` the `--interval`, respectively) but can be overridden:
 
 ```bash
-python app/main.py timestamps assets/test-videos/test.mp4 --interval 0.5 --select-index 0 \
+python -m app timestamps assets/test-videos/test.mp4 --interval 0.5 --select-index 0 \
 	--gap-tolerance 1.5 \
 	--appearance-padding 0.3
 ```
@@ -194,6 +207,19 @@ FileNotFoundError: SFace model not found
 
 download it with the command in the setup section and keep it at `assets/models/face_recognition_sface_2021dec.onnx`. This only affects the `group` command; `info`, `extract`, `detect`, and `gallery` don't need it.
 
+### Face tracking notes
+
+Between detection and grouping, `app/faces/tracker.py` links each frame's detections to the previous frame's by bounding-box overlap (IoU >= 0.3). Two faces at nearly the same place in consecutive sampled frames are the same person by continuity, which is a much stronger signal than comparing two independent single-frame embeddings. Each resulting track is then grouped as one unit using its *averaged* embedding.
+
+This matters because single-frame SFace embeddings are noisy on hard footage. On the test video, same-person pairs across different shots routinely score 0.24-0.43 cosine similarity, below the 0.45 grouping floor. Averaging over a track lifts that signal without changing any grouping threshold.
+
+Two safeguards keep tracks honest:
+
+- **Gap tolerance** (`max_frame_gap`, default 1): a track survives a single missed detection (a blink, brief occlusion, or a frame the detector dropped) before closing.
+- **Contradiction veto** (`contradiction_floor`, default 0.25): box overlap alone cannot distinguish a continuing face from a hard cut that places a different person in the same part of the screen. A candidate whose embedding is too dissimilar to the track's *previous frame* breaks the track even when the boxes overlap. The comparison is against the previous frame rather than a running average on purpose — an average is dominated by history once a track has run for a second or two, which lets cut-throughs slip past.
+
+When the veto misfires it errs the cheap way: the grouping stage can re-merge two split tracks of one person, whereas a track that merges two people contaminates a group centroid irreversibly.
+
 ### Detector settings
 
 The validated detector configuration is:
@@ -205,6 +231,8 @@ The validated detector configuration is:
 - top_k: `5000`
 
 This was the best precision and throughput balance we observed on the real 2160 by 2160 test video.
+
+Note that frames are decoded as RGB (`extract_frames` uses `rgb24`) but YuNet is an OpenCV DNN model trained on BGR, so `FaceDetector.detect` swaps the channels before inference. This is not cosmetic: feeding RGB straight through still finds most faces, but on the test video it cost 7 of 23 detections outright and degraded the landmark precision that SFace's `alignCrop` depends on, dropping the best same-person similarity from 0.71 to 0.52.
 
 ### Gallery notes
 
@@ -235,7 +263,7 @@ The project includes a command-line utility for interacting with videos.
 To print metadata for a video file:
 
 ```bash
-python app/main.py info assets/test-videos/test.mp4
+python -m app info assets/test-videos/test.mp4
 ```
 
 Expected output is a dictionary containing fields such as width, height, codec, frame count, duration, and FPS.
@@ -272,9 +300,10 @@ The gallery stage uses the same real sample video and the already-validated dete
 
 The next logical prototype milestones are:
 
-- frame extraction and preview validation
-- face detection accuracy checks on real footage
-- person grouping and identity clustering
+- ~~frame extraction and preview validation~~
+- ~~face detection accuracy checks on real footage~~
+- ~~face tracking across consecutive frames~~
+- person grouping and identity clustering (working, still over-splits on hard footage)
 - clip selection and merge logic
 - final exported video composition
 

@@ -221,3 +221,5 @@ __marimo__/
 assets
 output/*
 app/faces/visualize_detector.py
+
+.claude
