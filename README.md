@@ -48,7 +48,8 @@ flux-cutter/
 │       └── loader.py
 ├── assets/
 │   ├── models/
-│   │   └── face_detection_yunet_2026may.onnx
+│   │   ├── face_detection_yunet_2026may.onnx
+│   │   └── face_recognition_arcface_w600k_r50.onnx
 │   └── test-videos/
 │       └── test.mp4
 ├── tests/
@@ -79,22 +80,30 @@ If you are using a different Python version, make sure it is compatible with the
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install av numpy pytest opencv-python pillow
+python -m pip install -r requirements.txt
 ```
 
-### 3. Download the YuNet and SFace models
+`requirements.txt` pins `opencv-python-headless` rather than `opencv-python`: the headless build skips OpenCV's camera/GUI backend, which is what caused the duplicate-`libavdevice`-symbol warning below when paired with PyAV. The project has no GUI/capture-device usage, so this is a safe swap and not a downgrade in capability.
 
-The detector uses the official OpenCV Zoo YuNet model, and identity grouping uses the OpenCV Zoo SFace model. Download both once and keep them in the repository-local model directory:
+### 3. Download the YuNet and ArcFace models
+
+The detector uses the official OpenCV Zoo YuNet model. Identity grouping uses ArcFace (`w600k_r50`, a ResNet50 trained on WebFace600K), shipped inside InsightFace's `buffalo_l` bundle. Download both once and keep them in the repository-local model directory:
 
 ```bash
 mkdir -p assets/models
 curl -L --fail -o assets/models/face_detection_yunet_2026may.onnx \
 	https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
-curl -L --fail -o assets/models/face_recognition_sface_2021dec.onnx \
-	https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+
+# ArcFace ships in a bundle; extract just the recognition model and rename it.
+curl -L --fail -o /tmp/buffalo_l.zip \
+	https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
+unzip -o -j /tmp/buffalo_l.zip 'w600k_r50.onnx' -d assets/models
+mv assets/models/w600k_r50.onnx assets/models/face_recognition_arcface_w600k_r50.onnx
 ```
 
-Both models load through `opencv-python`'s DNN module (`cv2.FaceDetectorYN` / `cv2.FaceRecognizerSF`), so no extra Python package is needed beyond what's already installed.
+The `buffalo_l` download is ~290MB but only `w600k_r50.onnx` (~174MB) is kept; the other models in the bundle are detection/landmark/attribute models this project doesn't use.
+
+Both models load through OpenCV's DNN module (`cv2.FaceDetectorYN` for detection, `cv2.dnn.readNetFromONNX` for ArcFace), so no extra Python package is needed beyond what's already installed -- no torch, no onnxruntime.
 
 ### 4. Validate the loader
 
@@ -126,7 +135,7 @@ python -m app gallery assets/test-videos/test.mp4 --interval 1.0 --select-index 
 
 ### 6. Group detections into identities
 
-The group command runs the same sampling and detection pass, embeds each face with SFace, links detections into face tracks, and groups those tracks into per-identity clusters using nearest-centroid matching with a similarity floor and a margin over the runner-up group (to avoid forcing an ambiguous match). It saves one representative thumbnail per identified person:
+The group command runs the same sampling and detection pass, embeds each face with ArcFace, links detections into face tracks, and groups those tracks into per-identity clusters using nearest-centroid matching with a similarity floor and a margin over the runner-up group (to avoid forcing an ambiguous match). It saves one representative thumbnail per identified person:
 
 ```bash
 python -m app group assets/test-videos/test.mp4 --interval 0.25 --output-dir output/face-groups
@@ -136,17 +145,21 @@ Grouping quality depends heavily on the sampling interval, because tracking is w
 
 | `--interval` | detections | tracks | identity groups |
 | ------------ | ---------- | ------ | --------------- |
-| 1.0s         | 23         | 17     | 11              |
-| 0.5s         | 49         | 34     | 23              |
-| 0.25s        | 88         | 35     | 14              |
+| 1.0s         | 23         | 17     | 10              |
+| 0.5s         | 49         | 33     | 19              |
+| 0.25s        | 88         | 38     | 24              |
 
-At 1.0s, shots cut and faces jump between samples, so tracks mostly degenerate to length 1 and the stage does nothing. Prefer 0.25s or denser for real grouping work.
+At 1.0s, shots cut and faces jump between samples, so tracks mostly degenerate to length 1 and the stage does nothing. Prefer 0.5s or denser for real grouping work.
+
+These counts are from the current ArcFace embedder with agglomerative grouping, and they are **not** comparable to counts recorded before either change — the group total moves for reasons that have nothing to do with accuracy, so compare montages rather than totals.
+
+Grouping errors on this footage are now overwhelmingly one-sided: the pipeline splits one person into several cards far more often than it merges two people into one. Most of the surplus cards are single-detection groups from genuinely hard frames — heavy motion blur, extreme profile, near-darkness — where the embedding is unreliable and correctly matches nothing. Reducing them is a crop-quality problem (gating blurry detections), not a threshold problem; lowering the floor to absorb them re-introduces real false merges.
 
 Grouping behavior is tunable:
 
 ```bash
 python -m app group assets/test-videos/test.mp4 \
-	--similarity-threshold 0.45 \
+	--similarity-threshold 0.35 \
 	--margin-threshold 0.05 \
 	--min-confidence 0.7 \
 	--min-face-size 40
@@ -184,7 +197,7 @@ rm -rf .venv
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install av numpy pytest opencv-python pillow
+python -m pip install -r requirements.txt
 ```
 
 ### YuNet model is missing
@@ -197,21 +210,21 @@ FileNotFoundError: YuNet model not found
 
 download the model with the command in the setup section and keep it at `assets/models/face_detection_yunet_2026may.onnx`.
 
-### SFace model is missing
+### ArcFace model is missing
 
 If you see this error:
 
 ```python
-FileNotFoundError: SFace model not found
+FileNotFoundError: ArcFace model not found
 ```
 
-download it with the command in the setup section and keep it at `assets/models/face_recognition_sface_2021dec.onnx`. This only affects the `group` command; `info`, `extract`, `detect`, and `gallery` don't need it.
+download it with the command in the setup section and keep it at `assets/models/face_recognition_arcface_w600k_r50.onnx`. This affects the `group` and `timestamps` commands; `info`, `extract`, `detect`, and `gallery` don't need it.
 
 ### Face tracking notes
 
 Between detection and grouping, `app/faces/tracker.py` links each frame's detections to the previous frame's by bounding-box overlap (IoU >= 0.3). Two faces at nearly the same place in consecutive sampled frames are the same person by continuity, which is a much stronger signal than comparing two independent single-frame embeddings. Each resulting track is then grouped as one unit using its *averaged* embedding.
 
-This matters because single-frame SFace embeddings are noisy on hard footage. On the test video, same-person pairs across different shots routinely score 0.24-0.43 cosine similarity, below the 0.45 grouping floor. Averaging over a track lifts that signal without changing any grouping threshold.
+This matters because single-frame embeddings are noisy on hard footage — profile angles, motion blur, harsh key light. Averaging over a track lifts that signal without changing any grouping threshold. The effect was pronounced with the previous SFace embedder, where same-person pairs across different shots routinely scored 0.24-0.43 cosine similarity against a 0.45 floor; ArcFace separates those cases better, but track averaging still measurably steadies the estimate.
 
 Two safeguards keep tracks honest:
 
@@ -232,7 +245,7 @@ The validated detector configuration is:
 
 This was the best precision and throughput balance we observed on the real 2160 by 2160 test video.
 
-Note that frames are decoded as RGB (`extract_frames` uses `rgb24`) but YuNet is an OpenCV DNN model trained on BGR, so `FaceDetector.detect` swaps the channels before inference. This is not cosmetic: feeding RGB straight through still finds most faces, but on the test video it cost 7 of 23 detections outright and degraded the landmark precision that SFace's `alignCrop` depends on, dropping the best same-person similarity from 0.71 to 0.52.
+Note that frames are decoded as RGB (`extract_frames` uses `rgb24`) but YuNet is an OpenCV DNN model trained on BGR, so `FaceDetector.detect` swaps the channels before inference. This is not cosmetic: feeding RGB straight through still finds most faces, but on the test video it cost 7 of 23 detections outright and degraded the landmark precision that face alignment depends on, dropping the best same-person similarity from 0.71 to 0.52. That measurement predates the ArcFace swap, but alignment is if anything more sensitive now: ArcFace is fed a crop warped onto a canonical 112x112 pose derived entirely from those same five landmarks.
 
 ### Gallery notes
 
@@ -250,9 +263,9 @@ python -m pip uninstall -y mediapipe
 
 ### Duplicate FFmpeg/av libraries on macOS
 
-You may see warnings about duplicate `libavdevice` symbols when both OpenCV and PyAV are installed. This is usually noisy but not fatal if the app still runs. The project is validated with the current combination of `opencv-python` and `av`.
+Older setups (installing `opencv-python` instead of `opencv-python-headless`) show warnings about duplicate `libavdevice` symbols when both OpenCV and PyAV are installed, because both packages bundle their own copy of `libavdevice` (OpenCV's camera/GUI backend). This project doesn't use OpenCV's GUI or capture-device features, so `requirements.txt` installs `opencv-python-headless` instead, which doesn't bundle `libavdevice` at all — the warning shouldn't appear if you installed from `requirements.txt`.
 
-If the app becomes unstable, recreate the environment and reinstall cleanly as noted above.
+If you still see it, confirm `pip show opencv-python-headless` (not `opencv-python`) is installed, or recreate the environment and reinstall cleanly as noted above.
 
 ## Usage
 

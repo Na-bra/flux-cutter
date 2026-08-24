@@ -248,8 +248,9 @@ class FaceDetector:
         # arrive here as RGB (extract_frames decodes rgb24), so the channels
         # must be swapped before inference. Feeding RGB straight through still
         # finds most faces -- detection is largely structural -- but it costs
-        # recall and, more importantly, landmark precision, which SFace's
-        # alignCrop depends on for a usable identity embedding.
+        # recall and, more importantly, landmark precision, which the
+        # embedder's ArcFace alignment depends on for a usable identity
+        # embedding.
         bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         detection_image, scale, pad_x, pad_y = self._letterbox(bgr_image, self.input_size)
         self._detector.setInputSize(self.input_size)

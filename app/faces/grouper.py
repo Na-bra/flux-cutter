@@ -4,18 +4,29 @@ import numpy as np
 
 from app.faces.detector import FaceDetection
 
-# OpenCV Zoo's documented cosine-similarity threshold for SFace is 0.363
-# (validated on standard face-verification benchmarks), but running this
-# project's own test footage through the pipeline showed that value lets
-# through at least one false merge (several different faces sharing an
-# open-mouth expression clustered into one 7-detection group that fell
-# apart again once the threshold was raised). 0.45 was the lowest value
-# that kept that cluster split while still merging genuine same-shot
-# repeats a few seconds apart. See the stage-0.2 accuracy notes for the
-# full experiment.
-DEFAULT_SIMILARITY_THRESHOLD = 0.45
+# Re-tuned when ArcFace (w600k_r50) replaced SFace as the embedder. The
+# previous 0.45 was fitted to SFace's similarity distribution and does not
+# transfer: ArcFace pushes different-person pairs much closer to zero
+# (median pairwise similarity 0.077 vs SFace's 0.154 on this footage), so
+# the whole operating range shifts down.
+#
+# Sweeping the same test footage showed a sharp cliff rather than a gentle
+# curve. At 0.33 and below, centroid drift still chained 9 detections
+# spanning 19s into a single group whose weakest internal pair scored only
+# +0.070 -- clearly different people, the same failure mode the original
+# SFace experiment found. At 0.34 that group breaks apart, and 0.35/0.36/
+# 0.37 all produce identical grouping (a stable plateau).
+#
+# 0.35 is the lowest value on that plateau. It is preferred over the
+# literal cliff-edge value of 0.34 because sitting exactly on a
+# discontinuity is fragile against footage variation, and this grouper
+# already treats a false merge as worse than a missed match. See the
+# stage-0.2 accuracy notes for the full experiment.
+DEFAULT_SIMILARITY_THRESHOLD = 0.35
 # Required gap between the best and second-best group match before a
 # detection is assigned rather than treated as a new/uncertain identity.
+# Re-validated against ArcFace: grouping is unchanged anywhere in
+# 0.00-0.08, so 0.05 keeps a comfortable margin inside that flat region.
 DEFAULT_MARGIN_THRESHOLD = 0.05
 DEFAULT_MIN_CONFIDENCE = 0.7
 # Shorter side of the face box, in pixels, below which an embedding is
@@ -32,7 +43,7 @@ def mean_embedding(embeddings: list[np.ndarray]) -> np.ndarray:
     """L2-normalized mean of several embeddings.
 
     Used both for a group's running centroid and for a track's averaged
-    identity vector: a single frame's SFace embedding on hard footage
+    identity vector: a single frame's ArcFace embedding on hard footage
     (profile, motion blur, harsh key light) is noisy enough that
     same-person pairs routinely fall below the similarity floor, while the
     mean over several frames is a much steadier estimate.
@@ -89,13 +100,29 @@ def _observation_quality(observation: FaceObservation) -> float:
 class IdentityGrouper:
     """Groups embedded face observations into per-identity clusters.
 
-    This intentionally is not a clustering framework: each new observation
-    is compared against every existing group's running centroid embedding
-    and assigned to the closest one only if that match clears both an
-    absolute similarity floor and a margin over the next-closest group.
-    Otherwise it seeds a new group. A false merge is treated as worse than
-    a missed match, so ties and near-ties fall through to a new group
-    rather than being forced together.
+    Clustering is agglomerative with average linkage: every unit (a single
+    observation, or a whole face track) starts as its own cluster, and the
+    globally most-similar pair of clusters is merged repeatedly until the
+    best remaining pair falls below the similarity floor.
+
+    This replaced an incremental nearest-centroid pass that assigned each
+    unit to the best group that happened to exist at the moment it arrived.
+    That approach was order-dependent to a degree that swamped everything
+    else: on the test footage, feeding the same 33 tracks in 12 different
+    orders produced anywhere from 11 to 17 groups, with identical data and
+    identical thresholds. A single early mistake also permanently polluted
+    a centroid, which is the "centroid drift" the stage-0.2 accuracy notes
+    describe. Average linkage removes both problems -- it looks at every
+    pair before committing to any merge, so the result is a property of the
+    data rather than of arrival order.
+
+    A false merge is still treated as worse than a missed match: merges
+    must clear an absolute similarity floor, and a merge whose runner-up is
+    nearly as good is refused as ambiguous rather than forced.
+
+    Because clustering needs every unit before it can run, `add`/`add_track`
+    only buffer; grouping happens on first access to `groups` (or an
+    explicit `finish()`).
     """
 
     def __init__(
@@ -115,9 +142,16 @@ class IdentityGrouper:
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
 
-        self.groups: list[FaceIdentityGroup] = []
         self.unassigned: list[FaceObservation] = []
-        self._next_group_id = 1
+        self._units: list[list[FaceObservation]] = []
+        self._groups: list[FaceIdentityGroup] | None = None
+
+    @property
+    def groups(self) -> list[FaceIdentityGroup]:
+        """The clustered identity groups, computing them on first access."""
+        if self._groups is None:
+            self._groups = self._cluster()
+        return self._groups
 
     def _is_reliable(self, observation: FaceObservation) -> bool:
         if not _is_valid_embedding(observation.embedding):
@@ -133,31 +167,194 @@ class IdentityGrouper:
 
         return True
 
-    def _best_match(self, embedding: np.ndarray) -> tuple[int | None, float, float]:
-        """Returns (best_group_index, best_similarity, second_best_similarity)."""
-        if not self.groups:
-            return None, -1.0, -1.0
+    def _add_unit(self, observations: list[FaceObservation]) -> int:
+        """Buffers one indivisible unit and invalidates any cached grouping."""
+        self._units.append(observations)
+        self._groups = None
+        return len(self._units) - 1
 
-        similarities = [
-            cosine_similarity(embedding, group.representative_embedding) for group in self.groups
-        ]
-        ranked_indices = sorted(range(len(similarities)), key=lambda i: similarities[i], reverse=True)
-        best_index = ranked_indices[0]
-        best_similarity = similarities[best_index]
-        second_best_similarity = similarities[ranked_indices[1]] if len(ranked_indices) > 1 else -1.0
-        return best_index, best_similarity, second_best_similarity
+    def add(self, observation: FaceObservation) -> int | None:
+        """
+        Buffers a single observation as its own unit.
 
-    def _start_group(self, observations: list[FaceObservation]) -> int:
-        group = FaceIdentityGroup(
-            group_id=self._next_group_id,
-            observations=list(observations),
-            representative_embedding=observations[0].embedding.copy(),
-            representative_observation=observations[0],
+        Low-quality or malformed observations (below the confidence/size
+        floor, or a non-finite embedding) are kept aside in `unassigned`
+        rather than risking a bad match.
+
+        Returns:
+            The unit index, or None if the observation was left unassigned.
+            Note this is a unit index, not a group id: groups do not exist
+            until clustering runs.
+        """
+        if not self._is_reliable(observation):
+            self.unassigned.append(observation)
+            return None
+
+        return self._add_unit([observation])
+
+    def add_track(self, track) -> int | None:
+        """
+        Buffers a whole face track as one indivisible unit.
+
+        A track's frames are already known to be the same person by spatial
+        continuity, so they are never split apart by clustering, and the
+        track is compared to other units by its averaged embedding rather
+        than any single noisy frame. Unreliable observations are dropped
+        first so a few bad frames cannot drag that average around.
+
+        Returns:
+            The unit index, or None if nothing in the track was reliable
+            enough to group.
+        """
+        reliable = [obs for obs in track.observations if self._is_reliable(obs)]
+        if not reliable:
+            self.unassigned.extend(track.observations)
+            return None
+
+        return self._add_unit(reliable)
+
+    def finish(self) -> list[FaceIdentityGroup]:
+        """Forces clustering to run and returns the resulting groups."""
+        return self.groups
+
+    def _cluster(self) -> list[FaceIdentityGroup]:
+        """Agglomerative average-linkage merging over the buffered units.
+
+        Average linkage between two clusters is the mean cosine similarity
+        over every cross-cluster observation pair. Because the embeddings
+        are L2-normalized, that mean is (sum_a . sum_b) / (n_a * n_b),
+        which lets the whole initial matrix be built with one matrix
+        product instead of an explicit pairwise loop.
+
+        Merges then update the matrix by the Lance-Williams rule for
+        average linkage, an observation-count-weighted mean of the two
+        merged rows. That is exact -- it gives the same numbers a full
+        recomputation would -- while keeping the whole run O(n^2) in the
+        number of units rather than recomputing every pair after each
+        merge.
+        """
+        if not self._units:
+            return []
+
+        unit_count = len(self._units)
+        sizes = np.array([len(unit) for unit in self._units], dtype=np.float64)
+        sums = np.stack(
+            [np.stack([obs.embedding for obs in unit]).astype(np.float64).sum(axis=0) for unit in self._units]
         )
-        self.groups.append(group)
-        self._next_group_id += 1
-        self._recompute_group(group)
-        return group.group_id
+
+        # Mean pairwise similarity between every pair of units.
+        similarity = (sums @ sums.T) / np.outer(sizes, sizes)
+        np.fill_diagonal(similarity, -np.inf)
+
+        members: list[list[int] | None] = [[i] for i in range(unit_count)]
+        # Pairs refused as ambiguous, so a blocked pair is not retried forever.
+        blocked: set[tuple[int, int]] = set()
+
+        while True:
+            candidate = self._best_mergeable_pair(similarity, blocked)
+            if candidate is None:
+                break
+
+            first, second, best_similarity = candidate
+            if not self._merge_is_unambiguous(similarity, first, second, best_similarity):
+                blocked.add((min(first, second), max(first, second)))
+                continue
+
+            # Lance-Williams average-linkage update, weighted by observation count.
+            merged_size = sizes[first] + sizes[second]
+            similarity[first, :] = (
+                sizes[first] * similarity[first, :] + sizes[second] * similarity[second, :]
+            ) / merged_size
+            similarity[:, first] = similarity[first, :]
+            similarity[first, first] = -np.inf
+
+            similarity[second, :] = -np.inf
+            similarity[second, first] = -np.inf
+            similarity[:, second] = -np.inf
+
+            members[first] = members[first] + members[second]
+            members[second] = None
+            sizes[first] = merged_size
+
+            # A merged cluster is a different cluster: give its pairs a fresh chance.
+            blocked = {pair for pair in blocked if first not in pair and second not in pair}
+
+        return self._build_groups(members)
+
+    def _best_mergeable_pair(
+        self, similarity: np.ndarray, blocked: set[tuple[int, int]]
+    ) -> tuple[int, int, float] | None:
+        """The most similar pair of live clusters that clears the floor."""
+        workspace = similarity.copy()
+        for first, second in blocked:
+            workspace[first, second] = -np.inf
+            workspace[second, first] = -np.inf
+
+        best_flat = int(np.argmax(workspace))
+        first, second = np.unravel_index(best_flat, workspace.shape)
+        best_similarity = float(workspace[first, second])
+
+        if not np.isfinite(best_similarity) or best_similarity < self.similarity_threshold:
+            return None
+        return int(first), int(second), best_similarity
+
+    def _merge_is_unambiguous(
+        self, similarity: np.ndarray, first: int, second: int, best_similarity: float
+    ) -> bool:
+        """Whether this merge is free of a genuinely competing alternative.
+
+        This carries the margin rule over from the previous nearest-centroid
+        implementation, but it cannot be carried over literally. There,
+        "the runner-up is nearly as similar" meant a unit matched two rival
+        identities about equally well. Under average linkage it usually
+        means the opposite: when three clips of one person are all mutually
+        similar, every pair scores high, so a naive runner-up test blocks
+        the very merges it should allow.
+
+        So a near-tie only counts as ambiguity when the competitor is a
+        *different* identity -- close to one endpoint, yet too far from the
+        other to be merged with it. That is the case where picking the
+        better-by-a-hair option is a coin flip, and a coin flip is how a
+        false merge gets in.
+        """
+        if self.margin_threshold <= 0.0:
+            return True
+
+        for endpoint, partner in ((first, second), (second, first)):
+            for other in range(similarity.shape[0]):
+                if other in (first, second):
+                    continue
+
+                competitor = float(similarity[endpoint, other])
+                if not np.isfinite(competitor):
+                    continue
+                if best_similarity - competitor >= self.margin_threshold:
+                    continue
+
+                # Near-tie. Ambiguous only if the competitor is a different
+                # identity rather than another piece of the same one.
+                rival = float(similarity[partner, other])
+                if not np.isfinite(rival) or rival < self.similarity_threshold:
+                    return False
+
+        return True
+
+    def _build_groups(self, members: list[list[int] | None]) -> list[FaceIdentityGroup]:
+        """Materializes surviving clusters into FaceIdentityGroups, largest first."""
+        groups: list[FaceIdentityGroup] = []
+        for member_units in members:
+            if member_units is None:
+                continue
+
+            observations = [obs for unit_index in sorted(member_units) for obs in self._units[unit_index]]
+            group = FaceIdentityGroup(group_id=0, observations=observations)
+            self._recompute_group(group)
+            groups.append(group)
+
+        groups.sort(key=lambda group: (-group.size, group.observations[0].source_timestamp))
+        for position, group in enumerate(groups, start=1):
+            group.group_id = position
+        return groups
 
     def _recompute_group(self, group: FaceIdentityGroup) -> None:
         """Refreshes a group's centroid and representative from its members.
@@ -170,68 +367,3 @@ class IdentityGrouper:
             [obs.embedding for obs in group.observations]
         )
         group.representative_observation = max(group.observations, key=_observation_quality)
-
-    def _update_group(
-        self, group: FaceIdentityGroup, observations: list[FaceObservation]
-    ) -> None:
-        group.observations.extend(observations)
-        self._recompute_group(group)
-
-    def add(self, observation: FaceObservation) -> int | None:
-        """
-        Assigns an observation to an identity group.
-
-        Low-quality or malformed observations (below the confidence/size
-        floor, or a non-finite embedding) are kept aside in `unassigned`
-        rather than risking a bad match.
-
-        Returns:
-            The assigned group_id, or None if the observation was left
-            unassigned.
-        """
-        if not self._is_reliable(observation):
-            self.unassigned.append(observation)
-            return None
-
-        return self._assign(observation.embedding, [observation])
-
-    def add_track(self, track) -> int | None:
-        """
-        Assigns a whole face track to an identity group as one unit.
-
-        Matching uses the track's averaged embedding rather than any single
-        frame's, which is the point of tracking: an average over several
-        frames is a much steadier identity estimate than one noisy
-        observation, so it clears the similarity floor far more reliably.
-        Unreliable observations are dropped from the track first so a few
-        bad frames cannot drag the average around.
-
-        Returns:
-            The assigned group_id, or None if nothing in the track was
-            reliable enough to group.
-        """
-        reliable = [obs for obs in track.observations if self._is_reliable(obs)]
-        if not reliable:
-            self.unassigned.extend(track.observations)
-            return None
-
-        return self._assign(mean_embedding([obs.embedding for obs in reliable]), reliable)
-
-    def _assign(
-        self, query_embedding: np.ndarray, observations: list[FaceObservation]
-    ) -> int:
-        """Matches one embedding against existing groups and files the observations."""
-        best_index, best_similarity, second_best_similarity = self._best_match(query_embedding)
-
-        is_confident_match = (
-            best_index is not None
-            and best_similarity >= self.similarity_threshold
-            and (best_similarity - second_best_similarity) >= self.margin_threshold
-        )
-
-        if is_confident_match:
-            group = self.groups[best_index]
-            self._update_group(group, observations)
-            return group.group_id
-
-        return self._start_group(observations)

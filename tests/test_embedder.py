@@ -5,14 +5,17 @@ import numpy as np
 import pytest
 
 from app.faces.detector import FaceDetector
-from app.faces.embedder import FaceEmbedder
+from app.faces.embedder import EMBEDDING_DIMENSIONS, FaceEmbedder
 from app.video.frames import extract_frames
 from app.video.loader import load_video
 
 VIDEO_PATH = Path(__file__).resolve().parents[1] / "assets" / "test-videos" / "test.mp4"
 DETECTOR_MODEL_PATH = Path(__file__).resolve().parents[1] / "assets" / "models" / "face_detection_yunet_2026may.onnx"
 EMBEDDER_MODEL_PATH = (
-    Path(__file__).resolve().parents[1] / "assets" / "models" / "face_recognition_sface_2021dec.onnx"
+    Path(__file__).resolve().parents[1]
+    / "assets"
+    / "models"
+    / "face_recognition_arcface_w600k_r50.onnx"
 )
 
 
@@ -32,8 +35,8 @@ def detector():
 def embedder():
     if not EMBEDDER_MODEL_PATH.is_file():
         pytest.skip(
-            f"SFace model not found at '{EMBEDDER_MODEL_PATH}'. Download it from the OpenCV Zoo before running "
-            "embedder tests."
+            f"ArcFace model not found at '{EMBEDDER_MODEL_PATH}'. Extract w600k_r50.onnx from the InsightFace "
+            "buffalo_l bundle before running embedder tests."
         )
 
     embedder_instance = FaceEmbedder(model_path=EMBEDDER_MODEL_PATH)
@@ -61,11 +64,11 @@ def sampled_faces(detector):
 
 
 def test_embed_produces_l2_normalized_vector(embedder, sampled_faces):
-    """Tests that a real face crop embeds into a unit-norm 128-d vector."""
+    """Tests that a real face crop embeds into a unit-norm 512-d vector."""
     _, frame, detection = sampled_faces[0]
     embedding = embedder.embed(frame, detection)
 
-    assert embedding.shape == (128,)
+    assert embedding.shape == (EMBEDDING_DIMENSIONS,)
     assert embedding.dtype == np.float32
     assert np.linalg.norm(embedding) == pytest.approx(1.0, abs=1e-4)
 
@@ -115,3 +118,38 @@ def test_embed_requires_landmarks(embedder, sampled_faces):
 
     with pytest.raises(ValueError):
         embedder.embed(frame, detection_without_landmarks)
+
+
+def test_align_produces_canonical_arcface_crop(embedder, sampled_faces):
+    """Tests that alignment emits the 112x112 pose ArcFace was trained on."""
+    _, frame, detection = sampled_faces[0]
+    aligned = FaceEmbedder.align(frame, detection)
+
+    assert aligned.shape == (112, 112, 3)
+
+
+def test_align_is_deterministic(embedder, sampled_faces):
+    """Tests that aligning the same face twice is bit-identical.
+
+    This guards a deliberate implementation choice: the similarity
+    transform is solved in closed form (Umeyama) rather than with
+    cv2.estimateAffinePartial2D, whose RANSAC/LMEDS sampling can return a
+    slightly different matrix per call. Non-deterministic alignment would
+    make the same face embed to two different vectors between runs, which
+    identity grouping compares by cosine similarity.
+    """
+    _, frame, detection = sampled_faces[0]
+
+    first = FaceEmbedder.align(frame, detection)
+    second = FaceEmbedder.align(frame, detection)
+
+    assert np.array_equal(first, second)
+
+
+def test_align_requires_landmarks(embedder, sampled_faces):
+    """Tests that alignment refuses a detection with no landmarks."""
+    _, frame, detection = sampled_faces[0]
+    detection_without_landmarks = replace(detection, landmarks=None)
+
+    with pytest.raises(ValueError):
+        FaceEmbedder.align(frame, detection_without_landmarks)

@@ -120,8 +120,8 @@ Track unresolved technical choices here as they come up, and resolve them in the
 | Decision | Needed by | Status |
 |---|---|---|
 | Face detection library (e.g. `face_recognition`, `mediapipe`, `insightface`) | 0.1 | Resolved: OpenCV DNN + YuNet 2026may on CPU. Best practical precision/throughput tradeoff on the test footage. |
-| Face embedding model for identity grouping | 0.2 | Resolved: OpenCV Zoo SFace (`face_recognition_sface_2021dec.onnx`) via `cv2.FaceRecognizerSF`. Same ecosystem as YuNet (consumes its landmarks directly for alignment via `alignCrop`), zero new dependencies, CPU-only, cross-platform. |
-| Clustering approach for grouping detections into identities | 0.2 | Resolved: incremental nearest-centroid matching (not a clustering framework) with an absolute cosine-similarity floor *and* a margin over the second-best group, so ties fall through to a new group instead of forcing a merge. See accuracy notes below. |
+| Face embedding model for identity grouping | 0.2 | Resolved: ArcFace `w600k_r50` (InsightFace `buffalo_l`) via `cv2.dnn.readNetFromONNX`, 512-d. Superseded OpenCV Zoo SFace, which was over-splitting the same actor across shots (49 detections -> 23 groups at 0.5s sampling; ArcFace gives 10). Still zero new dependencies (no torch/onnxruntime) and CPU-only, but alignment had to be reimplemented since `alignCrop` is SFace-specific, and it costs ~4.6x more per face. |
+| Clustering approach for grouping detections into identities | 0.2 | Resolved: agglomerative average-linkage over units (a unit = one observation, or a whole track). Replaced incremental nearest-centroid, which was order-dependent enough to produce 11-17 groups from the same 33 tracks depending only on arrival order. Keeps the similarity floor and the margin rule, the latter re-derived for linkage semantics. See 7b. |
 | Video I/O / frame extraction tooling (e.g. OpenCV, PyAV) | 0.1 | Resolved: PyAV for loader/frame extraction. It already works reliably with the sample video. |
 | GUI toolkit for the face gallery view | 0.1 | Resolved for prototype 0.1: simple saved gallery montage via OpenCV grid rendering. |
 | Appearance-interval strategy (detections -> timestamps) | 0.2/0.3 boundary | Resolved: real per-detection PTS timestamps (already carried on `FaceObservation.source_timestamp`) grouped into contiguous spans by a sampling-derived gap tolerance, then padded by a sampling-derived amount and clamped to video bounds. No new frame decoding or tracking added. See accuracy notes below. |
@@ -160,6 +160,46 @@ This was validated on one ~23s test clip; treat 0.45 as a starting point
 to re-check once more/longer footage is available, not a universal
 constant.
 
+### 7a. Re-tune after ArcFace replaced SFace
+
+Everything above describes SFace. When ArcFace (`w600k_r50`) replaced it
+as the embedder, 0.45 stopped being meaningful: a threshold is a property
+of the model's similarity distribution, not a portable constant. On the
+same footage, ArcFace pushes different-person pairs much closer to zero
+(median pairwise similarity 0.077, vs SFace's 0.154) while holding the
+best same-person pair slightly higher (0.771 vs 0.706) — i.e. better
+separation, but a different operating range.
+
+Re-running the same experiment (build tracks once, then re-group at each
+candidate threshold, watching for the wide-span/low-internal-similarity
+signature of a false merge) showed a sharp cliff rather than a gentle
+curve:
+
+| threshold | groups | worst merge |
+| --------- | ------ | ----------- |
+| <= 0.33   | 7      | 9 detections spanning 19.0s, weakest internal pair +0.070 |
+| 0.34      | 10     | 3 detections spanning 2.0s, weakest pair +0.274 |
+| 0.35-0.37 | 11     | 3 detections spanning 2.0s, weakest pair +0.274 |
+| 0.42-0.45 | 13     | 2 detections spanning 1.0s, weakest pair +0.274 |
+
+At 0.33 and below the same failure mode as the original SFace experiment
+persists — centroid drift chaining clearly different people (a pair at
++0.070 similarity is not one person). It disappears at 0.34.
+
+`DEFAULT_SIMILARITY_THRESHOLD` is now **0.35**: the lowest value on the
+stable 0.35-0.37 plateau, chosen over the literal cliff-edge value of
+0.34 because sitting exactly on a discontinuity is fragile against
+footage variation. `DEFAULT_MARGIN_THRESHOLD` stays 0.05 — re-validated,
+not merely inherited: grouping is byte-identical anywhere in 0.00-0.08,
+so 0.05 sits comfortably inside that flat region.
+
+Known remaining weakness: visual inspection of the 1.0s montage shows one
+blonde actor still split across several person cards. That is the
+intended direction of error ("a false merge is worse than a missed
+match"), but it means recall across shots is still the weak axis. If that
+becomes the priority, lowering toward 0.34 or adding a deliberate
+cross-shot merge pass are the levers — not raising the threshold.
+
 ---
 
 ## 8. Appearance Timestamp Notes (`app/video/timeline.py`)
@@ -196,3 +236,66 @@ between samples were never inspected. At the current default
 `--interval 1.0`, that's a ~0.5s fuzz band on every boundary. Tightening
 `--interval` narrows it at the cost of more detection/embedding work per
 run.
+
+---
+
+## 7b. Grouping algorithm change (nearest-centroid -> agglomerative)
+
+The incremental nearest-centroid grouper assigned each unit to the best
+group that existed *at the moment it arrived*, then folded it straight
+into that group's centroid. Two consequences, both measured on the test
+footage rather than assumed:
+
+- **Order dependence.** Feeding the same 33 tracks in 12 different
+  shuffled orders, with identical data and identical thresholds, produced
+  group counts of 11, 12, 13, 14, 15 and 17. Any measurement of an
+  accuracy change smaller than that swing was noise.
+- **Centroid pollution.** One wrong early assignment permanently moved a
+  centroid, which then attracted further wrong matches. This is the
+  "centroid drift" 7 already described; it was a property of the
+  algorithm, not of the embedding.
+
+`IdentityGrouper` now buffers units and clusters them with agglomerative
+average linkage: repeatedly merge the globally most-similar pair of
+clusters until the best remaining pair falls below the similarity floor.
+Linkage similarity is the mean cosine similarity over all cross-cluster
+observation pairs, updated after each merge by the Lance-Williams rule
+(exact, and keeps the run O(n^2) in units rather than recomputing every
+pair). Re-running the shuffle test now yields byte-identical grouping
+across every order, at every threshold tried.
+
+Because clustering needs every unit up front, `add`/`add_track` only
+buffer; grouping runs on first access to `groups` (or `finish()`). They
+return a *unit index* rather than a group id — group ids do not exist
+until clustering runs. The pipeline already collected all tracks before
+grouping, so nothing streaming was given up.
+
+**The margin rule had to be re-derived, not ported.** Under
+nearest-centroid, "the runner-up is nearly as similar" meant one unit
+matched two rival identities about equally well. Under average linkage it
+usually means the opposite: three clips of one person are all mutually
+similar, so every pair scores high, and a naive runner-up test blocks the
+very merges it should allow — a literal port split three identical faces
+into three groups. A near-tie now counts as ambiguity only when the
+competitor is a *different* identity: close to one endpoint, yet too far
+from the other to merge with it.
+
+`DEFAULT_SIMILARITY_THRESHOLD` stays 0.35. Re-sweeping under the new
+linkage put the knee in the same place: at 0.32 and below a group spanning
+20.5s survives whose weakest internal pair is only +0.172, and at 0.35 the
+worst surviving merge is a 2.5s same-shot group at +0.274.
+
+### Remaining error profile
+
+Errors are now strongly one-sided: over-splitting, not false merging. At
+0.5s sampling, 8 of 19 groups are single detections, nearly all from
+heavily blurred, extreme-profile or near-black crops. Some genuine
+cross-shot merges that previously failed now succeed (one actor's card
+spans 1.5s-22.0s).
+
+The next lever is therefore **crop quality, not thresholds**: a blur/
+quality gate that stops unreliable crops from seeding their own identity
+card, alongside the existing confidence and face-size floors, which do not
+measure blur at all. Lowering the similarity floor to absorb those
+singletons is the wrong fix — the sweep shows it re-admits real false
+merges well before it rescues them.
