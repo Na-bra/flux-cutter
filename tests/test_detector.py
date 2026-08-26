@@ -92,7 +92,7 @@ def test_detector_handles_high_confidence_threshold():
     high_conf_detector = FaceDetector(model_path=MODEL_PATH, input_size=(640, 640), confidence_threshold=0.99)
     try:
         with load_video(VIDEO_PATH) as container:
-            _, image = extract_frames(container, sample_interval=1.0)[0]
+            _, image = next(iter(extract_frames(container, sample_interval=1.0)))
 
         detections = high_conf_detector.detect(image)
         assert len(detections) == 0

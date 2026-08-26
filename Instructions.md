@@ -299,3 +299,241 @@ card, alongside the existing confidence and face-size floors, which do not
 measure blur at all. Lowering the similarity floor to absorb those
 singletons is the wrong fix — the sweep shows it re-admits real false
 merges well before it rescues them.
+
+
+---
+
+## 7c. First full-length run (`test_3.mp4`, 22.6 min)
+
+Everything before this was tuned on one 23-second clip. The first run on a
+full episode (1280x720, 1355s, ~26 recurring characters) changed one
+conclusion outright.
+
+Baseline at 1.0s sampling: 3111 detections -> 1936 tracks -> **412 identity
+groups**, 222s wall (94s embedding), peak RSS 4.87 GB.
+
+**What worked.** The main cast came out clean and stable across the whole
+episode: the largest group held 348 detections spanning 18s-1295s, the next
+230 spanning 15s-1291s. Cross-shot identity matching -- the thing ArcFace
+and agglomerative linkage were adopted for -- does its job on clear footage.
+
+**What did not.** 294 of the 412 groups held <= 2 detections. Splitting
+that tail by each group's best similarity to any main character:
+
+| best sim to a main character | groups | share | median blur |
+| --- | --- | --- | --- |
+| >= 0.35 (already above the floor) | 159 | 54.1% | 86 |
+| 0.25 - 0.35 (near miss) | 51 | 17.3% | 51 |
+| 0.15 - 0.25 (weak) | 52 | 17.7% | 45 |
+| < 0.15 (not a usable face) | 32 | 10.9% | 21 |
+
+The majority were **already above the similarity floor and refused
+anyway**, which ruled out the threshold as the cause and pointed at the
+margin rule. Confirmed by sweeping it (see `DEFAULT_MARGIN_THRESHOLD` for
+the numbers): disabling it alone took 412 groups -> 221 and lifted
+main-character coverage from 64.5% to 78.8%, without pushing group
+cohesion anywhere near the different-person range. `DEFAULT_MARGIN_THRESHOLD`
+is now 0.0.
+
+The lesson worth keeping: the 23s clip could not distinguish "this
+parameter is harmless" from "this clip has too few faces to exercise it".
+Parameters validated only on `test.mp4` should be treated as unvalidated
+until a full-length video exercises them.
+
+### Still open after this run
+
+- **Crop quality gate.** 23.7% of detections have Laplacian variance < 40
+  on the aligned crop, and the tail is full of backs of heads, extreme
+  profiles and motion blur that YuNet scores 0.72-0.89 -- above the 0.7
+  confidence floor, so nothing currently filters them. A blur gate at 20
+  plus the margin change gives 175 groups / 80.6% coverage, versus 221 /
+  78.8% for the margin change alone. Blurred detections should land in
+  `unassigned` rather than being dropped silently.
+- **Frame extraction does not stream.** `extract_frames` returns a list of
+  every sampled frame, so memory scales with video length x sampling rate:
+  ~4.9 GB at 1.0s here, ~7.5 GB at 0.5s, ~15 GB at 0.25s. The README
+  recommends 0.5s or denser for real grouping work, which on a
+  feature-length video will not fit in memory. Making it a generator
+  removes the ceiling and is likely worth more on real footage than
+  further accuracy tuning.
+- **Representative thumbnails can misrepresent a group.** `_observation_quality`
+  is confidence x box area, so a large blurry crop outranks a small sharp
+  one; several montage cards show a hair or neck crop for a group whose
+  members are mostly clean faces. Folding sharpness into that score would
+  fix the montage without touching grouping.
+
+
+---
+
+## 7d. Streaming frame extraction
+
+`extract_frames` returned a list of every sampled frame, so peak memory was
+roughly `width x height x 3 x (duration / sample_interval)`. That put the
+sampling density identity grouping actually wants out of reach on real
+footage: on the 22.6-minute 720p episode it needed ~4.9 GB at a 1.0s
+interval and would have needed ~15 GB at 0.25s, against 17 GB of machine.
+The README recommends 0.5s or denser for grouping work, so the recommended
+setting was also the unaffordable one.
+
+It now yields one decoded frame at a time. Measured on `test_3.mp4`,
+1.0s interval, same machine:
+
+| | list | streaming |
+| --- | --- | --- |
+| peak RSS | 4.87 GB | **1.04 GB** |
+| wall clock | 221.9s | **216.3s** |
+| identity groups | 221 | 221 |
+
+Memory is now flat in video length rather than proportional to it, output
+is unchanged, and there is no throughput cost -- interleaving decode with
+detection turned out to be free here.
+
+Worth noting for anyone reading the run report: "Total processing time"
+went from 108s to 267s across this change **without anything getting
+slower**. Decoding used to happen eagerly before the timer started and now
+happens inside it, so the number covers strictly more work. Wall clock is
+the only figure comparable across the change.
+
+### Consequences for callers
+
+Validation stays eager. A plain generator function defers its entire body
+to first iteration, which would have meant a bad `sample_interval` raising
+somewhere far from the call that caused it, so `extract_frames` validates
+its arguments and *returns* an inner generator.
+
+Two lazy-evaluation hazards, both of which the existing tests walked into:
+
+- **The result is a one-shot iterator with no length.** Callers that
+  reported `len(frames)` now tally as they go; `_run_identity_pipeline`
+  returns a `_PipelineResult` carrying `frame_count` and `last_timestamp`
+  because its callers used to read those off the materialized list.
+- **Iteration must finish inside the `with load_video(...)` block.**
+  Decoding happens while iterating, so consuming the iterator after the
+  container closes reads from a closed file. `test_embedder`'s fixture did
+  exactly this and passed only because a list had already been built.
+
+`run_appearance_timestamps` needed a small restructure for the same
+reason: its duration fallback read `frames[-1][0]`, and the last timestamp
+of a stream is not knowable until the stream is spent, so that fallback now
+resolves after the pipeline rather than before it.
+
+
+---
+
+## 7e. Consolidation pass (duplicate identities among large groups)
+
+After the margin fix, `test_3.mp4` still produced visibly duplicated people
+-- the same actor appearing as several separate person cards. Two theories
+were tested and both were wrong, which is worth recording so they are not
+retried:
+
+- **Orphan fragments failing to attach.** A two-stage absorber that pulled
+  small groups into large ones on strong nearest-frame evidence moved the
+  count only 305 -> 274. The leftover groups are genuinely marginal, not
+  near-misses.
+- **Pose manifolds needing nearest-neighbour linkage.** Single linkage
+  chained badly: at threshold 0.55 the largest cluster swelled to 1155
+  observations and its 5th-percentile cohesion collapsed to 0.139, joining
+  different people through one lucky frame each.
+
+The duplicates were not in the tail at all -- they were **among the largest
+groups**. Comparing the 30 biggest:
+
+| pair | sizes | centroid sim | average linkage |
+| --- | --- | --- | --- |
+| #1 vs #24 | 447 / 31 | 0.626 | 0.315 |
+| #6 vs #12 | 100 / 50 | 0.550 | 0.275 |
+| #3 vs #25 | 186 / 29 | 0.549 | 0.245 |
+| next closest | 178 / 34 | 0.280 | 0.152 |
+
+Each of the top three is one actor split in two, and average linkage puts
+all three below the 0.35 floor. Rendering the pairs showed why: #1 vs #24
+is the blonde lead **with and without a costume mask**. One person can
+occupy two distant regions of embedding space, and average linkage asks
+whether a candidate resembles *every* frame of a cluster -- the wrong
+question once a cluster is large and varied.
+
+`IdentityGrouper._consolidate` runs after clustering and folds together
+whole groups whose centroids agree, greedily on the best pair, so it is
+order-independent like the clustering phase. `DEFAULT_CONSOLIDATION_THRESHOLD`
+is 0.50, picked from the gap above (true duplicates 0.549-0.626, next
+candidate 0.280); anything in 0.30-0.54 separates them.
+
+It is a second phase rather than the linkage rule itself because centroid
+linkage from the start is far looser while clusters are one or two frames
+wide, where a single noisy embedding *is* the prototype.
+
+Measured on `test_3.mp4` at 1.0s, cumulative with the earlier margin change:
+
+| | groups |
+| --- | --- |
+| original (margin 0.05, no consolidation) | 412 |
+| margin 0.0 | 221 |
+| margin 0.0 + consolidation | **186** |
+
+Person #1 grew 348 -> 446 -> 516 detections and now spans 18.0s-1325.0s.
+
+**The margin rule had to be extended to cover this pass.** Consolidation
+initially re-merged pairs clustering had refused as a coin flip between two
+identities -- the two mechanisms contradicted each other, and two existing
+tests caught it. `_merge_is_unambiguous` now takes the floor it should judge
+"different identity" against, and consolidation applies it with a blocked-pair
+set so a refused pair is not reselected forever.
+
+### Non-face clusters
+
+Person #4 in the consolidated montage is 185 detections of the show's
+spinning logo. YuNet scores those graphics confidently, nothing downstream
+asks whether a detection is a face, and they are self-similar enough to form
+a large stable cluster. This is not a grouping bug and no threshold fixes it
+-- it is the same crop-quality gap as the back-of-head detections, and it
+argues for the quality gate rather than against consolidation.
+
+
+---
+
+## 7f. Non-face group filter
+
+`test_3.mp4` produced a 185-detection "Person #4" spanning the whole episode
+that was not a person: a mixture of backs of heads, hard profiles, and the
+show's spinning logo. YuNet scores those confidently (0.72-0.95), nothing
+downstream asks whether a detection is really a face, and -- the part that
+makes it a *large* group rather than scattered noise -- they resemble each
+other, because their landmarks fail in the same way. Degenerate detections
+cluster into a stable phantom identity.
+
+**Blur does not catch it.** That was the obvious first guess and it is wrong:
+the phantom group's median Laplacian variance is 169, against 119-284 for
+real people. The logo is perfectly sharp. What separates them is landmark
+geometry, specifically eye separation as a fraction of box width:
+
+| group | detections | median blur | eye span / width |
+| --- | --- | --- | --- |
+| #1 (real) | 516 | 284 | 0.350 |
+| #2 (real) | 284 | 119 | 0.351 |
+| #3 (real) | 191 | 172 | 0.306 |
+| **#4 (phantom)** | **185** | **169** | **0.139** |
+| #5-#20 (real) | 33-163 | 9-577 | 0.317-0.430 |
+
+`eye_span_ratio` computes it from landmarks that already exist, so the check
+is free.
+
+**The test is per group, not per detection.** At the detection level the
+signal does not separate: real people are also filmed in profile, and cutoffs
+that removed most degenerate frames also removed 8-14% of genuine ones. Those
+frames are harmless individually because tracking attaches them to a track
+containing better frames. Only a whole cluster of them, with no good frame
+anywhere, is not a person.
+
+`DEFAULT_MIN_GROUP_EYE_SPAN` is 0.15. At that value, on test_3.mp4, the
+phantom is the **only** group of 5+ detections removed; the costumed
+character (whose mask distorts the landmarks) and a legitimate
+profile-heavy cluster both survive. Raising it to 0.22 starts taking those
+too, which is why it is set low rather than in the middle of the gap.
+
+Rejected observations are reported as `unassigned`, not dropped. They were
+detected and simply could not be attributed to anyone; silently discarding
+them would misreport how much of the video the pipeline accounted for.
+`IdentityGrouper.unassigned` is now a property combining the up-front
+unreliable buffer with groups this filter rejected, since the second set only
+exists once clustering has run.

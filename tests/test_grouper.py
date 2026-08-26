@@ -1,12 +1,26 @@
 import numpy as np
 import pytest
 
-from app.faces.detector import BoundingBox, FaceDetection
+from app.faces.detector import BoundingBox, FaceDetection, FaceLandmarks
 from app.faces.grouper import (
     FaceObservation,
     IdentityGrouper,
     cosine_similarity,
+    eye_span_ratio,
 )
+
+
+def make_landmarks(face_size: int, eye_span: float) -> FaceLandmarks:
+    """Five landmarks whose eye separation is `eye_span` x the box width."""
+    centre = face_size / 2
+    half = face_size * eye_span / 2
+    return FaceLandmarks(
+        right_eye=(centre - half, face_size * 0.4),
+        left_eye=(centre + half, face_size * 0.4),
+        nose_tip=(centre, face_size * 0.55),
+        mouth_right=(centre - half * 0.8, face_size * 0.72),
+        mouth_left=(centre + half * 0.8, face_size * 0.72),
+    )
 
 
 def make_observation(
@@ -14,6 +28,7 @@ def make_observation(
     confidence: float = 0.9,
     face_size: int = 200,
     timestamp: float = 0.0,
+    eye_span: float | None = None,
 ) -> FaceObservation:
     """Builds a FaceObservation from a raw (not necessarily normalized) vector."""
     embedding = np.array(vector, dtype=np.float32)
@@ -22,7 +37,8 @@ def make_observation(
         embedding = embedding / norm
 
     box = BoundingBox(x_min=0, y_min=0, x_max=face_size, y_max=face_size)
-    detection = FaceDetection(box=box, confidence=confidence)
+    landmarks = None if eye_span is None else make_landmarks(face_size, eye_span)
+    detection = FaceDetection(box=box, confidence=confidence, landmarks=landmarks)
     face_crop = np.zeros((4, 4, 3), dtype=np.uint8)
     return FaceObservation(
         embedding=embedding,
@@ -258,3 +274,109 @@ def test_grouping_is_independent_of_arrival_order():
 
     for order in ([5, 3, 1, 4, 0, 2], [2, 0, 4, 1, 5, 3], list(reversed(range(len(vectors))))):
         assert signature(order) == baseline
+
+
+def test_consolidation_merges_groups_average_linkage_leaves_split():
+    """Tests that two clusters of one identity are folded together afterwards.
+
+    Average linkage asks whether a candidate resembles *every* member of a
+    cluster. One person filmed in two very different conditions -- on the
+    real footage, an actor with and without a costume mask -- forms two
+    tight clumps whose cross-pair mean sits below the similarity floor even
+    though both clumps plainly belong together. The consolidation pass
+    compares prototype to prototype, which recovers exactly that case.
+    """
+    grouper = IdentityGrouper(
+        similarity_threshold=0.5, margin_threshold=0.0, consolidation_threshold=0.5
+    )
+
+    # Two tight clumps whose members are far apart across the clumps, but
+    # whose centroids still point in a similar direction.
+    clump_a = [
+        make_observation([1.0, 0.30, 0.0], timestamp=0.0),
+        make_observation([1.0, 0.34, 0.0], timestamp=1.0),
+    ]
+    clump_b = [
+        make_observation([1.0, -0.30, 0.0], timestamp=2.0),
+        make_observation([1.0, -0.34, 0.0], timestamp=3.0),
+    ]
+    for observation in clump_a + clump_b:
+        grouper.add(observation)
+
+    assert len(grouper.groups) == 1
+    assert group_containing(grouper, clump_a[0]) is group_containing(grouper, clump_b[0])
+
+
+def test_consolidation_leaves_distinct_identities_apart():
+    """Tests that the consolidation pass does not fold unrelated people together."""
+    grouper = IdentityGrouper(
+        similarity_threshold=0.5, margin_threshold=0.0, consolidation_threshold=0.5
+    )
+
+    person_a = make_observation([1.0, 0.0, 0.0], timestamp=0.0)
+    person_b = make_observation([0.0, 1.0, 0.0], timestamp=1.0)
+    person_c = make_observation([0.0, 0.0, 1.0], timestamp=2.0)
+    for observation in (person_a, person_b, person_c):
+        grouper.add(observation)
+
+    assert len(grouper.groups) == 3
+
+
+def test_consolidation_threshold_is_validated():
+    with pytest.raises(ValueError):
+        IdentityGrouper(consolidation_threshold=1.5)
+
+
+def test_eye_span_ratio_measures_landmark_spread():
+    """Tests the geometry helper against a known eye separation."""
+    observation = make_observation([1.0, 0.0], face_size=200, eye_span=0.35)
+    assert eye_span_ratio(observation.detection) == pytest.approx(0.35, abs=1e-6)
+
+    without_landmarks = make_observation([1.0, 0.0])
+    assert eye_span_ratio(without_landmarks.detection) is None
+
+
+def test_group_of_degenerate_detections_is_rejected_as_non_face():
+    """Tests that a cluster whose landmarks collapsed is not reported as a person.
+
+    YuNet returns confident "faces" for backs of heads, hard profiles and
+    graphics. Those degenerate detections resemble each other -- their
+    landmarks fail the same way -- so they cluster into a large, stable
+    phantom identity. On the real 22-minute episode one such cluster held
+    185 detections and spanned the whole runtime.
+    """
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+
+    degenerate = [
+        make_observation([1.0, 0.0, 0.0], timestamp=float(i), eye_span=0.05)
+        for i in range(4)
+    ]
+    for observation in degenerate:
+        grouper.add(observation)
+
+    assert grouper.groups == []
+    # Rejected, not discarded: they were detected, just not attributable.
+    assert len(grouper.unassigned) == 4
+
+
+def test_group_with_normal_geometry_survives_the_non_face_filter():
+    """Tests that ordinary faces are unaffected by the non-face filter."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+
+    for i in range(4):
+        grouper.add(make_observation([1.0, 0.0, 0.0], timestamp=float(i), eye_span=0.35))
+
+    assert len(grouper.groups) == 1
+    assert grouper.groups[0].size == 4
+    assert grouper.unassigned == []
+
+
+def test_non_face_filter_abstains_without_landmarks():
+    """Tests that a detection with no landmarks is never rejected for geometry."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+
+    for i in range(3):
+        grouper.add(make_observation([1.0, 0.0, 0.0], timestamp=float(i)))
+
+    assert len(grouper.groups) == 1
+    assert grouper.unassigned == []

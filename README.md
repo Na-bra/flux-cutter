@@ -135,7 +135,7 @@ python -m app gallery assets/test-videos/test.mp4 --interval 1.0 --select-index 
 
 ### 6. Group detections into identities
 
-The group command runs the same sampling and detection pass, embeds each face with ArcFace, links detections into face tracks, and groups those tracks into per-identity clusters using nearest-centroid matching with a similarity floor and a margin over the runner-up group (to avoid forcing an ambiguous match). It saves one representative thumbnail per identified person:
+The group command runs the same sampling and detection pass, embeds each face with ArcFace, links detections into face tracks, and groups those tracks into per-identity clusters using agglomerative average-linkage clustering with a similarity floor, then runs a consolidation pass that folds together groups whose centroids agree (which is what catches one actor split across two clusters, e.g. in and out of costume). It saves one representative thumbnail per identified person:
 
 ```bash
 python -m app group assets/test-videos/test.mp4 --interval 0.25 --output-dir output/face-groups
@@ -155,12 +155,23 @@ These counts are from the current ArcFace embedder with agglomerative grouping, 
 
 Grouping errors on this footage are now overwhelmingly one-sided: the pipeline splits one person into several cards far more often than it merges two people into one. Most of the surplus cards are single-detection groups from genuinely hard frames — heavy motion blur, extreme profile, near-darkness — where the embedding is unreliable and correctly matches nothing. Reducing them is a crop-quality problem (gating blurry detections), not a threshold problem; lowering the floor to absorb them re-introduces real false merges.
 
+### Memory
+
+`extract_frames` streams: it yields one decoded frame at a time rather than returning a list, so memory is flat in the length of the video instead of scaling with it. A 22.6-minute 720p episode at a 1.0s interval peaks around 1.0 GB; the previous list-returning version peaked at 4.9 GB on the same run, and would have needed roughly 15 GB at a 0.25s interval.
+
+Two things follow for anyone calling it directly:
+
+- The result is a one-shot iterator with no length. Count as you go rather than calling `len()`, and wrap it in `list(...)` only when you genuinely need random access to a short video.
+- Decoding happens during iteration, so iterate **inside** the `with load_video(...)` block. Consuming it afterwards reads from a closed container.
+
 Grouping behavior is tunable:
 
 ```bash
 python -m app group assets/test-videos/test.mp4 \
 	--similarity-threshold 0.35 \
-	--margin-threshold 0.05 \
+	--margin-threshold 0.0 \
+	--consolidation-threshold 0.5 \
+	--min-group-eye-span 0.15 \
 	--min-confidence 0.7 \
 	--min-face-size 40
 ```

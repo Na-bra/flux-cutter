@@ -1,3 +1,5 @@
+from collections.abc import Iterator
+
 import av
 import numpy as np
 
@@ -9,18 +11,37 @@ class FrameExtractionError(Exception):
 def extract_frames(
     container: av.container.InputContainer,
     sample_interval: float = 1.0,
-) -> list[tuple[float, np.ndarray]]:
+) -> Iterator[tuple[float, np.ndarray]]:
     """
-    Extracts frames from a video at approximately regular time intervals.
+    Yields frames from a video at approximately regular time intervals.
+
+    This streams: exactly one decoded frame is held at a time, so memory is
+    flat in the length of the video. It used to return a list, which made
+    the peak footprint the whole sampled video at once -- roughly
+    width x height x 3 x (duration / sample_interval) bytes. On a 22-minute
+    720p episode that was ~4.9 GB at a 1.0s interval and ~15 GB at 0.25s,
+    so the denser sampling that identity grouping actually wants was the
+    sampling the machine could not afford.
+
+    Two consequences for callers, both of which bite quietly:
+
+    - The result can only be iterated once, and has no length. Callers that
+      need a count should tally as they go rather than reach for len().
+    - Decoding happens while iterating, not when this is called, so the
+      iteration must finish *inside* the `with load_video(...)` block that
+      owns the container. Consuming it after the container closes reads
+      from a closed file.
+
+    Argument validation stays eager -- bad arguments raise here, at the
+    call, rather than being deferred to the first item.
 
     Args:
         container: The PyAV container for the opened video file.
-        sample_interval: The approximate time in seconds between frames to extract.
+        sample_interval: The approximate time in seconds between frames.
 
-    Returns:
-        A list of (timestamp, frame) tuples, where:
-        - timestamp is in seconds
-        - frame is a NumPy array in RGB format
+    Yields:
+        (timestamp, frame) tuples, where timestamp is in seconds and frame
+        is a NumPy array in RGB format.
 
     Raises:
         ValueError: If `sample_interval` is not a positive number.
@@ -36,7 +57,15 @@ def extract_frames(
     if video_stream is None:
         raise FrameExtractionError("The container does not contain a video stream.")
 
-    frames = []
+    return _iter_sampled_frames(container, video_stream, sample_interval)
+
+
+def _iter_sampled_frames(
+    container: av.container.InputContainer,
+    video_stream,
+    sample_interval: float,
+) -> Iterator[tuple[float, np.ndarray]]:
+    """The decode loop itself, split out so validation above can stay eager."""
     next_sample_time = 0.0
 
     container.seek(0)
@@ -44,8 +73,5 @@ def extract_frames(
         timestamp = float(frame.time)
 
         if timestamp >= next_sample_time:
-            image = frame.to_ndarray(format="rgb24")
-            frames.append((timestamp, image))
+            yield timestamp, frame.to_ndarray(format="rgb24")
             next_sample_time += sample_interval
-
-    return frames

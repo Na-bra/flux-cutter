@@ -1,5 +1,7 @@
 import sys
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -27,9 +29,6 @@ def run_face_detection(container, output_dir: Path, sample_interval: float):
     """Runs detection and saves annotated frames."""
     print(f"Extracting frames at a {sample_interval}-second interval...")
     frames = extract_frames(container, sample_interval=sample_interval)
-    if not frames:
-        print("No frames extracted.")
-        return
 
     detector = FaceDetector()
     total_faces = 0
@@ -60,6 +59,10 @@ def run_face_detection(container, output_dir: Path, sample_interval: float):
     end_time = time.monotonic()
     detector.close()
 
+    if processed_frames == 0:
+        print("No frames extracted.")
+        return
+
     duration = end_time - start_time
     fps = processed_frames / duration if duration > 0 else 0
 
@@ -83,9 +86,6 @@ def run_face_gallery(
     """Build and save a face gallery montage from sampled video frames."""
     print(f"Sampling frames at a {sample_interval}-second interval...")
     frames = extract_frames(container, sample_interval=sample_interval)
-    if not frames:
-        print("No frames extracted.")
-        return
 
     detector = FaceDetector(confidence_threshold=confidence_threshold)
     detection_records: list[tuple[float, np.ndarray, list]] = []
@@ -96,10 +96,17 @@ def run_face_gallery(
 
     start_time = time.monotonic()
 
+    frame_count = 0
     for timestamp, frame_data in frames:
+        frame_count += 1
         detections = detector.detect(frame_data)
         total_detections += len(detections)
         detection_records.append((timestamp, frame_data, detections))
+
+    if frame_count == 0:
+        detector.close()
+        print("No frames extracted.")
+        return
 
     gallery = build_face_gallery(
         detection_records,
@@ -113,10 +120,10 @@ def run_face_gallery(
     detector.close()
 
     duration = end_time - start_time
-    fps = len(frames) / duration if duration > 0 else 0
+    fps = frame_count / duration if duration > 0 else 0
 
     print("\n--- Gallery Report ---")
-    print(f"Frames processed: {len(frames)}")
+    print(f"Frames processed: {frame_count}")
     print(f"Detections received: {total_detections}")
     print(f"Gallery candidates: {gallery.candidate_count}")
     print(f"Gallery items: {len(gallery.items)}")
@@ -130,15 +137,30 @@ def run_face_gallery(
         print(format_selected_item(selected_item, index=select_index))
 
 
+@dataclass(frozen=True)
+class _PipelineResult:
+    """What one identity-grouping pass produced, including stream tallies."""
+
+    grouper: IdentityGrouper
+    total_detections: int
+    track_count: int
+    embedding_time: float
+    grouping_time: float
+    frame_count: int
+    last_timestamp: float
+
+
 def _run_identity_pipeline(
-    frames: list[tuple[float, np.ndarray]],
+    frames: Iterator[tuple[float, np.ndarray]],
     confidence_threshold: float,
     padding_ratio: float,
     similarity_threshold: float,
     margin_threshold: float,
+    consolidation_threshold: float,
     min_confidence: float,
     min_face_size: int,
-) -> tuple[IdentityGrouper, int, int, float, float]:
+    min_group_eye_span: float,
+) -> "_PipelineResult":
     """Runs detect -> crop -> embed -> track -> group over sampled frames.
 
     Shared by the `group` and `timestamps` commands so both drive the same
@@ -148,8 +170,10 @@ def _run_identity_pipeline(
     identity matching happens, so the grouper compares track-averaged
     embeddings rather than individual noisy frames.
 
-    Returns:
-        (grouper, total_detections, track_count, embedding_time, grouping_time)
+    `frames` is consumed once as it streams, so this also tallies the
+    frame count and the last timestamp seen: callers used to read those
+    off a materialized list, which is exactly the thing that made memory
+    scale with video length.
     """
     detector = FaceDetector(confidence_threshold=confidence_threshold)
     embedder = FaceEmbedder()
@@ -157,16 +181,22 @@ def _run_identity_pipeline(
     grouper = IdentityGrouper(
         similarity_threshold=similarity_threshold,
         margin_threshold=margin_threshold,
+        consolidation_threshold=consolidation_threshold,
         min_confidence=min_confidence,
         min_face_size=min_face_size,
+        min_group_eye_span=min_group_eye_span,
     )
 
     total_detections = 0
     embedding_time = 0.0
     grouping_time = 0.0
+    frame_count = 0
+    last_timestamp = 0.0
 
     try:
         for frame_index, (timestamp, frame_data) in enumerate(frames):
+            frame_count += 1
+            last_timestamp = timestamp
             detections = detector.detect(frame_data)
             total_detections += len(detections)
 
@@ -207,7 +237,15 @@ def _run_identity_pipeline(
         grouper.add_track(track)
     grouping_time += time.monotonic() - group_start
 
-    return grouper, total_detections, len(tracks), embedding_time, grouping_time
+    return _PipelineResult(
+        grouper=grouper,
+        total_detections=total_detections,
+        track_count=len(tracks),
+        embedding_time=embedding_time,
+        grouping_time=grouping_time,
+        frame_count=frame_count,
+        last_timestamp=last_timestamp,
+    )
 
 
 def run_face_grouping(
@@ -218,51 +256,56 @@ def run_face_grouping(
     padding_ratio: float,
     similarity_threshold: float,
     margin_threshold: float,
+    consolidation_threshold: float,
     min_confidence: float,
     min_face_size: int,
+    min_group_eye_span: float,
     select_index: int | None,
 ):
     """Detect, embed, and group faces into per-identity clusters."""
     print(f"Sampling frames at a {sample_interval}-second interval...")
     frames = extract_frames(container, sample_interval=sample_interval)
-    if not frames:
-        print("No frames extracted.")
-        return
 
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving identity gallery output to: {output_dir.resolve()}")
 
     start_time = time.monotonic()
-    grouper, total_detections, track_count, embedding_time, grouping_time = _run_identity_pipeline(
+    result = _run_identity_pipeline(
         frames,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
         similarity_threshold=similarity_threshold,
         margin_threshold=margin_threshold,
+        consolidation_threshold=consolidation_threshold,
         min_confidence=min_confidence,
         min_face_size=min_face_size,
+        min_group_eye_span=min_group_eye_span,
     )
 
+    if result.frame_count == 0:
+        print("No frames extracted.")
+        return
+
     identity_gallery = build_identity_gallery(
-        grouper.groups,
-        unassigned_count=len(grouper.unassigned),
+        result.grouper.groups,
+        unassigned_count=len(result.grouper.unassigned),
         padding_ratio=padding_ratio,
     )
     montage_path = output_dir / "identity-gallery.jpg"
     save_identity_gallery_montage(identity_gallery.cards, montage_path)
 
     duration = time.monotonic() - start_time
-    fps = len(frames) / duration if duration > 0 else 0
+    fps = result.frame_count / duration if duration > 0 else 0
 
     print("\n--- Grouping Report ---")
-    print(f"Frames processed: {len(frames)}")
-    print(f"Detections received: {total_detections}")
-    print(f"Face tracks built: {track_count}")
+    print(f"Frames processed: {result.frame_count}")
+    print(f"Detections received: {result.total_detections}")
+    print(f"Face tracks built: {result.track_count}")
     print(f"Identity groups found: {len(identity_gallery.cards)}")
     print(f"Observations grouped: {identity_gallery.total_observations - identity_gallery.unassigned_count}")
     print(f"Unassigned detections: {identity_gallery.unassigned_count}")
-    print(f"Embedding time: {embedding_time:.2f} seconds")
-    print(f"Grouping time: {grouping_time:.2f} seconds")
+    print(f"Embedding time: {result.embedding_time:.2f} seconds")
+    print(f"Grouping time: {result.grouping_time:.2f} seconds")
     print(f"Total processing time: {duration:.2f} seconds")
     print(f"Processing speed: {fps:.2f} frames/sec")
     print(f"Identity gallery montage: {montage_path}")
@@ -280,8 +323,10 @@ def run_appearance_timestamps(
     padding_ratio: float,
     similarity_threshold: float,
     margin_threshold: float,
+    consolidation_threshold: float,
     min_confidence: float,
     min_face_size: int,
+    min_group_eye_span: float,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
     select_index: int,
@@ -289,29 +334,34 @@ def run_appearance_timestamps(
     """Group faces, then compute appearance intervals for one selected person."""
     print(f"Sampling frames at a {sample_interval}-second interval...")
     frames = extract_frames(container, sample_interval=sample_interval)
-    if not frames:
-        print("No frames extracted.")
-        return
-
     video_duration = get_video_info(container)["duration"]
-    if video_duration is None:
-        video_duration = frames[-1][0]
-        print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
 
     start_time = time.monotonic()
-    grouper, total_detections, track_count, embedding_time, grouping_time = _run_identity_pipeline(
+    result = _run_identity_pipeline(
         frames,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
         similarity_threshold=similarity_threshold,
         margin_threshold=margin_threshold,
+        consolidation_threshold=consolidation_threshold,
         min_confidence=min_confidence,
         min_face_size=min_face_size,
+        min_group_eye_span=min_group_eye_span,
     )
 
+    if result.frame_count == 0:
+        print("No frames extracted.")
+        return
+
+    # Resolved only now: the fallback needs the last sampled timestamp, and
+    # with streaming that is not known until the frames have been consumed.
+    if video_duration is None:
+        video_duration = result.last_timestamp
+        print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
+
     identity_gallery = build_identity_gallery(
-        grouper.groups,
-        unassigned_count=len(grouper.unassigned),
+        result.grouper.groups,
+        unassigned_count=len(result.grouper.unassigned),
         padding_ratio=padding_ratio,
     )
 
@@ -348,10 +398,10 @@ def run_appearance_timestamps(
         print(f"\nAppearance {index}:")
         print(f"  Start: {format_timestamp(interval.start_time)}  ({interval.start_time:.2f}s)")
         print(f"  End:   {format_timestamp(interval.end_time)}  ({interval.end_time:.2f}s)")
-    print(f"\nTotal detections processed: {total_detections}")
-    print(f"Face tracks built: {track_count}")
-    print(f"Embedding time: {embedding_time:.2f} seconds")
-    print(f"Grouping time: {grouping_time:.2f} seconds")
+    print(f"\nTotal detections processed: {result.total_detections}")
+    print(f"Face tracks built: {result.track_count}")
+    print(f"Embedding time: {result.embedding_time:.2f} seconds")
+    print(f"Grouping time: {result.grouping_time:.2f} seconds")
     print(f"Timestamp-generation time: {timeline_duration:.4f} seconds")
     print(f"Total processing time: {total_duration:.2f} seconds")
     print("--- End Report ---\n")

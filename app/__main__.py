@@ -6,6 +6,8 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.faces.grouper import (
+    DEFAULT_CONSOLIDATION_THRESHOLD,
+    DEFAULT_MIN_GROUP_EYE_SPAN,
     DEFAULT_MARGIN_THRESHOLD,
     DEFAULT_MIN_CONFIDENCE,
     DEFAULT_MIN_FACE_SIZE,
@@ -146,6 +148,13 @@ def main():
         help="Minimum similarity gap over the second-best group before assigning a match.",
     )
     group_parser.add_argument(
+        "--consolidation-threshold",
+        type=float,
+        default=DEFAULT_CONSOLIDATION_THRESHOLD,
+        help="Centroid similarity at which two whole groups are folded together after "
+        "clustering. Set above 1.0 to disable the pass.",
+    )
+    group_parser.add_argument(
         "--min-confidence",
         type=float,
         default=DEFAULT_MIN_CONFIDENCE,
@@ -156,6 +165,13 @@ def main():
         type=int,
         default=DEFAULT_MIN_FACE_SIZE,
         help="Minimum face box side length (pixels) for a face to be used in grouping.",
+    )
+    group_parser.add_argument(
+        "--min-group-eye-span",
+        type=float,
+        default=DEFAULT_MIN_GROUP_EYE_SPAN,
+        help="Median eye separation (as a fraction of face-box width) below which a whole "
+        "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
     )
     group_parser.add_argument(
         "--select-index",
@@ -200,6 +216,13 @@ def main():
         help="Minimum similarity gap over the second-best group before assigning a match.",
     )
     timestamps_parser.add_argument(
+        "--consolidation-threshold",
+        type=float,
+        default=DEFAULT_CONSOLIDATION_THRESHOLD,
+        help="Centroid similarity at which two whole groups are folded together after "
+        "clustering. Set above 1.0 to disable the pass.",
+    )
+    timestamps_parser.add_argument(
         "--min-confidence",
         type=float,
         default=DEFAULT_MIN_CONFIDENCE,
@@ -225,6 +248,13 @@ def main():
         help="Seconds of padding added before/after each appearance interval. Defaults to 0.5x --interval.",
     )
     timestamps_parser.add_argument(
+        "--min-group-eye-span",
+        type=float,
+        default=DEFAULT_MIN_GROUP_EYE_SPAN,
+        help="Median eye separation (as a fraction of face-box width) below which a whole "
+        "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
+    )
+    timestamps_parser.add_argument(
         "--select-index",
         type=int,
         required=True,
@@ -239,8 +269,8 @@ def main():
                 info = get_video_info(container)
                 print(info)
             elif args.command == "extract":
-                frames = extract_frames(container, sample_interval=args.interval)
-                print(f"Extracted {len(frames)} frames.")
+                frame_count = sum(1 for _ in extract_frames(container, sample_interval=args.interval))
+                print(f"Extracted {frame_count} frames.")
             elif args.command == "detect":
                 run_face_detection(
                     container,
@@ -266,8 +296,10 @@ def main():
                     padding_ratio=args.padding,
                     similarity_threshold=args.similarity_threshold,
                     margin_threshold=args.margin_threshold,
+                    consolidation_threshold=args.consolidation_threshold,
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
+                    min_group_eye_span=args.min_group_eye_span,
                     select_index=args.select_index,
                 )
             elif args.command == "timestamps":
@@ -278,8 +310,10 @@ def main():
                     padding_ratio=args.padding,
                     similarity_threshold=args.similarity_threshold,
                     margin_threshold=args.margin_threshold,
+                    consolidation_threshold=args.consolidation_threshold,
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
+                    min_group_eye_span=args.min_group_eye_span,
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,
                     select_index=args.select_index,

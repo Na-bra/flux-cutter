@@ -49,13 +49,14 @@ def embedder():
 @pytest.fixture(scope="module")
 def sampled_faces(detector):
     """Real (timestamp, frame, detection) triples sampled across the test video."""
-    with load_video(VIDEO_PATH) as container:
-        frames = extract_frames(container, sample_interval=1.0)
-
     faces = []
-    for timestamp, frame in frames:
-        for detection in detector.detect(frame):
-            faces.append((timestamp, frame, detection))
+    # extract_frames streams, so it must be consumed inside the `with`:
+    # the container is closed on exit and a lazy iterator would then be
+    # reading from a closed file.
+    with load_video(VIDEO_PATH) as container:
+        for timestamp, frame in extract_frames(container, sample_interval=1.0):
+            for detection in detector.detect(frame):
+                faces.append((timestamp, frame, detection))
 
     if len(faces) < 2:
         pytest.skip("Not enough real detections in the sample video to validate the embedder.")

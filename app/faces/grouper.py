@@ -23,15 +23,69 @@ from app.faces.detector import FaceDetection
 # already treats a false merge as worse than a missed match. See the
 # stage-0.2 accuracy notes for the full experiment.
 DEFAULT_SIMILARITY_THRESHOLD = 0.35
-# Required gap between the best and second-best group match before a
-# detection is assigned rather than treated as a new/uncertain identity.
-# Re-validated against ArcFace: grouping is unchanged anywhere in
-# 0.00-0.08, so 0.05 keeps a comfortable margin inside that flat region.
-DEFAULT_MARGIN_THRESHOLD = 0.05
+# Required gap between a merge and the best competing alternative before
+# the merge is allowed. Disabled by default (0.0) as of the first
+# full-length test, and that default is the interesting part.
+#
+# The rule looked free on the 23s clip: grouping there was identical
+# anywhere in 0.00-0.08, so 0.05 seemed like a safe margin bought for
+# nothing. On a 22-minute episode with 26 recurring characters it turned
+# out to be the single largest source of fragmentation. 54% of the small
+# leftover groups already scored >= the similarity floor against a main
+# character and were refused anyway: with that many similar-looking young
+# actors on screen, a fragment is routinely near-tied between two of them,
+# which is exactly the condition this rule vetoes.
+#
+# Measured on test_3.mp4 at 1.0s sampling (margin 0.05 -> 0.00):
+#   identity groups        412  -> 221
+#   groups of <= 2 dets    294  -> 138
+#   share of detections in
+#   main-character groups  64.5% -> 78.8%
+# and it is not a precision-for-recall trade: the weakest 5% of members in
+# the worst group moved from 0.565 to 0.475 similarity-to-centroid, still
+# far above the ~0.08 typical of genuinely different people.
+#
+# The rule is kept, not deleted, because it guards a real failure mode on
+# footage with few faces and heavy ambiguity -- raise it per-run via
+# --margin-threshold if a specific video shows false merges.
+DEFAULT_MARGIN_THRESHOLD = 0.0
+# Centroid agreement required to fold two whole groups together in the
+# consolidation pass that follows clustering. See IdentityGrouper._consolidate
+# for why average linkage cannot catch these on its own.
+#
+# Chosen from the gap in the data on test_3.mp4: among the 30 largest groups,
+# the pairs that were visibly the same actor scored 0.549, 0.550 and 0.626
+# centroid similarity, and the next-closest pair scored 0.280. Anything in
+# 0.30-0.54 separates those cleanly; 0.50 sits inside that gap on the
+# conservative side.
+DEFAULT_CONSOLIDATION_THRESHOLD = 0.50
 DEFAULT_MIN_CONFIDENCE = 0.7
 # Shorter side of the face box, in pixels, below which an embedding is
 # considered too unreliable to trust for identity matching.
 DEFAULT_MIN_FACE_SIZE = 40
+# Median eye separation, as a fraction of face-box width, below which a whole
+# GROUP is judged not to be a person and its observations are returned as
+# unassigned instead of becoming a person card.
+#
+# YuNet reports "faces" confidently for backs of heads, extreme profiles and
+# graphics (on test_3.mp4, the show's spinning logo), and nothing downstream
+# asks whether a detection is really a face. Those degenerate detections then
+# resemble *each other* -- their landmarks collapse the same way -- so they
+# cluster into a large, stable phantom identity. On test_3.mp4 that phantom
+# held 185 detections and spanned the whole episode.
+#
+# The test is applied per group rather than per detection on purpose. At the
+# detection level the signal does not separate: real people are also filmed in
+# profile, and a cutoff that removed most degenerate frames also discarded
+# 8-14% of genuine ones. Those frames are not a problem individually because
+# tracking attaches them to a track that has better frames. It is only a whole
+# *cluster* of them, with no good frames anywhere, that is not a person.
+#
+# 0.15 is calibrated on test_3.mp4: real identity groups have a median eye span
+# of 0.31-0.43, the phantom group 0.14. At this value the phantom is the only
+# group of 5+ detections removed -- the costumed character (whose mask distorts
+# the landmarks) and a legitimate profile-heavy cluster both survive.
+DEFAULT_MIN_GROUP_EYE_SPAN = 0.15
 
 
 def cosine_similarity(embedding_a: np.ndarray, embedding_b: np.ndarray) -> float:
@@ -90,6 +144,27 @@ def _is_valid_embedding(embedding) -> bool:
     )
 
 
+def eye_span_ratio(detection: FaceDetection) -> float | None:
+    """Eye separation as a fraction of the face box width, or None if unmeasurable.
+
+    On a face turned toward the camera the two eyes sit roughly a third of the
+    box apart. On a back of a head, a hard profile, or a graphic that merely
+    tripped the detector, YuNet still emits five points but they collapse
+    together, so this ratio falls away. It is the cheapest available check on
+    whether a "face" is really a face -- the landmarks are already computed.
+    """
+    if detection.landmarks is None:
+        return None
+
+    width = detection.box.x_max - detection.box.x_min
+    if width <= 0:
+        return None
+
+    left = np.asarray(detection.landmarks.left_eye, dtype=np.float64)
+    right = np.asarray(detection.landmarks.right_eye, dtype=np.float64)
+    return float(np.linalg.norm(left - right) / width)
+
+
 def _observation_quality(observation: FaceObservation) -> float:
     """A simple confidence-weighted-by-area score used to pick representative images."""
     box = observation.detection.box
@@ -129,22 +204,40 @@ class IdentityGrouper:
         self,
         similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
         margin_threshold: float = DEFAULT_MARGIN_THRESHOLD,
+        consolidation_threshold: float = DEFAULT_CONSOLIDATION_THRESHOLD,
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         min_face_size: int = DEFAULT_MIN_FACE_SIZE,
+        min_group_eye_span: float = DEFAULT_MIN_GROUP_EYE_SPAN,
     ):
         if not -1.0 <= similarity_threshold <= 1.0:
             raise ValueError("similarity_threshold must be within [-1.0, 1.0]")
         if margin_threshold < 0.0:
             raise ValueError("margin_threshold must be non-negative")
+        if not -1.0 <= consolidation_threshold <= 1.0:
+            raise ValueError("consolidation_threshold must be within [-1.0, 1.0]")
 
         self.similarity_threshold = similarity_threshold
         self.margin_threshold = margin_threshold
+        self.consolidation_threshold = consolidation_threshold
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
+        self.min_group_eye_span = min_group_eye_span
 
-        self.unassigned: list[FaceObservation] = []
+        self._unreliable: list[FaceObservation] = []
+        self._rejected: list[FaceObservation] = []
         self._units: list[list[FaceObservation]] = []
         self._groups: list[FaceIdentityGroup] | None = None
+
+    @property
+    def unassigned(self) -> list[FaceObservation]:
+        """Observations that produced no identity.
+
+        Two sources: detections rejected up front as unreliable, and whole
+        groups the non-face filter rejected. The second only exists once
+        clustering has run, so this resolves grouping first.
+        """
+        groups = self.groups  # noqa: F841 - ensures _rejected is populated
+        return self._unreliable + self._rejected
 
     @property
     def groups(self) -> list[FaceIdentityGroup]:
@@ -187,7 +280,7 @@ class IdentityGrouper:
             until clustering runs.
         """
         if not self._is_reliable(observation):
-            self.unassigned.append(observation)
+            self._unreliable.append(observation)
             return None
 
         return self._add_unit([observation])
@@ -208,7 +301,7 @@ class IdentityGrouper:
         """
         reliable = [obs for obs in track.observations if self._is_reliable(obs)]
         if not reliable:
-            self.unassigned.extend(track.observations)
+            self._unreliable.extend(track.observations)
             return None
 
         return self._add_unit(reliable)
@@ -256,7 +349,9 @@ class IdentityGrouper:
                 break
 
             first, second, best_similarity = candidate
-            if not self._merge_is_unambiguous(similarity, first, second, best_similarity):
+            if not self._merge_is_unambiguous(
+                similarity, first, second, best_similarity, self.similarity_threshold
+            ):
                 blocked.add((min(first, second), max(first, second)))
                 continue
 
@@ -279,7 +374,7 @@ class IdentityGrouper:
             # A merged cluster is a different cluster: give its pairs a fresh chance.
             blocked = {pair for pair in blocked if first not in pair and second not in pair}
 
-        return self._build_groups(members)
+        return self._reject_non_face_groups(self._consolidate(self._build_groups(members)))
 
     def _best_mergeable_pair(
         self, similarity: np.ndarray, blocked: set[tuple[int, int]]
@@ -299,7 +394,12 @@ class IdentityGrouper:
         return int(first), int(second), best_similarity
 
     def _merge_is_unambiguous(
-        self, similarity: np.ndarray, first: int, second: int, best_similarity: float
+        self,
+        similarity: np.ndarray,
+        first: int,
+        second: int,
+        best_similarity: float,
+        floor: float,
     ) -> bool:
         """Whether this merge is free of a genuinely competing alternative.
 
@@ -334,7 +434,7 @@ class IdentityGrouper:
                 # Near-tie. Ambiguous only if the competitor is a different
                 # identity rather than another piece of the same one.
                 rival = float(similarity[partner, other])
-                if not np.isfinite(rival) or rival < self.similarity_threshold:
+                if not np.isfinite(rival) or rival < floor:
                     return False
 
         return True
@@ -355,6 +455,139 @@ class IdentityGrouper:
         for position, group in enumerate(groups, start=1):
             group.group_id = position
         return groups
+
+    def _consolidate(self, groups: list[FaceIdentityGroup]) -> list[FaceIdentityGroup]:
+        """Folds together whole groups whose centroids agree, after clustering.
+
+        Average linkage asks whether a candidate resembles *every* frame of a
+        cluster, which is the right question while clusters are small and the
+        wrong one once they are large and varied. One actor across a 22-minute
+        episode is not a blob in embedding space: frontal frames, profiles and
+        -- on this footage literally -- the same character wearing a superhero
+        mask occupy separate regions. The mean over all cross-pairs is dragged
+        below the similarity floor by that spread even when both halves plainly
+        belong to one person.
+
+        Measured on test_3.mp4, the three big-group pairs that were visibly the
+        same actor scored 0.549, 0.550 and 0.626 centroid similarity but only
+        0.245, 0.275 and 0.315 average linkage -- all three below the 0.35 floor,
+        so clustering left them as separate people. Those are the "duplicates"
+        that leak into the montage.
+
+        Comparing prototype to prototype instead recovers them. It is run as a
+        second phase rather than as the linkage rule itself because centroid
+        linkage applied from the start is much looser while clusters are still
+        one or two frames wide, where a single noisy embedding *is* the
+        prototype. Clustering conservatively first and consolidating afterwards
+        gets the benefit only where there is enough evidence to support it.
+
+        Merging is greedy on the globally best pair and repeats until nothing
+        clears the threshold, so like the clustering phase the result does not
+        depend on group order.
+        """
+        if self.consolidation_threshold > 1.0 or len(groups) < 2:
+            return groups
+
+        sums = np.stack(
+            [
+                np.stack([obs.embedding for obs in group.observations]).astype(np.float64).sum(axis=0)
+                for group in groups
+            ]
+        )
+        members: list[list[int] | None] = [[i] for i in range(len(groups))]
+        alive = np.ones(len(groups), dtype=bool)
+
+        def centroid_row(index: int) -> np.ndarray:
+            """Centroid similarity of one group against every live group."""
+            centre = sums[index] / np.linalg.norm(sums[index])
+            live = np.where(alive)[0]
+            row = np.full(len(groups), -np.inf)
+            norms = np.linalg.norm(sums[live], axis=1, keepdims=True)
+            row[live] = ((sums[live] / norms) @ centre)
+            row[index] = -np.inf
+            return row
+
+        similarity = np.stack([centroid_row(i) for i in range(len(groups))])
+        # Pairs refused as ambiguous, so a blocked pair is not retried forever.
+        blocked: set[tuple[int, int]] = set()
+
+        while True:
+            workspace = similarity.copy()
+            for blocked_first, blocked_second in blocked:
+                workspace[blocked_first, blocked_second] = -np.inf
+                workspace[blocked_second, blocked_first] = -np.inf
+
+            first, second = np.unravel_index(int(np.argmax(workspace)), workspace.shape)
+            best = float(workspace[first, second])
+            if not np.isfinite(best) or best < self.consolidation_threshold:
+                break
+
+            # The margin rule applies here too. Without it, consolidation would
+            # quietly re-merge the very pairs clustering refused as a coin flip
+            # between two identities, which is the opposite of what it is for.
+            if not self._merge_is_unambiguous(
+                similarity, int(first), int(second), best, self.consolidation_threshold
+            ):
+                blocked.add((min(first, second), max(first, second)))
+                continue
+
+            sums[first] = sums[first] + sums[second]
+            members[first] = members[first] + members[second]
+            members[second] = None
+            alive[second] = False
+            similarity[second, :] = -np.inf
+            similarity[:, second] = -np.inf
+
+            row = centroid_row(int(first))
+            similarity[first, :] = row
+            similarity[:, first] = row
+            # A merged group is a different group: give its pairs a fresh chance.
+            blocked = {pair for pair in blocked if first not in pair and second not in pair}
+
+        merged: list[FaceIdentityGroup] = []
+        for member_groups in members:
+            if member_groups is None:
+                continue
+            observations = [obs for i in member_groups for obs in groups[i].observations]
+            group = FaceIdentityGroup(group_id=0, observations=observations)
+            self._recompute_group(group)
+            merged.append(group)
+
+        merged.sort(key=lambda g: (-g.size, g.observations[0].source_timestamp))
+        for position, group in enumerate(merged, start=1):
+            group.group_id = position
+        return merged
+
+    def _reject_non_face_groups(
+        self, groups: list[FaceIdentityGroup]
+    ) -> list[FaceIdentityGroup]:
+        """Drops clusters whose landmark geometry says they are not a person.
+
+        See DEFAULT_MIN_GROUP_EYE_SPAN for why this is judged per group rather
+        than per detection. Rejected observations are reported as unassigned
+        rather than discarded: they were detected, they just could not be
+        attributed to anyone, and silently losing them would misreport how much
+        of the video the pipeline actually accounted for.
+        """
+        self._rejected = []
+        if self.min_group_eye_span <= 0.0:
+            return groups
+
+        kept: list[FaceIdentityGroup] = []
+        for group in groups:
+            spans = [
+                span
+                for span in (eye_span_ratio(obs.detection) for obs in group.observations)
+                if span is not None
+            ]
+            if spans and float(np.median(spans)) < self.min_group_eye_span:
+                self._rejected.extend(group.observations)
+                continue
+            kept.append(group)
+
+        for position, group in enumerate(kept, start=1):
+            group.group_id = position
+        return kept
 
     def _recompute_group(self, group: FaceIdentityGroup) -> None:
         """Refreshes a group's centroid and representative from its members.
