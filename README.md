@@ -183,6 +183,33 @@ python -m app group assets/test-videos/test.mp4 \
 
 See [Instructions.md](Instructions.md#7-stage-02-accuracy-notes-identity-grouping) for how these defaults were chosen against the real test footage.
 
+### 8. Export a person's reel
+
+Once you know which person card you want, `export` cuts every one of their appearances out of the source and joins them into a single file:
+
+```bash
+python -m app export assets/test-videos/test.mp4 --select-index 0 --output output/reel.mp4
+```
+
+`--select-index` uses the same numbering as the `group` montage. On Apple silicon, add `--encoder h264_videotoolbox --quality 55` — it runs roughly 3.6x faster than the portable `libx264` default and writes a smaller file.
+
+**Segments are re-encoded, not stream-copied.** This is deliberate and not an oversight. A stream copy can only begin at a keyframe, and keyframe spacing on real footage is coarse: on the 22-minute test video keyframes sit a median 2.67s apart (up to 7.84s) while the median appearance is 3.0s long, so a copied cut would routinely open several seconds early — on somebody else's face. The 23-second test clip is nearly all-intra (keyframes 0.03s apart) and hides this completely, so anything validated only there will look perfect and fail on real video. Joining the finished segments *is* a stream copy, safely, because they were all just written with identical codec parameters.
+
+The cut list is not the appearance list. `timestamps` answers "when was this person on screen", which is a detection question; a watchable reel is an editorial one, and they disagree. On the 22-minute footage the lead's appearances come back as 173 intervals with a median duration of 3.0s. Cut literally that is a strobe, so `merge_for_export` widens each interval, bridges gaps too short to cut across, and grows anything still under a minimum length:
+
+| `--bridge-gap` / `--min-segment` | segments | total | median |
+| --- | --- | --- | --- |
+| raw appearance intervals | 153 | 517.9s | 3.00s |
+| 1.5 / 2.0 (default) | 97 | 652.9s | 4.51s |
+| 2.0 / 3.0 | 77 | 704.3s | 7.51s |
+| 3.0 / 3.0 | 52 | 757.8s | 10.51s |
+
+More bridging means fewer, longer cuts but more footage where the person is briefly absent. `--export-padding` adds headroom on each side, on top of whatever padding the appearance intervals already carry.
+
+A real run on the 22-minute episode: 1057 detections for the lead, 173 appearance intervals (527.0s on screen), 107 segments cut (662.2s), encoded in 180s at 3.67x realtime with `h264_videotoolbox`, peak memory 1.24 GB. The wall-clock cost is dominated by the detect/embed pass (~7 minutes), not by the cutting (~3 minutes).
+
+Clip export shells out to `ffmpeg`, which must be on PATH (`brew install ffmpeg`). This is the one place the project depends on an external binary rather than a Python package.
+
 ### 7. Compute appearance timestamps for one person
 
 Once you know which person card you want (from the `group` command's output or montage), the `timestamps` command runs the same grouping pass and converts that one person's detections into appearance intervals — contiguous spans of time they're on screen, gap-split, padded, and clamped to the video's duration:

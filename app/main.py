@@ -20,6 +20,7 @@ from app.ui.gallery import (
     save_gallery_montage,
     save_identity_gallery_montage,
 )
+from app.video.export import ExportError, export_segments, merge_for_export
 from app.video.frames import extract_frames
 from app.video.loader import get_video_info
 from app.video.timeline import build_appearance_intervals, format_timestamp
@@ -447,4 +448,133 @@ def run_appearance_timestamps(
     print(f"Grouping time: {result.grouping_time:.2f} seconds")
     print(f"Timestamp-generation time: {timeline_duration:.4f} seconds")
     print(f"Total processing time: {total_duration:.2f} seconds")
+    print("--- End Report ---\n")
+
+
+def run_export(
+    container,
+    video_path: Path,
+    output_path: Path,
+    sample_interval: float,
+    confidence_threshold: float,
+    padding_ratio: float,
+    similarity_threshold: float,
+    margin_threshold: float,
+    consolidation_threshold: float,
+    min_confidence: float,
+    min_face_size: int,
+    min_group_eye_span: float,
+    min_detections: int | None,
+    gap_tolerance_seconds: float | None,
+    appearance_padding_seconds: float | None,
+    bridge_gap_seconds: float | None,
+    min_segment_seconds: float | None,
+    export_padding_seconds: float | None,
+    video_encoder: str,
+    audio_encoder: str,
+    quality: int,
+    include_audio: bool,
+    select_index: int,
+):
+    """Groups faces, then cuts one person's appearances into a single reel."""
+    print(f"Sampling frames at a {sample_interval}-second interval...")
+    frames = extract_frames(container, sample_interval=sample_interval)
+    video_duration = get_video_info(container)["duration"]
+    resolved_min_detections = _resolve_min_detections(
+        min_detections, video_duration, sample_interval
+    )
+
+    start_time = time.monotonic()
+    result = _run_identity_pipeline(
+        frames,
+        confidence_threshold=confidence_threshold,
+        padding_ratio=padding_ratio,
+        similarity_threshold=similarity_threshold,
+        margin_threshold=margin_threshold,
+        consolidation_threshold=consolidation_threshold,
+        min_confidence=min_confidence,
+        min_face_size=min_face_size,
+        min_group_eye_span=min_group_eye_span,
+        min_detections=resolved_min_detections,
+    )
+
+    if result.frame_count == 0:
+        print("No frames extracted.")
+        return
+
+    if video_duration is None:
+        video_duration = result.last_timestamp
+        print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
+
+    identity_gallery = build_identity_gallery(
+        result.grouper.groups,
+        unassigned_count=len(result.grouper.unassigned),
+        padding_ratio=padding_ratio,
+    )
+
+    if not identity_gallery.groups:
+        print("No identity groups found; nothing to export.")
+        return
+
+    if select_index < 0 or select_index >= len(identity_gallery.groups):
+        print(
+            f"Error: --select-index {select_index} is out of range "
+            f"(0-{len(identity_gallery.groups) - 1}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    selected_group = identity_gallery.groups[select_index]
+    intervals = build_appearance_intervals(
+        selected_group,
+        video_duration=video_duration,
+        sample_interval=sample_interval,
+        gap_tolerance_seconds=gap_tolerance_seconds,
+        padding_seconds=appearance_padding_seconds,
+    )
+    segments = merge_for_export(
+        intervals,
+        video_duration=video_duration,
+        bridge_gap_seconds=bridge_gap_seconds,
+        min_segment_seconds=min_segment_seconds,
+        padding_seconds=export_padding_seconds,
+    )
+
+    if not segments:
+        print("No segments to export for this person.")
+        return
+
+    appearance_seconds = sum(i.end_time - i.start_time for i in intervals)
+    segment_seconds = sum(s.end_time - s.start_time for s in segments)
+
+    print(f"\n--- Export: Person #{select_index + 1} ---")
+    print(f"Detections for this person: {selected_group.size}")
+    print(f"Appearance intervals: {len(intervals)} ({appearance_seconds:.1f}s on screen)")
+    print(
+        f"Segments to cut: {len(segments)} ({segment_seconds:.1f}s) "
+        f"after bridging short gaps and enforcing a minimum length"
+    )
+    print(f"Encoding with {video_encoder}...")
+
+    try:
+        export = export_segments(
+            video_path,
+            segments,
+            output_path,
+            video_encoder=video_encoder,
+            audio_encoder=audio_encoder,
+            quality=quality,
+            include_audio=include_audio,
+        )
+    except ExportError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+
+    total_duration = time.monotonic() - start_time
+    speed = export.exported_seconds / export.encode_seconds if export.encode_seconds > 0 else 0
+
+    print(f"\nWrote: {export.output_path}")
+    print(f"Reel duration: {export.exported_seconds:.1f} seconds from {export.segment_count} segments")
+    print(f"Encoding time: {export.encode_seconds:.1f} seconds ({speed:.2f}x realtime)")
+    print(f"Total processing time: {total_duration:.1f} seconds")
     print("--- End Report ---\n")

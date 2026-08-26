@@ -13,8 +13,14 @@ from app.faces.grouper import (
     DEFAULT_MIN_FACE_SIZE,
     DEFAULT_SIMILARITY_THRESHOLD,
 )
+from app.video.export import (
+    DEFAULT_BRIDGE_GAP_SECONDS,
+    DEFAULT_EXPORT_PADDING_SECONDS,
+    DEFAULT_MIN_SEGMENT_SECONDS,
+)
 from app.main import (
     run_appearance_timestamps,
+    run_export,
     run_face_detection,
     run_face_gallery,
     run_face_grouping,
@@ -277,6 +283,75 @@ def main():
         help="Person card index (as shown by the 'group' command) to compute appearance intervals for.",
     )
 
+    # 'export' command
+    export_parser = subparsers.add_parser(
+        "export", help="Cut one person's appearances into a single reel."
+    )
+    export_parser.add_argument("video_path", type=Path, help="Path to the video file.")
+    export_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("output/reel.mp4"),
+        help="Where to write the exported reel.",
+    )
+    export_parser.add_argument(
+        "--select-index",
+        type=int,
+        required=True,
+        help="Person card index (as shown by the 'group' command) to export.",
+    )
+    export_parser.add_argument(
+        "--interval", type=float, default=0.5,
+        help="Interval in seconds between sampled frames.",
+    )
+    export_parser.add_argument("--confidence-threshold", type=float, default=0.6)
+    export_parser.add_argument("--padding", type=float, default=0.08)
+    export_parser.add_argument("--similarity-threshold", type=float, default=DEFAULT_SIMILARITY_THRESHOLD)
+    export_parser.add_argument("--margin-threshold", type=float, default=DEFAULT_MARGIN_THRESHOLD)
+    export_parser.add_argument("--consolidation-threshold", type=float, default=DEFAULT_CONSOLIDATION_THRESHOLD)
+    export_parser.add_argument("--min-confidence", type=float, default=DEFAULT_MIN_CONFIDENCE)
+    export_parser.add_argument("--min-face-size", type=int, default=DEFAULT_MIN_FACE_SIZE)
+    export_parser.add_argument("--min-group-eye-span", type=float, default=DEFAULT_MIN_GROUP_EYE_SPAN)
+    export_parser.add_argument("--min-detections", type=int, default=None)
+    export_parser.add_argument("--gap-tolerance", type=float, default=None)
+    export_parser.add_argument("--appearance-padding", type=float, default=None)
+    export_parser.add_argument(
+        "--bridge-gap",
+        type=float,
+        default=DEFAULT_BRIDGE_GAP_SECONDS,
+        help="Gaps at or below this (seconds) are held through rather than cut across, "
+        "so a brief cutaway does not become a visible glitch.",
+    )
+    export_parser.add_argument(
+        "--min-segment",
+        type=float,
+        default=DEFAULT_MIN_SEGMENT_SECONDS,
+        help="Shortest segment (seconds) worth cutting; briefer ones are grown.",
+    )
+    export_parser.add_argument(
+        "--export-padding",
+        type=float,
+        default=DEFAULT_EXPORT_PADDING_SECONDS,
+        help="Extra headroom (seconds) each side of a segment, additional to the "
+        "padding the appearance intervals already carry.",
+    )
+    export_parser.add_argument(
+        "--encoder",
+        default="libx264",
+        help="ffmpeg video encoder. 'h264_videotoolbox' is much faster on Apple silicon.",
+    )
+    export_parser.add_argument("--audio-encoder", default="aac")
+    export_parser.add_argument(
+        "--quality",
+        type=int,
+        default=20,
+        help="Constant-quality level (-crf for libx264, -q:v for videotoolbox). "
+        "Lower is better quality and a larger file.",
+    )
+    export_parser.add_argument(
+        "--no-audio", action="store_true", help="Drop the source audio."
+    )
+
     args = parser.parse_args()
 
     try:
@@ -317,6 +392,32 @@ def main():
                     min_face_size=args.min_face_size,
                     min_group_eye_span=args.min_group_eye_span,
                     min_detections=args.min_detections,
+                    select_index=args.select_index,
+                )
+            elif args.command == "export":
+                run_export(
+                    container,
+                    video_path=args.video_path,
+                    output_path=args.output,
+                    sample_interval=args.interval,
+                    confidence_threshold=args.confidence_threshold,
+                    padding_ratio=args.padding,
+                    similarity_threshold=args.similarity_threshold,
+                    margin_threshold=args.margin_threshold,
+                    consolidation_threshold=args.consolidation_threshold,
+                    min_confidence=args.min_confidence,
+                    min_face_size=args.min_face_size,
+                    min_group_eye_span=args.min_group_eye_span,
+                    min_detections=args.min_detections,
+                    gap_tolerance_seconds=args.gap_tolerance,
+                    appearance_padding_seconds=args.appearance_padding,
+                    bridge_gap_seconds=args.bridge_gap,
+                    min_segment_seconds=args.min_segment,
+                    export_padding_seconds=args.export_padding,
+                    video_encoder=args.encoder,
+                    audio_encoder=args.audio_encoder,
+                    quality=args.quality,
+                    include_audio=not args.no_audio,
                     select_index=args.select_index,
                 )
             elif args.command == "timestamps":

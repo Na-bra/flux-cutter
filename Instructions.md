@@ -125,7 +125,7 @@ Track unresolved technical choices here as they come up, and resolve them in the
 | Video I/O / frame extraction tooling (e.g. OpenCV, PyAV) | 0.1 | Resolved: PyAV for loader/frame extraction. It already works reliably with the sample video. |
 | GUI toolkit for the face gallery view | 0.1 | Resolved for prototype 0.1: simple saved gallery montage via OpenCV grid rendering. |
 | Appearance-interval strategy (detections -> timestamps) | 0.2/0.3 boundary | Resolved: real per-detection PTS timestamps (already carried on `FaceObservation.source_timestamp`) grouped into contiguous spans by a sampling-derived gap tolerance, then padded by a sampling-derived amount and clamped to video bounds. No new frame decoding or tracking added. See accuracy notes below. |
-| Clip extraction / merge tooling (e.g. FFmpeg via subprocess vs. a Python wrapper) | 0.3 | Not yet decided |
+| Clip extraction / merge tooling (e.g. FFmpeg via subprocess vs. a Python wrapper) | 0.3 | Resolved: FFmpeg via subprocess. PyAV is already a dependency, but cutting needs timestamp rebasing and A/V sync across concatenated segments, which ffmpeg's `-ss`/`-t` and concat demuxer already solve correctly and PyAV would mean hand-writing. Cost, recorded honestly: this is the project's one external *binary* dependency, a real departure from the zero-new-dependencies habit elsewhere. See 7h. |
 
 Update the Status column as each is resolved, and note *why* — a one-line rationale is enough to save re-litigating it later.
 
@@ -584,3 +584,75 @@ filter: they were detected, they are just not an identity worth offering.
 The derivation lives in `app/main.py`, not in `IdentityGrouper`, which is
 given a plain integer. The grouper deliberately knows nothing about video
 duration or sampling rate, and this keeps it that way.
+
+
+---
+
+## 7h. Stage 0.3 notes (clip extraction)
+
+### Re-encoding is mandatory, and only real footage showed it
+
+The obvious implementation is `ffmpeg -ss ... -c copy`, which is near-instant.
+Measuring keyframe spacing first (per section 4's rule about testing uncertain
+assumptions) ruled it out:
+
+| video | keyframe gap, median | max |
+| --- | --- | --- |
+| test.mp4 | 0.03s | 0.40s |
+| test_3.mp4 | 2.67s | 7.84s |
+
+A stream copy can only start at a keyframe. On `test_3.mp4` the median gap
+(2.67s) is nearly the median appearance length (3.0s) and the worst gap
+(7.84s) exceeds most segments entirely, so copied cuts would routinely open
+seconds early on the wrong person -- fatal for a tool whose whole promise is
+"only this person".
+
+`test.mp4` is nearly all-intra and would have hidden this completely. An
+approach validated only on the short clip would have looked flawless and
+failed on the first real video. Segments are therefore re-encoded; only the
+final join is a stream copy, which is safe because every segment was just
+written with identical codec parameters.
+
+Cut accuracy was verified rather than assumed: the reel's first frame differs
+from the source at the requested timestamp by 0.494 mean absolute pixel value
+(re-encode noise), against 61.5 for a deliberately wrong reference frame half
+a second away.
+
+### The cut list is not the appearance list
+
+`build_appearance_intervals` answers a detection question. A watchable reel is
+an editorial one, and on real footage they disagree sharply: the lead's
+appearances come back as 153 intervals (at 1.0s sampling) with a median
+duration of 3.0s and 38 of them under 2s. Cut verbatim that is a strobe, which
+fails the stage-0.4 "final video watchable" criterion no matter how accurate
+each individual cut is.
+
+`merge_for_export` is therefore a separate, pure pass: pad for headroom, bridge
+gaps too short to cut across, grow anything still under a minimum length, then
+merge again -- growing can close a gap that was wide enough to keep a moment
+earlier, and skipping that second pass yields overlapping segments and
+duplicated footage in the join. It is deliberately free of I/O so the judgement
+about what makes a watchable segment is testable without encoding a frame.
+
+Defaults (bridge 1.5s, minimum 2.0s) take those 153 intervals to 97 segments
+with nothing under 2s, for 26% more footage. The added footage is not purely
+waste: a one-second cutaway held through preserves conversational context that
+a hard cut destroys.
+
+Note the ratio is much worse on sparse short clips -- on `test.mp4` five
+intervals totalling 5.0s become three segments totalling 12.0s, because
+growing one-second appearances to the two-second minimum dominates.
+
+### Measured end-to-end
+
+A full export of the lead from the 22-minute episode at 0.5s sampling: 1057
+detections, 173 appearance intervals (527.0s on screen), 107 segments (662.2s),
+encoded in 180.3s at 3.67x realtime with `h264_videotoolbox`, peak RSS 1.24 GB,
+599s total. Output decoded end to end with no errors and drifted 0.15s across
+107 joins. Of 16 frames sampled across the reel, 14 clearly showed the target,
+including one in costume -- the consolidation pass from 7e visible in the
+finished product. The other two were title/credit cards, i.e. detections on
+faces printed in graphics.
+
+Wall time is dominated by the detect/embed pass (~7 min), not the cutting
+(~3 min); ArcFace is the target for any future speed work, not ffmpeg.
