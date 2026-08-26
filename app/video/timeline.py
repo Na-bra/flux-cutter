@@ -43,6 +43,31 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def merge_spans(
+    spans: list[tuple[float, float]], gap_seconds: float = 0.0
+) -> list[tuple[float, float]]:
+    """Joins spans that overlap, touch, or sit within gap_seconds of each other.
+
+    Shared by the two stages that both need it for different reasons, so the
+    rule lives in one place: this module re-merges after padding has pushed
+    neighbouring appearances into each other, and app/video/export.py bridges
+    gaps too short to cut across. Those are different thresholds answering
+    different questions -- detection and editorial -- but the same operation,
+    and the default of 0.0 is exactly the overlap-only case.
+
+    Input need not be sorted. The result is non-overlapping and in
+    chronological order.
+    """
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(spans):
+        if merged and start - merged[-1][1] <= gap_seconds:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def build_appearance_intervals(
     group: FaceIdentityGroup,
     video_duration: float,
@@ -113,11 +138,7 @@ def build_appearance_intervals(
 
     # Padding can push previously-separate spans into overlapping or
     # touching ranges, so merge again after padding is applied.
-    merged_spans: list[list[float]] = []
-    for start, end in padded_spans:
-        if merged_spans and start <= merged_spans[-1][1]:
-            merged_spans[-1][1] = max(merged_spans[-1][1], end)
-        else:
-            merged_spans.append([start, end])
-
-    return [AppearanceInterval(start_time=start, end_time=end) for start, end in merged_spans]
+    return [
+        AppearanceInterval(start_time=start, end_time=end)
+        for start, end in merge_spans(padded_spans)
+    ]

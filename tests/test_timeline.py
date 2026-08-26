@@ -7,6 +7,7 @@ from app.video.timeline import (
     AppearanceInterval,
     build_appearance_intervals,
     format_timestamp,
+    merge_spans,
 )
 
 
@@ -212,3 +213,25 @@ def test_format_timestamp_rolls_seconds_over_into_minutes():
 def test_format_timestamp_rejects_negative_input():
     with pytest.raises(ValueError):
         format_timestamp(-1.0)
+
+
+def test_merge_spans_joins_overlapping_and_touching_spans():
+    """At the default gap of zero, only overlap or contact merges."""
+    assert merge_spans([(0.0, 5.0), (4.0, 8.0)]) == [(0.0, 8.0)]
+    assert merge_spans([(0.0, 5.0), (5.0, 8.0)]) == [(0.0, 8.0)]
+    assert merge_spans([(0.0, 5.0), (5.1, 8.0)]) == [(0.0, 5.0), (5.1, 8.0)]
+
+
+def test_merge_spans_honours_a_gap_threshold():
+    """A positive gap bridges spans that are close but genuinely separate."""
+    assert merge_spans([(0.0, 5.0), (6.0, 8.0)], gap_seconds=1.5) == [(0.0, 8.0)]
+    assert merge_spans([(0.0, 5.0), (8.0, 9.0)], gap_seconds=1.5) == [(0.0, 5.0), (8.0, 9.0)]
+
+
+def test_merge_spans_sorts_and_absorbs_contained_spans():
+    """Unsorted input, and a span wholly inside another, both behave."""
+    assert merge_spans([(10.0, 20.0), (0.0, 5.0), (12.0, 15.0)]) == [(0.0, 5.0), (10.0, 20.0)]
+
+
+def test_merge_spans_on_empty_input():
+    assert merge_spans([]) == []

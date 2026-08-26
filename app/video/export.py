@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.video.timeline import AppearanceInterval, format_timestamp
+from app.video.timeline import AppearanceInterval, format_timestamp, merge_spans
 
 # Two consecutive appearances closer together than this are bridged into one
 # segment rather than cut apart and rejoined.
@@ -37,20 +37,6 @@ DEFAULT_EXPORT_PADDING_SECONDS = 0.25
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
-
-
-def _merge_close(
-    spans: list[tuple[float, float]], bridge_gap_seconds: float
-) -> list[tuple[float, float]]:
-    """Joins spans that overlap or sit within bridge_gap_seconds of each other."""
-    merged: list[tuple[float, float]] = []
-    for start, end in sorted(spans):
-        if merged and start - merged[-1][1] <= bridge_gap_seconds:
-            previous_start, previous_end = merged[-1]
-            merged[-1] = (previous_start, max(previous_end, end))
-        else:
-            merged.append((start, end))
-    return merged
 
 
 def merge_for_export(
@@ -119,7 +105,7 @@ def merge_for_export(
         )
         for interval in intervals
     ]
-    spans = _merge_close(padded, bridge_gap_seconds)
+    spans = merge_spans(padded, bridge_gap_seconds)
 
     # Grow anything still too short around its own midpoint, so the extra time
     # is taken evenly from both sides rather than always running late.
@@ -134,7 +120,7 @@ def merge_for_export(
         grown.append((start, end))
 
     # Growing can close a gap that was wide enough to keep a moment ago.
-    final_spans = _merge_close(grown, bridge_gap_seconds)
+    final_spans = merge_spans(grown, bridge_gap_seconds)
 
     return [AppearanceInterval(start_time=start, end_time=end) for start, end in final_spans]
 

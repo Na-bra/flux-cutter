@@ -656,3 +656,66 @@ faces printed in graphics.
 
 Wall time is dominated by the detect/embed pass (~7 min), not the cutting
 (~3 min); ArcFace is the target for any future speed work, not ffmpeg.
+
+
+---
+
+## 7i. Batched embedding, and where the time actually goes
+
+Embedding was the pipeline's largest compute cost, so `FaceEmbedder.embed_batch`
+now runs one forward pass per frame instead of one per face. The batched result
+is bit-identical to the per-face path -- checked with an exact comparison, not a
+tolerance, because these vectors feed cosine-similarity clustering and any drift
+would move real cluster boundaries silently.
+
+**The gain is smaller than a microbenchmark suggests, and the reason is worth
+recording.** Throughput against synthetic batches:
+
+| batch | ms/face | speedup |
+| --- | --- | --- |
+| 1 | 28.8 | 1.00x |
+| 2 | 24.7 | 1.17x |
+| 4 | 21.9 | 1.32x |
+| 8 | 21.5 | 1.34x |
+| 32 | 22.1 | 1.30x |
+
+The batch size is not a free parameter: it is however many faces are in the
+frame. On `test_3.mp4` that is 2.3 faces per frame at a 1.0s interval and 4.6 at
+0.5s, so the operating point sits at the shallow end of that curve, not the
+plateau. Measured A/B on the same 3111 detections, embedding fell from 93.88s
+to 82.75s -- **1.13x**, matching the batch-2 row rather than the batch-8 one.
+Quoting the plateau figure as the expected gain would have overstated it by
+about 20%.
+
+Batching is per frame rather than across frames deliberately. Frames arrive from
+a generator holding one at a time (7d), and buffering several to fill a larger
+batch would trade back the memory streaming was introduced to reclaim.
+
+### The larger inefficiency is decode, not embedding
+
+Measured separately on the 22-minute video at 0.5s sampling:
+
+| phase | time |
+| --- | --- |
+| decode + sample | ~104s |
+| detect + embed | ~315s |
+
+Decoding produces 2712 sampled frames from 32508 source frames -- **12 frames
+decoded for every one kept**. That is a structurally larger waste than the ~11s
+batching recovers, and seeking rather than decode-and-discard is the obvious
+next lever. It is not obviously free: PyAV seek lands on keyframes, whose
+spacing on this footage is a median 2.67s (7h), so the accuracy of sampled
+timestamps would need the same kind of measurement that ruled out stream-copy
+cutting.
+
+## 7j. One merge rule, two callers
+
+`timeline.py` and `export.py` had both grown a routine for joining spans that
+sit close together. They are asking different questions -- one re-merges after
+padding has pushed neighbouring appearances into each other, the other bridges
+gaps too short to cut across -- but it is the same operation at different
+thresholds, and timeline's version was exactly the zero-gap case of export's.
+
+It now lives once, as `timeline.merge_spans(spans, gap_seconds=0.0)`.
+`export.py` already imported from `timeline.py`, so the dependency direction is
+unchanged and no cycle is introduced.
