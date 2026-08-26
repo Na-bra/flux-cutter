@@ -1,0 +1,581 @@
+"""A small desktop front end for FluxCutter.
+
+The whole app is one screen and one sentence of workflow: pick a video,
+scan it for people, click a face, export that person's reel.
+
+Threading is the only structurally interesting part. Scanning a
+22-minute video takes minutes and encoding takes minutes more, so both
+run on a daemon worker thread while Tk keeps drawing. The two sides
+communicate through a Queue that the main thread drains on a timer --
+worker code never touches a widget, because Tk is not thread-safe and
+the failure mode when you get that wrong is a hang or a crash rather
+than an exception anyone can read.
+
+The pipeline itself lives in app/main.py and app/ui/worker.py. Nothing
+here decides anything about faces; this module is windows and buttons.
+"""
+
+import platform
+import queue
+import sys
+import threading
+import tkinter
+from pathlib import Path
+from tkinter import filedialog, messagebox
+
+import customtkinter as ctk
+
+from app.ui.worker import (
+    Cancelled,
+    ExportSettings,
+    Person,
+    ScanResult,
+    ScanSettings,
+    export,
+    plan_export,
+    scan,
+)
+from app.video.export import ExportError
+from app.video.loader import VideoLoadError
+
+# How often the main thread checks the worker's mailbox. Fast enough that
+# a progress bar looks live, slow enough to stay off the CPU.
+POLL_INTERVAL_MS = 80
+
+CARD_COLUMNS = 4
+CARD_THUMBNAIL_SIZE = (112, 112)
+
+# Sampling intervals worth offering. Denser sampling finds people who are
+# on screen briefly and costs proportionally more time; it does not make
+# grouping better per se, since faces-per-frame is a property of the
+# footage rather than of how often it is sampled.
+INTERVAL_CHOICES = {
+    "0.25s - thorough": 0.25,
+    "0.5s - balanced": 0.5,
+    "1.0s - quick": 1.0,
+    "2.0s - fastest": 2.0,
+}
+DEFAULT_INTERVAL_LABEL = "0.5s - balanced"
+
+
+def _clock(seconds: float) -> str:
+    """Formats seconds as a clock time for display: 4:07, or 1:04:07."""
+    seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _default_encoder() -> str:
+    """Picks the encoder that will not make the user wait needlessly.
+
+    videotoolbox ran 3.67x realtime on the test footage against libx264's
+    crawl, and every Apple-silicon Mac has it. Elsewhere, libx264 is the
+    portable choice. Either way the menu shows which one is selected --
+    a speed difference that large should not be a hidden default.
+    """
+    if sys.platform == "darwin" and platform.machine() == "arm64":
+        return "h264_videotoolbox"
+    return "libx264"
+
+
+class PersonCard(ctk.CTkFrame):
+    """One face in the results grid, clickable to select that person."""
+
+    def __init__(self, master, person: Person, on_select):
+        super().__init__(master, corner_radius=10, border_width=2)
+        self._person = person
+        self._on_select = on_select
+        self._selected = False
+
+        # Held as an attribute because CTkImage is only weakly held by the
+        # label; letting it fall out of scope leaves an empty tile.
+        self._image = ctk.CTkImage(
+            light_image=person.thumbnail,
+            dark_image=person.thumbnail,
+            size=CARD_THUMBNAIL_SIZE,
+        )
+
+        self._thumbnail = ctk.CTkLabel(self, image=self._image, text="")
+        self._thumbnail.pack(padx=10, pady=(10, 6))
+
+        self._title = ctk.CTkLabel(
+            self,
+            text=f"Person #{person.index + 1}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        )
+        self._title.pack()
+
+        self._detail = ctk.CTkLabel(
+            self,
+            text=(
+                f"{person.detection_count} detections\n"
+                f"{_clock(person.first_seen)} - {_clock(person.last_seen)}"
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color=("gray40", "gray65"),
+        )
+        self._detail.pack(padx=10, pady=(0, 10))
+
+        # Bound on the children too: a click landing on the thumbnail or a
+        # label would otherwise never reach the frame underneath it.
+        for widget in (self, self._thumbnail, self._title, self._detail):
+            widget.bind("<Button-1>", self._clicked)
+
+        self.set_selected(False)
+
+    @property
+    def person(self) -> Person:
+        return self._person
+
+    def _clicked(self, _event=None) -> None:
+        self._on_select(self._person)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        if selected:
+            self.configure(border_color=("#3a7ebf", "#1f6aa5"), fg_color=("gray86", "gray20"))
+        else:
+            self.configure(border_color=("gray78", "gray28"), fg_color=("gray92", "gray17"))
+
+
+class FluxCutterApp(ctk.CTk):
+    """The main window."""
+
+    def __init__(self, video_path: Path | None = None):
+        super().__init__()
+
+        self.title("FluxCutter")
+        self.geometry("900x760")
+        self.minsize(720, 620)
+
+        self._messages: queue.Queue = queue.Queue()
+        self._worker: threading.Thread | None = None
+        self._cancel = threading.Event()
+        self._scan_result: ScanResult | None = None
+        self._selected: Person | None = None
+        self._cards: list[PersonCard] = []
+
+        self._build_layout()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.after(POLL_INTERVAL_MS, self._drain_messages)
+
+        if video_path is not None:
+            self._video_var.set(str(video_path))
+            self._set_status("Ready to scan.")
+
+    # ---------------------------------------------------------------- layout
+
+    def _build_layout(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        # Only the results grid grows; the control rows keep their height.
+        self.grid_rowconfigure(2, weight=1)
+
+        self._build_source_row()
+        self._build_progress_row()
+        self._build_results_area()
+        self._build_export_row()
+
+    def _build_source_row(self) -> None:
+        frame = ctk.CTkFrame(self)
+        frame.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="ew")
+        frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            frame, text="FluxCutter", font=ctk.CTkFont(size=20, weight="bold")
+        ).grid(row=0, column=0, padx=(16, 8), pady=(14, 0), sticky="w")
+        ctk.CTkLabel(
+            frame,
+            text="Find someone in a video, then cut every appearance into one clip.",
+            text_color=("gray40", "gray65"),
+        ).grid(row=0, column=1, columnspan=2, padx=8, pady=(14, 0), sticky="w")
+
+        ctk.CTkLabel(frame, text="Video").grid(row=1, column=0, padx=(16, 8), pady=(14, 8), sticky="w")
+        self._video_var = ctk.StringVar()
+        self._video_entry = ctk.CTkEntry(
+            frame, textvariable=self._video_var, placeholder_text="Choose an .mp4 or .mov file"
+        )
+        self._video_entry.grid(row=1, column=1, padx=8, pady=(14, 8), sticky="ew")
+        ctk.CTkButton(frame, text="Browse...", width=100, command=self._browse_video).grid(
+            row=1, column=2, padx=(8, 16), pady=(14, 8)
+        )
+
+        ctk.CTkLabel(frame, text="Sampling").grid(row=2, column=0, padx=(16, 8), pady=(0, 16), sticky="w")
+        controls = ctk.CTkFrame(frame, fg_color="transparent")
+        controls.grid(row=2, column=1, columnspan=2, padx=8, pady=(0, 16), sticky="ew")
+
+        self._interval_menu = ctk.CTkOptionMenu(
+            controls, values=list(INTERVAL_CHOICES), width=170
+        )
+        self._interval_menu.set(DEFAULT_INTERVAL_LABEL)
+        self._interval_menu.pack(side="left")
+
+        self._scan_button = ctk.CTkButton(
+            controls, text="Scan for people", width=150, command=self._on_scan_clicked
+        )
+        self._scan_button.pack(side="right", padx=(8, 8))
+
+    def _build_progress_row(self) -> None:
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.grid(row=1, column=0, padx=16, pady=(0, 8), sticky="ew")
+        frame.grid_columnconfigure(0, weight=1)
+
+        self._progress = ctk.CTkProgressBar(frame)
+        self._progress.set(0)
+        self._progress.grid(row=0, column=0, sticky="ew")
+
+        self._status = ctk.CTkLabel(
+            frame, text="Choose a video to begin.", anchor="w", text_color=("gray40", "gray65")
+        )
+        self._status.grid(row=1, column=0, pady=(6, 0), sticky="ew")
+
+    def _build_results_area(self) -> None:
+        self._results = ctk.CTkScrollableFrame(self, label_text="People found")
+        self._results.grid(row=2, column=0, padx=16, pady=(0, 8), sticky="nsew")
+        for column in range(CARD_COLUMNS):
+            self._results.grid_columnconfigure(column, weight=1)
+
+        self._empty_label = ctk.CTkLabel(
+            self._results,
+            text="No scan yet.\nPick a video and press Scan for people.",
+            text_color=("gray50", "gray55"),
+        )
+        self._empty_label.grid(row=0, column=0, columnspan=CARD_COLUMNS, pady=40)
+
+    def _build_export_row(self) -> None:
+        frame = ctk.CTkFrame(self)
+        frame.grid(row=3, column=0, padx=16, pady=(0, 16), sticky="ew")
+        frame.grid_columnconfigure(1, weight=1)
+
+        self._selection_label = ctk.CTkLabel(
+            frame, text="Select a person to export.", anchor="w"
+        )
+        self._selection_label.grid(
+            row=0, column=0, columnspan=3, padx=16, pady=(12, 4), sticky="ew"
+        )
+
+        ctk.CTkLabel(frame, text="Save to").grid(row=1, column=0, padx=(16, 8), pady=8, sticky="w")
+        self._output_var = ctk.StringVar(value=str(Path("output/reel.mp4")))
+        ctk.CTkEntry(frame, textvariable=self._output_var).grid(
+            row=1, column=1, padx=8, pady=8, sticky="ew"
+        )
+        ctk.CTkButton(frame, text="Browse...", width=100, command=self._browse_output).grid(
+            row=1, column=2, padx=(8, 16), pady=8
+        )
+
+        options = ctk.CTkFrame(frame, fg_color="transparent")
+        options.grid(row=2, column=0, columnspan=3, padx=16, pady=(0, 14), sticky="ew")
+
+        ctk.CTkLabel(options, text="Encoder").pack(side="left", padx=(0, 8))
+        self._encoder_menu = ctk.CTkOptionMenu(
+            options, values=["h264_videotoolbox", "libx264"], width=180
+        )
+        self._encoder_menu.set(_default_encoder())
+        self._encoder_menu.pack(side="left")
+
+        self._audio_switch = ctk.CTkSwitch(options, text="Keep audio")
+        self._audio_switch.select()
+        self._audio_switch.pack(side="left", padx=16)
+
+        self._export_button = ctk.CTkButton(
+            options, text="Export reel", width=150, command=self._on_export_clicked
+        )
+        self._export_button.pack(side="right")
+        self._export_button.configure(state="disabled")
+
+    # ------------------------------------------------------------- callbacks
+
+    def _browse_video(self) -> None:
+        chosen = filedialog.askopenfilename(
+            title="Choose a video",
+            filetypes=[("Video files", "*.mp4 *.mov"), ("All files", "*.*")],
+        )
+        if chosen:
+            self._video_var.set(chosen)
+            self._set_status("Ready to scan.")
+
+    def _browse_output(self) -> None:
+        chosen = filedialog.asksaveasfilename(
+            title="Save reel as",
+            defaultextension=".mp4",
+            initialfile=Path(self._output_var.get()).name or "reel.mp4",
+            filetypes=[("MP4 video", "*.mp4")],
+        )
+        if chosen:
+            self._output_var.set(chosen)
+
+    def _on_scan_clicked(self) -> None:
+        if self._is_busy():
+            self._cancel.set()
+            self._set_status("Stopping after the current frame...")
+            return
+
+        video_path = self._video_var.get().strip()
+        if not video_path:
+            messagebox.showwarning("No video", "Choose a video file first.")
+            return
+        if not Path(video_path).exists():
+            messagebox.showerror("Not found", f"No such file:\n{video_path}")
+            return
+
+        settings = ScanSettings(
+            sample_interval=INTERVAL_CHOICES[self._interval_menu.get()],
+        )
+
+        self._clear_results()
+        self._set_busy(True, scanning=True)
+        self._set_status("Starting scan...")
+        self._start_worker(self._scan_worker, Path(video_path), settings)
+
+    def _on_export_clicked(self) -> None:
+        if self._is_busy():
+            self._cancel.set()
+            self._set_status("Stopping after the current cut...")
+            return
+
+        if self._scan_result is None or self._selected is None:
+            return
+
+        output_path = Path(self._output_var.get().strip() or "output/reel.mp4")
+        if output_path.exists() and not messagebox.askyesno(
+            "Overwrite?", f"{output_path.name} already exists. Replace it?"
+        ):
+            return
+
+        settings = ExportSettings(
+            video_encoder=self._encoder_menu.get(),
+            include_audio=bool(self._audio_switch.get()),
+        )
+
+        self._set_busy(True, scanning=False)
+        self._set_status("Preparing cuts...")
+        self._start_worker(
+            self._export_worker, self._scan_result, self._selected, output_path, settings
+        )
+
+    def _on_person_selected(self, person: Person) -> None:
+        self._selected = person
+        for card in self._cards:
+            card.set_selected(card.person.index == person.index)
+
+        assert self._scan_result is not None
+        _, segments = plan_export(
+            person,
+            video_duration=self._scan_result.video_duration,
+            sample_interval=self._scan_result.sample_interval,
+        )
+        reel_seconds = sum(s.end_time - s.start_time for s in segments)
+        self._selection_label.configure(
+            text=(
+                f"Person #{person.index + 1} selected - "
+                f"{len(segments)} cuts, about {_clock(reel_seconds)} of footage."
+            )
+        )
+        self._export_button.configure(state="normal")
+
+    def _on_close(self) -> None:
+        # A running encode holds an ffmpeg subprocess; ask it to stop, but
+        # do not block the close on it. The worker is a daemon, so the
+        # process exits regardless.
+        self._cancel.set()
+        self.destroy()
+
+    # ---------------------------------------------------------------- workers
+
+    def _start_worker(self, target, *args) -> None:
+        self._cancel.clear()
+        self._worker = threading.Thread(target=target, args=args, daemon=True)
+        self._worker.start()
+
+    def _scan_worker(self, video_path: Path, settings: ScanSettings) -> None:
+        """Runs on the worker thread. Only posts to the queue."""
+        def report(fraction: float, timestamp: float) -> None:
+            self._messages.put(
+                ("progress", fraction, f"Scanning {_clock(timestamp)}...")
+            )
+
+        try:
+            result = scan(video_path, settings, on_progress=report, cancel=self._cancel)
+        except Cancelled:
+            self._messages.put(("cancelled", "Scan stopped."))
+        except (VideoLoadError, ValueError) as error:
+            self._messages.put(("error", "Could not scan that video", str(error)))
+        except Exception as error:  # noqa: BLE001 - a UI must not die silently
+            self._messages.put(("error", "Scan failed", f"{type(error).__name__}: {error}"))
+        else:
+            self._messages.put(("scan_done", result))
+
+    def _export_worker(
+        self,
+        scan_result: ScanResult,
+        person: Person,
+        output_path: Path,
+        settings: ExportSettings,
+    ) -> None:
+        """Runs on the worker thread. Only posts to the queue."""
+        def report(fraction: float, done: int, total: int) -> None:
+            self._messages.put(("progress", fraction, f"Encoding cut {done} of {total}..."))
+
+        try:
+            result = export(
+                scan_result,
+                person,
+                output_path,
+                settings,
+                on_progress=report,
+                cancel=self._cancel,
+            )
+        except Cancelled:
+            self._messages.put(("cancelled", "Export stopped."))
+        except ExportError as error:
+            self._messages.put(("error", "Could not export", str(error)))
+        except Exception as error:  # noqa: BLE001 - a UI must not die silently
+            self._messages.put(("error", "Export failed", f"{type(error).__name__}: {error}"))
+        else:
+            self._messages.put(("export_done", result))
+
+    # ------------------------------------------------------- message pumping
+
+    def _drain_messages(self) -> None:
+        """Applies whatever the worker posted. Main thread only.
+
+        Drains the whole queue each tick rather than one item, so a burst
+        of progress updates cannot fall behind the work producing them.
+        """
+        try:
+            while True:
+                message = self._messages.get_nowait()
+                self._handle_message(message)
+        except queue.Empty:
+            pass
+        finally:
+            self.after(POLL_INTERVAL_MS, self._drain_messages)
+
+    def _handle_message(self, message: tuple) -> None:
+        kind = message[0]
+
+        if kind == "progress":
+            _, fraction, text = message
+            self._progress.set(fraction)
+            self._set_status(text)
+
+        elif kind == "scan_done":
+            result: ScanResult = message[1]
+            self._scan_result = result
+            self._show_people(result)
+            self._set_busy(False)
+            self._progress.set(1.0)
+            self._set_status(
+                f"Found {len(result.people)} "
+                f"{'person' if len(result.people) == 1 else 'people'} in "
+                f"{result.frame_count} frames "
+                f"({result.detection_count} detections, "
+                f"{result.unassigned_count} unassigned) "
+                f"in {_clock(result.elapsed_seconds)}."
+            )
+
+        elif kind == "export_done":
+            result = message[1]
+            self._set_busy(False)
+            self._progress.set(1.0)
+            self._set_status(
+                f"Wrote {result.output_path.name} - "
+                f"{_clock(result.exported_seconds)} from {result.segment_count} cuts "
+                f"in {_clock(result.encode_seconds)}."
+            )
+            messagebox.showinfo("Export complete", f"Saved to:\n{result.output_path}")
+
+        elif kind == "cancelled":
+            self._set_busy(False)
+            self._progress.set(0)
+            self._set_status(message[1])
+
+        elif kind == "error":
+            _, title, detail = message
+            self._set_busy(False)
+            self._progress.set(0)
+            self._set_status(f"{title}: {detail}")
+            messagebox.showerror(title, detail)
+
+    # ------------------------------------------------------------ ui helpers
+
+    def _is_busy(self) -> bool:
+        return self._worker is not None and self._worker.is_alive()
+
+    def _set_busy(self, busy: bool, scanning: bool = True) -> None:
+        """Turns the action buttons into Cancel while work is running."""
+        if busy:
+            if scanning:
+                self._scan_button.configure(text="Cancel")
+                self._export_button.configure(state="disabled")
+            else:
+                self._export_button.configure(text="Cancel")
+                self._scan_button.configure(state="disabled")
+            self._interval_menu.configure(state="disabled")
+        else:
+            self._scan_button.configure(text="Scan for people", state="normal")
+            self._export_button.configure(
+                text="Export reel",
+                state="normal" if self._selected is not None else "disabled",
+            )
+            self._interval_menu.configure(state="normal")
+            self._worker = None
+
+    def _set_status(self, text: str) -> None:
+        self._status.configure(text=text)
+
+    def _clear_results(self) -> None:
+        for card in self._cards:
+            card.destroy()
+        self._cards.clear()
+        self._selected = None
+        self._scan_result = None
+        self._export_button.configure(state="disabled")
+        self._selection_label.configure(text="Select a person to export.")
+        self._empty_label.grid()
+
+    def _show_people(self, result: ScanResult) -> None:
+        self._clear_results()
+        self._scan_result = result
+
+        if not result.people:
+            self._empty_label.configure(
+                text=(
+                    "No one appeared for long enough to report.\n"
+                    f"Identities need at least {result.min_detections} detections "
+                    f"({result.min_detections * result.sample_interval:.0f}s on screen)."
+                )
+            )
+            return
+
+        self._empty_label.grid_remove()
+        for position, person in enumerate(result.people):
+            card = PersonCard(self._results, person, self._on_person_selected)
+            card.grid(
+                row=position // CARD_COLUMNS,
+                column=position % CARD_COLUMNS,
+                padx=8,
+                pady=8,
+                sticky="nsew",
+            )
+            self._cards.append(card)
+
+
+def launch(video_path: Path | None = None) -> None:
+    """Opens the FluxCutter window, optionally with a video preloaded."""
+    ctk.set_appearance_mode("system")
+    ctk.set_default_color_theme("blue")
+
+    try:
+        app = FluxCutterApp(video_path=video_path)
+    except tkinter.TclError as error:
+        print(f"Error: could not open a window ({error}).", file=sys.stderr)
+        sys.exit(1)
+
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    launch()

@@ -2,6 +2,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -168,6 +169,7 @@ def export_segments(
     quality: int = 20,
     include_audio: bool = True,
     progress: bool = True,
+    on_segment: Callable[[int, int, AppearanceInterval], None] | None = None,
 ) -> ExportResult:
     """
     Cuts each segment out of the source and joins them into one file.
@@ -197,6 +199,11 @@ def export_segments(
             videotoolbox). Lower is better quality and a bigger file.
         include_audio: Whether to carry the source audio through.
         progress: Print per-segment progress, since a long reel takes a while.
+        on_segment: Called as (index, total, segment) after each cut lands, for
+            callers with somewhere better than stdout to put that -- a progress
+            bar, say. Raising from it aborts the export, which is how the
+            desktop UI implements cancellation; the temporary workspace is
+            cleaned up on the way out either way.
 
     Returns:
         An ExportResult describing what was written.
@@ -263,6 +270,8 @@ def export_segments(
 
             segment_paths.append(segment_path)
             exported_seconds += duration
+            if on_segment is not None:
+                on_segment(index, len(segments), segment)
             if progress:
                 print(
                     f"  cut {index + 1}/{len(segments)}  "

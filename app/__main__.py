@@ -38,6 +38,18 @@ def main():
     info_parser = subparsers.add_parser("info", help="Get metadata for a video file.")
     info_parser.add_argument("video_path", type=Path, help="Path to the video file.")
 
+    # 'ui' command
+    ui_parser = subparsers.add_parser(
+        "ui", help="Open the FluxCutter desktop window."
+    )
+    ui_parser.add_argument(
+        "video_path",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Optional video to preload into the window.",
+    )
+
     # 'extract' command
     extract_parser = subparsers.add_parser(
         "extract", help="Extract frames from a video file."
@@ -353,6 +365,14 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.command == "ui":
+        # Imported here rather than at module scope so the other commands
+        # keep working on a machine with no Tk bindings installed.
+        from app.ui.app import launch
+
+        launch(args.video_path)
+        return
 
     try:
         with load_video(args.video_path) as container:

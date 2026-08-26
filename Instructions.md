@@ -102,6 +102,8 @@ FluxCutter/
 
 This structure should grow only in response to a stage actually needing it — e.g. `app/faces/tracker.py` and `app/video/export.py` are natural additions once stages 0.2 and 0.3/0.4 begin, but shouldn't be scaffolded in advance.
 
+What has actually been added since, and why: `app/faces/tracker.py` and `app/faces/embedder.py` (0.2), `app/video/timeline.py` (0.2), `app/video/export.py` (0.3/0.4), `app/__main__.py` (the CLI, split out of `main.py` once it outgrew it), and `app/ui/app.py` + `app/ui/worker.py` (the desktop window, section 7k).
+
 ---
 
 ## 5. Working Agreement
@@ -730,3 +732,76 @@ thresholds, and timeline's version was exactly the zero-gap case of export's.
 It now lives once, as `timeline.merge_spans(spans, gap_seconds=0.0)`.
 `export.py` already imported from `timeline.py`, so the dependency direction is
 unchanged and no cycle is introduced.
+
+## 7k. The desktop window (app/ui/app.py, app/ui/worker.py)
+
+The UI is two modules on purpose, split along the line that matters:
+
+- `app/ui/worker.py` runs the work. It imports no Tkinter, so it can be
+  tested on a machine with no display -- and it is (tests/test_ui_worker.py).
+- `app/ui/app.py` is windows and buttons. It decides nothing about faces.
+
+Neither one re-implements any pipeline stage. `worker.scan` calls the same
+`run_identity_pipeline` the CLI calls, and `ScanSettings` defaults to the same
+constants `app/__main__.py` passes. That is asserted by a test, because the
+failure it prevents is nasty: a UI that grouped a video differently from the
+command line would look like a face-recognition bug rather than a defaults bug.
+Making the pipeline entry point public (it was `_run_identity_pipeline`) was
+the whole of the change needed on the pipeline side.
+
+### Threading, and why the queue is not optional
+
+Tk is not thread-safe, and the failure mode when you touch a widget from a
+worker thread is a hang or a hard crash rather than an exception with a stack
+trace pointing at the mistake. So the rule is absolute: the worker thread only
+ever calls `queue.put`. The main thread drains that queue on an 80ms timer and
+is the only thing that touches a widget.
+
+The drain loop empties the whole queue per tick rather than taking one message,
+so a burst of progress updates cannot fall behind the work producing them.
+
+Scanning a 22-minute video takes minutes and encoding takes minutes more, so
+neither could run inline without freezing the window for the duration.
+
+### Cancellation without a cancellation feature
+
+Neither the pipeline nor the exporter knows what cancellation is, and neither
+needed to learn:
+
+- **Scanning:** the UI wraps the frame iterator (`_tracked_frames`) and raises
+  `Cancelled` from inside it. The exception unwinds through
+  `run_identity_pipeline`'s existing `finally`, which closes the detector and
+  embedder on the way out.
+- **Exporting:** the UI raises `Cancelled` from the `on_segment` callback. That
+  unwinds through `export_segments`' `TemporaryDirectory` context manager, so
+  the half-finished segments are deleted and no partial file is left behind.
+
+Wrapping the iterator, rather than passing a progress callback down into the
+pipeline, is what keeps `app/main.py` unaware that a UI exists at all: it
+consumes an iterator either way. `on_segment` is the one small addition to
+existing code -- `export_segments` could already print progress, but printing
+is no use to a progress bar.
+
+### What the selection preview is for
+
+Clicking a face runs `plan_export`, which is pure and takes microseconds, and
+reports the cut count and reel length before any encoding starts. The
+alternative -- press Export and find out in four minutes -- was worse for the
+same reason the CLI prints its segment count before encoding: the editorial
+merge (7-export) changes the answer substantially from the raw appearance
+list, and being shown 107 cuts when you expected 173 is information you want
+before the wait, not after.
+
+### Verification
+
+A UI cannot be verified by unit tests alone, so it was driven end to end
+without a human: construct the real window, set a video, invoke the scan
+button, pump `update()` until the worker finishes, click a card, invoke
+export, and assert on what the widgets then say. On test.mp4 that produced 4
+people (identical to `python -m app group --interval 0.5`: 49 detections, 20
+unassigned, 4 groups), and an export of Person #1 wrote a real 12.02s reel
+from 3 cuts -- matching the 12.0s the selection preview had predicted.
+Cancelling mid-export left no file.
+
+Screenshots were not part of this: `screencapture` needs macOS Screen
+Recording permission, which is not something to grant on a user's behalf.

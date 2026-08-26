@@ -24,6 +24,8 @@ The codebase is organized around this stage-by-stage workflow, with separate mod
 
 This repository is a prototype and the core functionality is still being validated. The focus is on demonstrating that the video-to-face-detection-to-selection flow works on real footage, not on shipping a complete consumer-facing app.
 
+The whole pipeline now runs end to end — a 22-minute episode goes in, a single reel of one person's appearances comes out — through either the CLI or [the desktop window](#the-desktop-window). What is still unsettled is accuracy on hard footage rather than whether the stages connect.
+
 The project structure is intentionally simple and lightweight so experimentation remains easy.
 
 ## Project structure
@@ -32,7 +34,8 @@ The project structure is intentionally simple and lightweight so experimentation
 flux-cutter/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py
+│   ├── __main__.py          # CLI entry point
+│   ├── main.py              # pipeline stages, shared by every front end
 │   ├── faces/
 │   │   ├── __init__.py
 │   │   ├── detector.py
@@ -41,11 +44,16 @@ flux-cutter/
 │   │   └── grouper.py
 │   ├── ui/
 │   │   ├── __init__.py
-│   │   └── gallery.py
+│   │   ├── __main__.py      # python -m app.ui
+│   │   ├── app.py           # the CustomTkinter window
+│   │   ├── worker.py        # the window's background work, Tk-free
+│   │   └── gallery.py       # thumbnail/montage rendering
 │   └── video/
 │       ├── __init__.py
 │       ├── frames.py
-│       └── loader.py
+│       ├── loader.py
+│       ├── timeline.py      # detections -> appearance intervals
+│       └── export.py        # intervals -> cut segments -> one reel
 ├── assets/
 │   ├── models/
 │   │   ├── face_detection_yunet_2026may.onnx
@@ -53,9 +61,6 @@ flux-cutter/
 │   └── test-videos/
 │       └── test.mp4
 ├── tests/
-│   ├── __init__.py
-│   ├── test_detector.py
-│   └── test_video.py
 ├── Instructions.md
 ├── README.md
 ├── .gitignore
@@ -83,7 +88,16 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` pins `opencv-python-headless` rather than `opencv-python`: the headless build skips OpenCV's camera/GUI backend, which is what caused the duplicate-`libavdevice`-symbol warning below when paired with PyAV. The project has no GUI/capture-device usage, so this is a safe swap and not a downgrade in capability.
+`requirements.txt` pins `opencv-python-headless` rather than `opencv-python`: the headless build skips OpenCV's camera/GUI backend, which is what caused the duplicate-`libavdevice`-symbol warning below when paired with PyAV. The project has no GUI/capture-device usage through OpenCV, so this is a safe swap and not a downgrade in capability. The desktop window is CustomTkinter, which draws through Tk and never through OpenCV, so the two do not conflict.
+
+**Tk is a system dependency, not a pip one.** `customtkinter` installs from `requirements.txt`, but the `_tkinter` C extension it needs ships separately from Python itself and Homebrew's `python@3.12` does not include it:
+
+```bash
+brew install python-tk@3.12          # macOS/Homebrew
+sudo apt install python3-tk          # Debian/Ubuntu
+```
+
+Only the desktop window needs this. Every CLI command works without it — `app/__main__.py` imports the UI lazily for exactly that reason — so a headless machine can still run the whole pipeline.
 
 ### 3. Download the YuNet and ArcFace models
 
@@ -228,7 +242,31 @@ python -m app timestamps assets/test-videos/test.mp4 --interval 0.5 --select-ind
 
 See [Instructions.md](Instructions.md#8-appearance-timestamp-notes-appvideotimelinepy) for why those defaults are tied to the sampling interval rather than fixed constants.
 
+## The desktop window
+
+Everything above is also available as one screen, which is the shorter route if you just want a reel out of a video:
+
+```bash
+python -m app ui                                  # or: python -m app.ui
+python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
+```
+
+Pick a video, press **Scan for people**, click a face, press **Export reel**. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
+
+Both long operations run on a worker thread, so the window keeps drawing, the progress bar tracks real work (frames sampled while scanning, cuts encoded while exporting), and the action button turns into **Cancel**. Cancelling a scan stops at the next sampled frame; cancelling an export stops after the current cut and leaves no partial file behind.
+
+The window and the CLI drive the same `run_identity_pipeline`, and `ScanSettings` defaults to the same constants the CLI parser does, so the same video and interval give the same people either way. A test asserts that, because a UI that quietly grouped differently from the command line would be a genuinely confusing thing to debug.
+
+Two defaults differ from the CLI, both deliberately:
+
+- **Sampling defaults to 0.5s**, matching `export` rather than `group`. Someone who opened a window wants a reel.
+- **The encoder defaults to `h264_videotoolbox` on Apple silicon**, where it is ~3.6x faster than `libx264`. It is a visible dropdown rather than a hidden default, and `ExportSettings` still defaults to portable `libx264` for any other caller.
+
 ## Troubleshooting
+
+### The desktop window will not start
+
+`ModuleNotFoundError: No module named '_tkinter'` means Python has no Tk bindings; see the install line in [step 2](#2-install-the-dependencies). Everything except `python -m app ui` works without them.
 
 ### The virtual environment is broken or packages are missing
 
@@ -332,15 +370,17 @@ Expected output is a dictionary containing fields such as width, height, codec, 
 
 ## Testing
 
-The repository includes validation for both the video loader and the detector:
-
 ```bash
 cd flux-cutter
 source .venv/bin/activate
 pytest tests -q
 ```
 
-This project is currently expected to pass all checks in the included suite. The test coverage validates the actual sample video in `assets/test-videos/test.mp4` and confirms that the face detector finds a face in real footage while ignoring blank frames.
+115 tests covering the loader, frame extraction, the detector, the embedder, the tracker, identity grouping, appearance timelines, export segmentation, and the desktop UI's worker layer. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+
+The tests need no display: `app/ui/worker.py` deliberately imports no Tkinter, which is what lets the UI's logic be tested on a headless machine. The window itself (`app/ui/app.py`) is verified separately by driving it end to end — see [Instructions.md](Instructions.md) section 7k.
+
+The pure decision logic — what counts as one appearance, which segments are worth cutting, when two groups are the same person — is tested without encoding a frame, which is why the suite runs in under a minute despite the pipeline taking minutes on real video.
 
 The current detector configuration is YuNet on CPU with a `640x640` detection canvas and a `0.6` confidence threshold, which was the best precision/throughput tradeoff observed on the test footage.
 
@@ -359,8 +399,10 @@ The next logical prototype milestones are:
 - ~~frame extraction and preview validation~~
 - ~~face detection accuracy checks on real footage~~
 - ~~face tracking across consecutive frames~~
-- person grouping and identity clustering (working, still over-splits on hard footage)
-- clip selection and merge logic
-- final exported video composition
+- ~~person grouping and identity clustering~~ (working; tuned against one 22-minute video, so treat the thresholds as fitted to that footage until a second one confirms them)
+- ~~clip selection and merge logic~~
+- ~~final exported video composition~~
+- ~~a desktop window over the whole flow~~
+- **next:** decode is the dominant cost and throws away 12 of every 13 frames it touches; seeking instead is the obvious lever, but PyAV seeks land on keyframes (median 2.67s apart here) so sampled-timestamp accuracy needs measuring first
 
 This roadmap may evolve as the prototype proves which stages need refinement.

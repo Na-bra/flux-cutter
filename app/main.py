@@ -168,7 +168,7 @@ def _resolve_min_detections(
 
 
 @dataclass(frozen=True)
-class _PipelineResult:
+class PipelineResult:
     """What one identity-grouping pass produced, including stream tallies."""
 
     grouper: IdentityGrouper
@@ -180,7 +180,7 @@ class _PipelineResult:
     last_timestamp: float
 
 
-def _run_identity_pipeline(
+def run_identity_pipeline(
     frames: Iterator[tuple[float, np.ndarray]],
     confidence_threshold: float,
     padding_ratio: float,
@@ -191,11 +191,12 @@ def _run_identity_pipeline(
     min_face_size: int,
     min_group_eye_span: float,
     min_detections: int,
-) -> "_PipelineResult":
+) -> "PipelineResult":
     """Runs detect -> crop -> embed -> track -> group over sampled frames.
 
-    Shared by the `group` and `timestamps` commands so both drive the same
-    identity-grouping pipeline instead of maintaining two copies of it.
+    Shared by the `group`, `timestamps` and `export` commands and by the
+    desktop UI, so every caller drives the same identity-grouping pipeline
+    instead of maintaining several copies of it.
 
     Detections are linked into tracks by spatial continuity before any
     identity matching happens, so the grouper compares track-averaged
@@ -278,7 +279,7 @@ def _run_identity_pipeline(
         grouper.add_track(track)
     grouping_time += time.monotonic() - group_start
 
-    return _PipelineResult(
+    return PipelineResult(
         grouper=grouper,
         total_detections=total_detections,
         track_count=len(tracks),
@@ -317,7 +318,7 @@ def run_face_grouping(
     print(f"Saving identity gallery output to: {output_dir.resolve()}")
 
     start_time = time.monotonic()
-    result = _run_identity_pipeline(
+    result = run_identity_pipeline(
         frames,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
@@ -389,7 +390,7 @@ def run_appearance_timestamps(
     )
 
     start_time = time.monotonic()
-    result = _run_identity_pipeline(
+    result = run_identity_pipeline(
         frames,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
@@ -494,7 +495,7 @@ def run_export(
     )
 
     start_time = time.monotonic()
-    result = _run_identity_pipeline(
+    result = run_identity_pipeline(
         frames,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
