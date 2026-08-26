@@ -244,8 +244,9 @@ def _run_identity_pipeline(
                     continue
 
             # One forward pass for every face in this frame rather than one
-            # per face. This footage averages 4.6 faces a frame, and embedding
-            # is the pipeline's dominant cost.
+            # per face. Embedding is the pipeline's dominant compute cost,
+            # though the win is modest: batch size is faces-per-frame, ~2.2
+            # on the test footage regardless of sampling interval (7i).
             embed_start = time.monotonic()
             embeddings = embedder.embed_batch(
                 frame_data, [detection for detection, _ in croppable]

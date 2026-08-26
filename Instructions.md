@@ -680,12 +680,23 @@ recording.** Throughput against synthetic batches:
 | 32 | 22.1 | 1.30x |
 
 The batch size is not a free parameter: it is however many faces are in the
-frame. On `test_3.mp4` that is 2.3 faces per frame at a 1.0s interval and 4.6 at
-0.5s, so the operating point sits at the shallow end of that curve, not the
-plateau. Measured A/B on the same 3111 detections, embedding fell from 93.88s
-to 82.75s -- **1.13x**, matching the batch-2 row rather than the batch-8 one.
-Quoting the plateau figure as the expected gain would have overstated it by
-about 20%.
+frame, and that is a property of the footage rather than of the sampling rate.
+Sampling twice as often produces twice as many frames, not fuller ones --
+measured over the same first 240s of `test_3.mp4`, a 1.0s interval gives 2.17
+faces per frame and a 0.5s interval gives 2.16. So the operating point sits at
+the shallow end of that curve at every sampling density. Measured A/B on the
+same 3111 detections, embedding fell from 93.88s to 82.75s -- **1.13x**,
+matching the batch-2 row rather than the batch-8 one. Quoting the plateau figure
+as the expected gain would have overstated it by about 20%.
+
+An earlier note here claimed 4.6 faces per frame at 0.5s and predicted a larger
+gain at denser sampling. That number came from a scan script dividing one run's
+detections by another run's frame count; the prediction was wrong for a reason
+that is obvious once stated, which is why the corrected measurement is recorded
+rather than quietly dropped. Re-running the whole pipeline at 0.5s confirms
+there is no denser-sampling dividend: 6221 detections embedded in 164.91s is
+26.5 ms each, against 26.6 ms for the 3111 detections at 1.0s. **1.13x is the
+ceiling for this footage**, not a floor to improve on by sampling harder.
 
 Batching is per frame rather than across frames deliberately. Frames arrive from
 a generator holding one at a time (7d), and buffering several to fill a larger
