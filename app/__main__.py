@@ -174,6 +174,14 @@ def main():
         "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
     )
     group_parser.add_argument(
+        "--min-detections",
+        type=int,
+        default=None,
+        help="Minimum detections before an identity is reported. Omit to derive it from "
+        "the video's runtime and the sampling interval (roughly 0.5%% of runtime, at "
+        "least 3 seconds of screen time).",
+    )
+    group_parser.add_argument(
         "--select-index",
         type=int,
         default=None,
@@ -255,6 +263,14 @@ def main():
         "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
     )
     timestamps_parser.add_argument(
+        "--min-detections",
+        type=int,
+        default=None,
+        help="Minimum detections before an identity is reported. Omit to derive it from "
+        "the video's runtime and the sampling interval (roughly 0.5%% of runtime, at "
+        "least 3 seconds of screen time).",
+    )
+    timestamps_parser.add_argument(
         "--select-index",
         type=int,
         required=True,
@@ -300,6 +316,7 @@ def main():
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
                     min_group_eye_span=args.min_group_eye_span,
+                    min_detections=args.min_detections,
                     select_index=args.select_index,
                 )
             elif args.command == "timestamps":
@@ -314,6 +331,7 @@ def main():
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
                     min_group_eye_span=args.min_group_eye_span,
+                    min_detections=args.min_detections,
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,
                     select_index=args.select_index,

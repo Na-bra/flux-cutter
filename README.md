@@ -145,15 +145,17 @@ Grouping quality depends heavily on the sampling interval, because tracking is w
 
 | `--interval` | detections | tracks | identity groups |
 | ------------ | ---------- | ------ | --------------- |
-| 1.0s         | 23         | 17     | 10              |
-| 0.5s         | 49         | 33     | 19              |
-| 0.25s        | 88         | 38     | 24              |
+| 1.0s         | 23         | 17     | 3               |
+| 0.5s         | 49         | 33     | 4               |
+| 0.25s        | 88         | 38     | 2               |
 
 At 1.0s, shots cut and faces jump between samples, so tracks mostly degenerate to length 1 and the stage does nothing. Prefer 0.5s or denser for real grouping work.
 
-These counts are from the current ArcFace embedder with agglomerative grouping, and they are **not** comparable to counts recorded before either change — the group total moves for reasons that have nothing to do with accuracy, so compare montages rather than totals.
+The group counts stay in the same small range across sampling rates because the minimum-screen-time cutoff scales with the interval; the detection counts underneath it do not. Compare montages rather than totals when judging a change — the total moves for reasons unrelated to accuracy.
 
-Grouping errors on this footage are now overwhelmingly one-sided: the pipeline splits one person into several cards far more often than it merges two people into one. Most of the surplus cards are single-detection groups from genuinely hard frames — heavy motion blur, extreme profile, near-darkness — where the embedding is unreliable and correctly matches nothing. Reducing them is a crop-quality problem (gating blurry detections), not a threshold problem; lowering the floor to absorb them re-introduces real false merges.
+Three filters run after clustering, and each exists because of a failure seen on the 22-minute test footage rather than in principle. A **consolidation pass** folds together groups whose centroids agree, which is what reunites one actor split across two clusters (on that footage, the same character in and out of a costume mask). A **non-face filter** drops whole groups whose landmark geometry says they are not people — YuNet reports confident "faces" for backs of heads and for the show's logo, and because those detections fail in the same way they cluster into a convincing phantom identity. A **minimum-screen-time cutoff** sets aside identities too brief to be worth selecting. Together these took that video from 412 person cards to 165, then to roughly 40 once the screen-time cutoff applies.
+
+Every filter routes its rejects to the unassigned count rather than deleting them, so the report always accounts for every detection.
 
 ### Memory
 
@@ -164,6 +166,8 @@ Two things follow for anyone calling it directly:
 - The result is a one-shot iterator with no length. Count as you go rather than calling `len()`, and wrap it in `list(...)` only when you genuinely need random access to a short video.
 - Decoding happens during iteration, so iterate **inside** the `with load_video(...)` block. Consuming it afterwards reads from a closed container.
 
+Identities with very little screen time are set aside rather than shown as person cards. The cutoff is derived from the video's runtime and the sampling interval — roughly 0.5% of runtime, and never less than 3 seconds of screen time — so it means the same thing whether you sample at 1.0s or 0.25s. On the 23s clip that is 3 detections at a 1.0s interval; on a 22-minute episode it is 7. Override it with `--min-detections N`, or pass `--min-detections 1` to keep everything.
+
 Grouping behavior is tunable:
 
 ```bash
@@ -173,7 +177,8 @@ python -m app group assets/test-videos/test.mp4 \
 	--consolidation-threshold 0.5 \
 	--min-group-eye-span 0.15 \
 	--min-confidence 0.7 \
-	--min-face-size 40
+	--min-face-size 40 \
+	--min-detections 5
 ```
 
 See [Instructions.md](Instructions.md#7-stage-02-accuracy-notes-identity-grouping) for how these defaults were chosen against the real test footage.

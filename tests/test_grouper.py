@@ -5,6 +5,7 @@ from app.faces.detector import BoundingBox, FaceDetection, FaceLandmarks
 from app.faces.grouper import (
     FaceObservation,
     IdentityGrouper,
+    auto_min_detections,
     cosine_similarity,
     eye_span_ratio,
 )
@@ -380,3 +381,89 @@ def test_non_face_filter_abstains_without_landmarks():
 
     assert len(grouper.groups) == 1
     assert grouper.unassigned == []
+
+
+def test_auto_min_detections_scales_with_sampling_interval():
+    """Tests that the cutoff means the same screen time at any sampling rate.
+
+    A raw detection count is not portable between intervals: on the 23s test
+    clip the largest identity holds 5 detections at a 1.0s interval and 26 at
+    0.25s. Halving the interval must double the required count for the
+    requirement to stay put.
+    """
+    assert auto_min_detections(23.4, 1.0) == 3
+    assert auto_min_detections(23.4, 0.5) == 6
+    assert auto_min_detections(23.4, 0.25) == 12
+
+
+def test_auto_min_detections_scales_with_runtime():
+    """Tests that a longer video demands more screen time, sub-linearly.
+
+    Three seconds is an eighth of a 23s clip and a rounding error in a
+    feature, so the requirement is the larger of the floor and a share of
+    the runtime.
+    """
+    short = auto_min_detections(23.4, 1.0)
+    episode = auto_min_detections(1355.9, 1.0)
+    film = auto_min_detections(5400.0, 1.0)
+
+    assert short < episode < film
+    # The floor dominates until the share overtakes it (0.5% of 600s = 3s).
+    assert auto_min_detections(60.0, 1.0) == auto_min_detections(23.4, 1.0)
+    # ...and well past that point the share dominates.
+    assert episode == round(0.005 * 1355.9 / 1.0)
+
+
+def test_auto_min_detections_falls_back_to_the_floor_without_duration():
+    """Tests that an unknown runtime uses the absolute floor rather than guessing."""
+    assert auto_min_detections(None, 1.0) == 3
+    assert auto_min_detections(0.0, 1.0) == 3
+
+
+def test_auto_min_detections_rejects_a_non_positive_interval():
+    with pytest.raises(ValueError):
+        auto_min_detections(100.0, 0)
+
+
+def test_brief_groups_are_reported_as_unassigned():
+    """Tests that identities below the cutoff are set aside, not deleted."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_detections=3)
+
+    # Three of one person (kept), one of another (too brief).
+    frequent = [make_observation([1.0, 0.0, 0.0], timestamp=float(i)) for i in range(3)]
+    fleeting = make_observation([0.0, 1.0, 0.0], timestamp=9.0)
+    for observation in frequent + [fleeting]:
+        grouper.add(observation)
+
+    assert len(grouper.groups) == 1
+    assert grouper.groups[0].size == 3
+    assert len(grouper.unassigned) == 1
+    assert grouper.unassigned[0] is fleeting
+
+
+def test_min_detections_of_one_keeps_everything():
+    """Tests that the filter is inert at its disabled value."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_detections=1)
+
+    grouper.add(make_observation([1.0, 0.0, 0.0], timestamp=0.0))
+    grouper.add(make_observation([0.0, 1.0, 0.0], timestamp=1.0))
+
+    assert len(grouper.groups) == 2
+    assert grouper.unassigned == []
+
+
+def test_group_ids_stay_contiguous_after_filtering():
+    """Tests that ids are renumbered once all filters have run.
+
+    Ids are positional labels the CLI's --select-index refers to, so a gap
+    would make the montage and the selector disagree.
+    """
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_detections=2)
+
+    for i in range(2):
+        grouper.add(make_observation([1.0, 0.0, 0.0], timestamp=float(i)))
+    grouper.add(make_observation([0.0, 1.0, 0.0], timestamp=5.0))  # dropped
+    for i in range(2):
+        grouper.add(make_observation([0.0, 0.0, 1.0], timestamp=float(10 + i)))
+
+    assert [group.group_id for group in grouper.groups] == [1, 2]

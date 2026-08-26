@@ -537,3 +537,50 @@ them would misreport how much of the video the pipeline accounted for.
 `IdentityGrouper.unassigned` is now a property combining the up-front
 unreliable buffer with groups this filter rejected, since the second set only
 exists once clustering has run.
+
+
+---
+
+## 7g. Minimum screen time per identity
+
+The gallery still listed a long tail of identities holding one or two
+detections. They are not wrong -- a face really was there -- but nobody
+would pick them out of a gallery, and on `test_3.mp4` they were more than
+half of all cards.
+
+The setting could not simply be "a minimum number of detections", because a
+detection count is not portable. The same 23s clip gives its largest
+identity 5 detections at a 1.0s interval and 26 at 0.25s, so a fixed count
+means four different things at four sampling rates. The sampling-invariant
+quantity is screen time: detections x interval.
+
+Screen time alone is not enough either, because significance is relative to
+runtime. Three seconds is an eighth of a 23s clip and a rounding error in a
+feature film. So `auto_min_detections()` requires the larger of an absolute
+floor and a share of the runtime:
+
+    required_seconds = max(3.0, 0.005 * duration)
+    min_detections   = round(required_seconds / sample_interval)
+
+| video | interval | required | min detections |
+| --- | --- | --- | --- |
+| test.mp4 (23s) | 1.0s | 3.0s | 3 |
+| test.mp4 (23s) | 0.25s | 3.0s | 12 |
+| test_3.mp4 (22.6min) | 1.0s | 6.8s | 7 |
+| 90-minute film | 1.0s | 27.0s | 27 |
+
+The 3-second floor is the anchor: on the 23s clip at a 1.0s interval it
+reproduces exactly the "drop anything under 3 detections" rule that
+prompted this, taking that video from 10 groups to 3.
+
+`--min-detections N` overrides the derivation entirely, and `1` disables
+the filter. The resolved value and its reasoning are printed on every run,
+because a filter that silently hides identities is one people should be
+told about rather than left to infer from a short gallery.
+
+Rejected observations go to `unassigned`, consistent with the non-face
+filter: they were detected, they are just not an identity worth offering.
+
+The derivation lives in `app/main.py`, not in `IdentityGrouper`, which is
+given a plain integer. The grouper deliberately knows nothing about video
+duration or sampling rate, and this keeps it that way.

@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw
 
 from app.faces.detector import FaceDetector
 from app.faces.embedder import FaceEmbedder
-from app.faces.grouper import FaceObservation, IdentityGrouper
+from app.faces.grouper import FaceObservation, IdentityGrouper, auto_min_detections
 from app.faces.tracker import FaceTracker
 from app.ui.gallery import (
     build_face_gallery,
@@ -137,6 +137,35 @@ def run_face_gallery(
         print(format_selected_item(selected_item, index=select_index))
 
 
+def _resolve_min_detections(
+    requested: int | None, duration_seconds: float | None, sample_interval: float
+) -> int:
+    """Settles the minimum-detections cutoff and says which way it was decided.
+
+    An explicit value always wins. Otherwise it is derived from the video's
+    runtime and the sampling interval, and reported, because a silently
+    applied filter that hides identities is the kind of thing someone should
+    be told about rather than left to discover from a short gallery.
+    """
+    if requested is not None:
+        print(f"Minimum detections per identity: {max(1, requested)} (set explicitly).")
+        return max(1, requested)
+
+    resolved = auto_min_detections(duration_seconds, sample_interval)
+    if duration_seconds:
+        print(
+            f"Minimum detections per identity: {resolved} "
+            f"(~{resolved * sample_interval:.1f}s of screen time, from a "
+            f"{duration_seconds:.0f}s video at a {sample_interval}s interval)."
+        )
+    else:
+        print(
+            f"Minimum detections per identity: {resolved} "
+            f"(video duration unavailable; using the floor only)."
+        )
+    return resolved
+
+
 @dataclass(frozen=True)
 class _PipelineResult:
     """What one identity-grouping pass produced, including stream tallies."""
@@ -160,6 +189,7 @@ def _run_identity_pipeline(
     min_confidence: float,
     min_face_size: int,
     min_group_eye_span: float,
+    min_detections: int,
 ) -> "_PipelineResult":
     """Runs detect -> crop -> embed -> track -> group over sampled frames.
 
@@ -185,6 +215,7 @@ def _run_identity_pipeline(
         min_confidence=min_confidence,
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
+        min_detections=min_detections,
     )
 
     total_detections = 0
@@ -260,11 +291,17 @@ def run_face_grouping(
     min_confidence: float,
     min_face_size: int,
     min_group_eye_span: float,
+    min_detections: int | None,
     select_index: int | None,
 ):
     """Detect, embed, and group faces into per-identity clusters."""
     print(f"Sampling frames at a {sample_interval}-second interval...")
     frames = extract_frames(container, sample_interval=sample_interval)
+
+    video_duration = get_video_info(container)["duration"]
+    resolved_min_detections = _resolve_min_detections(
+        min_detections, video_duration, sample_interval
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving identity gallery output to: {output_dir.resolve()}")
@@ -280,6 +317,7 @@ def run_face_grouping(
         min_confidence=min_confidence,
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
+        min_detections=resolved_min_detections,
     )
 
     if result.frame_count == 0:
@@ -327,6 +365,7 @@ def run_appearance_timestamps(
     min_confidence: float,
     min_face_size: int,
     min_group_eye_span: float,
+    min_detections: int | None,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
     select_index: int,
@@ -335,6 +374,9 @@ def run_appearance_timestamps(
     print(f"Sampling frames at a {sample_interval}-second interval...")
     frames = extract_frames(container, sample_interval=sample_interval)
     video_duration = get_video_info(container)["duration"]
+    resolved_min_detections = _resolve_min_detections(
+        min_detections, video_duration, sample_interval
+    )
 
     start_time = time.monotonic()
     result = _run_identity_pipeline(
@@ -347,6 +389,7 @@ def run_appearance_timestamps(
         min_confidence=min_confidence,
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
+        min_detections=resolved_min_detections,
     )
 
     if result.frame_count == 0:

@@ -86,6 +86,50 @@ DEFAULT_MIN_FACE_SIZE = 40
 # group of 5+ detections removed -- the costumed character (whose mask distorts
 # the landmarks) and a legitimate profile-heavy cluster both survive.
 DEFAULT_MIN_GROUP_EYE_SPAN = 0.15
+# How much screen time an identity needs before it is worth reporting as a
+# person, used by auto_min_detections() to derive a minimum detection count.
+#
+# A raw detection count cannot be the setting, because it means different
+# things at different sampling rates: on the 23s clip the largest identity
+# holds 5 detections at a 1.0s interval and 26 at 0.25s. Screen time
+# (detections x interval) is the sampling-invariant quantity.
+#
+# Screen time alone is not enough either, because significance is relative to
+# runtime: three seconds is an eighth of a 23s clip and a rounding error in a
+# feature film. So the requirement is the larger of an absolute floor and a
+# share of the runtime.
+DEFAULT_MIN_APPEARANCE_SECONDS = 3.0
+DEFAULT_MIN_APPEARANCE_SHARE = 0.005
+
+
+def auto_min_detections(
+    duration_seconds: float | None,
+    sample_interval: float,
+    floor_seconds: float = DEFAULT_MIN_APPEARANCE_SECONDS,
+    share: float = DEFAULT_MIN_APPEARANCE_SHARE,
+) -> int:
+    """How many detections an identity needs before it is worth reporting.
+
+    Returns the number of sampled detections corresponding to
+    `max(floor_seconds, share * duration)` seconds of screen time, so the
+    same setting means the same thing whatever the sampling interval.
+
+    Worked examples at a 1.0s interval: a 23s clip requires 3 detections, a
+    22-minute episode 7, a 90-minute film 27. At 0.25s those become 12, 27
+    and 108 -- the same screen time, four times the samples.
+
+    A video whose duration is unknown falls back to the floor alone, which
+    is the conservative choice: it filters obvious noise without assuming a
+    runtime that might be wrong.
+    """
+    if sample_interval <= 0:
+        raise ValueError("sample_interval must be greater than 0")
+
+    required_seconds = floor_seconds
+    if duration_seconds is not None and duration_seconds > 0:
+        required_seconds = max(floor_seconds, share * duration_seconds)
+
+    return max(1, round(required_seconds / sample_interval))
 
 
 def cosine_similarity(embedding_a: np.ndarray, embedding_b: np.ndarray) -> float:
@@ -208,6 +252,7 @@ class IdentityGrouper:
         min_confidence: float = DEFAULT_MIN_CONFIDENCE,
         min_face_size: int = DEFAULT_MIN_FACE_SIZE,
         min_group_eye_span: float = DEFAULT_MIN_GROUP_EYE_SPAN,
+        min_detections: int = 1,
     ):
         if not -1.0 <= similarity_threshold <= 1.0:
             raise ValueError("similarity_threshold must be within [-1.0, 1.0]")
@@ -222,6 +267,7 @@ class IdentityGrouper:
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
         self.min_group_eye_span = min_group_eye_span
+        self.min_detections = max(1, int(min_detections))
 
         self._unreliable: list[FaceObservation] = []
         self._rejected: list[FaceObservation] = []
@@ -374,7 +420,11 @@ class IdentityGrouper:
             # A merged cluster is a different cluster: give its pairs a fresh chance.
             blocked = {pair for pair in blocked if first not in pair and second not in pair}
 
-        return self._reject_non_face_groups(self._consolidate(self._build_groups(members)))
+        self._rejected = []
+        groups = self._consolidate(self._build_groups(members))
+        groups = self._reject_non_face_groups(groups)
+        groups = self._reject_brief_groups(groups)
+        return self._renumber(groups)
 
     def _best_mergeable_pair(
         self, similarity: np.ndarray, blocked: set[tuple[int, int]]
@@ -569,7 +619,6 @@ class IdentityGrouper:
         attributed to anyone, and silently losing them would misreport how much
         of the video the pipeline actually accounted for.
         """
-        self._rejected = []
         if self.min_group_eye_span <= 0.0:
             return groups
 
@@ -585,9 +634,40 @@ class IdentityGrouper:
                 continue
             kept.append(group)
 
-        for position, group in enumerate(kept, start=1):
-            group.group_id = position
         return kept
+
+    def _reject_brief_groups(
+        self, groups: list[FaceIdentityGroup]
+    ) -> list[FaceIdentityGroup]:
+        """Drops identities with too little screen time to be worth selecting.
+
+        The count itself is supplied by the caller rather than derived here,
+        because it depends on the video's duration and sampling interval and
+        the grouper deliberately knows about neither. See auto_min_detections().
+
+        As with the non-face filter, the observations are reported as
+        unassigned rather than discarded: a face that appeared for one sampled
+        frame was still a face, it just is not an identity anyone would pick
+        out of a gallery.
+        """
+        if self.min_detections <= 1:
+            return groups
+
+        kept: list[FaceIdentityGroup] = []
+        for group in groups:
+            if group.size < self.min_detections:
+                self._rejected.extend(group.observations)
+                continue
+            kept.append(group)
+
+        return kept
+
+    @staticmethod
+    def _renumber(groups: list[FaceIdentityGroup]) -> list[FaceIdentityGroup]:
+        """Assigns contiguous 1-based ids after filtering has removed groups."""
+        for position, group in enumerate(groups, start=1):
+            group.group_id = position
+        return groups
 
     def _recompute_group(self, group: FaceIdentityGroup) -> None:
         """Refreshes a group's centroid and representative from its members.
