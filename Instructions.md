@@ -805,3 +805,284 @@ Cancelling mid-export left no file.
 
 Screenshots were not part of this: `screencapture` needs macOS Screen
 Recording permission, which is not something to grant on a user's behalf.
+
+### What driving it found that reading it did not
+
+Three bugs, none of which a unit test on the pipeline would have reached,
+all found by pushing bad input and awkward orderings through the real
+window:
+
+1. **The reel was named after the wrong video.** The suggested filename read
+   the path box rather than the scan, so editing the box after a scan and
+   then clicking a face produced `no_faces-person-2.mp4` for a reel cut
+   entirely from `test.mp4`. Export was correct throughout; only the name
+   lied.
+2. **The gallery accepted clicks mid-export.** The running job holds its own
+   person, so the encode was fine -- but the label and the filename field
+   both changed to describe someone the encode was not cutting.
+3. **A corrupt file crashed instead of explaining.** `loader.py` caught
+   `av.AVError`, which PyAV 18 no longer defines, so the except clause
+   itself raised and a non-video surfaced as `module 'av' has no attribute
+   'AVError'`. This one was not a UI bug at all -- the CLI had it too, and
+   nothing in the suite covered a malformed file.
+
+The common shape: every one of them was a case of the display disagreeing
+with the work. That is the failure mode a UI has and a pipeline does not,
+and it is why `tests/test_ui_app.py` now exists alongside the worker tests,
+skipping rather than failing where there is no display.
+
+Settings are now frozen for the duration of a job for the same reason. A
+control that still moves while the job that captured it runs is claiming an
+influence it does not have.
+
+## 9. Packaging research: shipping this as a desktop app
+
+Not built, only investigated. A trial PyInstaller build was made and run so
+these notes describe measured behaviour rather than expectations; the build
+artifacts were thrown away afterwards.
+
+### The trial build
+
+`pyinstaller --windowed --add-data <both models>` against an entry point that
+calls `app.ui.app.launch` produced a working `FluxCutter.app` on the first
+serious attempt. What it does and does not do, run from the bundle:
+
+| check | result |
+| --- | --- |
+| launches | yes |
+| finds its bundled models | yes, unmodified |
+| full detect -> embed -> track -> group pass | yes: 23 detections, 3 identities |
+| identical to `python -m app group --interval 1.0` | yes, exactly |
+| exports a reel | **no** |
+| passes Gatekeeper | **no** |
+
+Bundle size **342 MB**, dominated by things that are already there:
+
+| component | size |
+| --- | --- |
+| cv2 | 89 MB |
+| ArcFace model | 166 MB |
+| av (with its bundled FFmpeg) | 42 MB |
+| PIL | 11 MB |
+| numpy | 6.5 MB |
+| Python + Tcl/Tk | ~10 MB |
+
+### Model loading survives freezing by luck, and should not rely on it
+
+`Path(__file__).resolve().parents[2] / "assets" / "models"` resolves inside the
+frozen bundle to `Contents/Frameworks/assets/models`, which is exactly where
+`--add-data "...:assets/models"` puts them. It works today, unmodified. It
+works by coincidence of two layouts agreeing, so anything that shipped for real
+should resolve against `sys._MEIPASS` when `sys.frozen` is set rather than
+count on that continuing to line up.
+
+### The one real blocker: ffmpeg is not on PATH under Finder
+
+Export shells out to the `ffmpeg` binary. A Finder-launched .app inherits
+`/usr/bin:/bin:/usr/sbin:/sbin`, not the shell's PATH, so Homebrew's ffmpeg is
+invisible to it. Reproduced by running the bundle under `env -i` with that PATH:
+the scan completed normally and the export failed with our own error message,
+telling a double-clicking user to `brew install ffmpeg`.
+
+This is the only thing standing between the trial build and a working app.
+
+**The fix is already installed.** PyAV is a dependency, is already in the
+bundle at 42 MB, and its vendored FFmpeg carries every encoder the exporter
+asks for -- verified by constructing each one:
+
+| encoder | available in PyAV |
+| --- | --- |
+| h264_videotoolbox | yes |
+| libx264 | yes |
+| aac | yes |
+
+So the cutting could run in-process instead of shelling out, and the external
+binary dependency would disappear rather than needing to be bundled. That is a
+real piece of work (segment encode plus concatenation, currently ~140 lines of
+subprocess calls) and it changes a component that is currently correct and
+tested, so it wants its own measured comparison against the existing output
+before replacing it -- but it is the direction, and it removes a dependency
+rather than adding one.
+
+Bundling the Homebrew ffmpeg binary is the other option and is worse: 420 KB
+of binary that links 37 dylibs, all of which would need relocating into the
+bundle and re-signing.
+
+### Licensing, which needs an answer before any distribution
+
+Measured, not resolved:
+
+- The installed `av==18.0.0` wheel from PyPI **ships libx264 and libx265** in
+  `av/.dylibs/`.
+- Its bundled libavutil, asked directly through ctypes, reports its license as
+  **"LGPL version 3 or later"**, and its configuration string contains
+  `--enable-libx264 --enable-libx265 --enable-version3` but **not**
+  `--enable-gpl`.
+- Upstream FFmpeg documents that combining with libx264 requires
+  `--enable-gpl`, and that the result is GPL.
+
+Those two things do not obviously agree, and the answer decides whether a
+distributed FluxCutter can be closed-source. Nothing here should be treated as
+a legal conclusion -- it is a flag that the question is real and currently
+unanswered. Homebrew's ffmpeg, for comparison, is unambiguously
+`--enable-gpl`.
+
+Note the licensing exposure exists **today**, through PyAV, independently of
+whether the exporter keeps shelling out to a separate binary.
+
+### Gatekeeper
+
+The trial bundle is ad-hoc signed with no Team ID, and `spctl` rejects it: a
+downloader would be told the app is damaged. Shipping needs a paid Apple
+Developer account, a Developer ID certificate, hardened runtime, and
+notarization.
+
+Of the three packaging tools, **Briefcase** handles signing and notarization
+as a built-in step, while PyInstaller and py2app leave it to be scripted. That
+is the main axis worth deciding on, since the trial shows PyInstaller can
+already build the thing -- the hard part is not the freeze, it is everything
+Apple requires afterwards. Hardened runtime is also documented to break some
+native-extension imports, which with cv2 + numpy + PyAV in the bundle is worth
+testing early rather than at the end.
+
+### If this is picked up
+
+Roughly in dependency order:
+
+1. Move export in-process onto PyAV, removing the ffmpeg binary dependency.
+2. Resolve the x264 licensing question.
+3. Resolve model paths through `sys._MEIPASS` when frozen.
+4. Choose the packaging tool on notarization support, not build capability.
+5. Test hardened runtime early, against the native extensions specifically.
+6. Consider whether the 166 MB model ships in the bundle or downloads on first
+   run -- it is half the download either way, and a first-run fetch needs a
+   progress UI and a failure path that the app does not currently have.
+
+## 9b. Docker, and deferring the big downloads
+
+Two proposals, considered separately because they pull in opposite
+directions: one is about where the app runs, the other about what it
+carries.
+
+### Docker is the right answer to a different question
+
+Containerising the **CLI** is straightforward and worth doing. Containerising
+the **window** is not, and the reasons are specific rather than stylistic:
+
+- **Hardware encoding disappears.** videotoolbox is an Apple framework and
+  cannot exist inside a Linux container. Measured on the 12s test reel,
+  same footage, same segments:
+
+  | encoder | encode time | throughput |
+  | --- | --- | --- |
+  | h264_videotoolbox | 4.7s | 2.54x realtime |
+  | libx264 | 23.9s | 0.50x realtime |
+
+  About **5x**, consistent with the 3.67x realtime the 22-minute run managed
+  with videotoolbox. Containerising means every export takes five times
+  longer, permanently, on the machine where the app is most likely to run.
+
+- **A Linux container cannot show a Mac window.** It would need XQuartz and
+  X11 forwarding -- slow, ugly, and something no one installs to use a video
+  tool.
+
+- **Video I/O crosses a VM boundary.** Docker Desktop on macOS is a Linux VM,
+  and the source footage would be bind-mounted across it.
+
+- **Docker is a bigger ask than the app.** Someone who wants to cut a reel
+  will not install a container runtime first.
+
+Where Docker genuinely helps:
+
+1. **As a build environment**, not a runtime -- a reproducible container that
+   produces the Linux binary, with the host toolchain out of the picture.
+2. **For the headless CLI**, if FluxCutter is ever run as a batch or server
+   job. `python -m app export ...` is already the right shape for that, and
+   there libx264 is the only option anyway, so nothing is lost.
+
+So: container for the CLI and for builds, native bundle for the window. These
+are two deployment targets, not two ways of doing one.
+
+### Deferring the model download is right, with three conditions
+
+Fetching models on first use rather than bundling them is a good instinct.
+It takes the macOS bundle from **342 MB to about 176 MB** -- the ArcFace model
+alone is 166 MB of it.
+
+Three things have to be true first, and one of them is a trap:
+
+**1. The download source needs fixing first.** ArcFace ships inside
+InsightFace's `buffalo_l` bundle. Measured `Content-Length` of that bundle:
+**288,621,354 bytes** -- to extract a **174,383,860 byte** file. A naive
+first-run fetch would make the user download *more* than bundling costs
+them. It only pays off if the extracted model is hosted directly. YuNet has
+no such problem: 229,738 bytes, fetched directly.
+
+**2. Checksums are mandatory, not optional.** This project has already lost
+an afternoon to a silently corrupt model -- an SFace file that arrived as
+70 MB instead of 38 MB with 15,998,341 replacement characters in it, from a
+text-mode round trip, and presented as five failing tests rather than as a
+download error. A first-run downloader turns that from a one-off into
+something every user can hit. Verify a known SHA-256 and delete on mismatch.
+
+**3. It needs the UI it does not have.** A 166 MB download needs a progress
+indication, a cancel, a retry, a disk-full path and an offline path. The
+window currently assumes models are simply present. This is most of the work
+of the feature; the downloading itself is the easy part.
+
+Where they go: `~/Library/Application Support/FluxCutter/models` on macOS,
+not next to the app, which may be read-only or in `/Applications`.
+
+### Auto-installing ffmpeg on first use: no
+
+The same instinct applied to the ffmpeg binary should be resisted. Running a
+package manager on someone's machine from inside an app needs admin rights,
+assumes a specific package manager, and looks exactly like what security
+software is built to stop.
+
+It is also unnecessary. PyAV is already a dependency, already in the bundle,
+and already carries h264_videotoolbox, libx264 and aac (9). Moving the cut
+in-process removes the dependency instead of automating its installation --
+strictly better than either bundling ffmpeg or fetching it.
+
+The rule this suggests: **defer data, never defer executables.** Models are
+inert files that a checksum can validate. Binaries are not.
+
+## 9c. Self-distribution, and Windows
+
+### Not shipping through the App Store does not mean not signing
+
+Notarization is *not* an App Store requirement. It is the requirement for
+distributing outside it: macOS attaches a quarantine flag to anything
+downloaded, and Gatekeeper refuses to open an unsigned or un-notarized
+quarantined app, reporting it as damaged rather than as unsigned. The trial
+bundle here was ad-hoc signed and `spctl` rejected it (9).
+
+So self-distribution on macOS needs a Developer ID certificate and
+notarization anyway. Windows is genuinely different: an unsigned .exe raises
+a SmartScreen warning the user can click past, so unsigned self-distribution
+is viable there in a way it is not on macOS.
+
+### Executables cannot be cross-compiled
+
+PyInstaller freezes the interpreter it is running on. A Windows .exe has to
+be built on Windows. For a project with no Windows machine, that means CI --
+a GitHub Actions matrix over `macos-latest` and `windows-latest` is the
+normal answer, and the repository already lives on GitHub.
+
+### What Windows changes about the app
+
+- **No videotoolbox.** Windows falls back to libx264 unless the machine has
+  nvenc/qsv/amf, so exports run about 5x slower than they do on Apple
+  silicon (9b). Nothing to fix; it is what the hardware offers.
+- **ffmpeg is even less likely to be present.** The PATH problem that blocks
+  the macOS bundle (9) is worse on Windows, where users are unlikely to have
+  ffmpeg installed at all. This raises the priority of moving the cut
+  in-process onto PyAV from "the cleanest fix" to "the only sane one".
+- **The encoder list had to stop being hardcoded.** The dropdown offered
+  `h264_videotoolbox` unconditionally, which on Windows is an encoder that
+  does not exist -- selectable, and failing only at encode time.
+  `available_encoders()` now asks PyAV what this machine can actually
+  construct and offers only that, best first, with libx264 as an
+  unconditional floor. Platform detection was the wrong tool: whether nvenc
+  works is a question about the hardware, not about `sys.platform`.
