@@ -1086,3 +1086,96 @@ normal answer, and the repository already lives on GitHub.
   construct and offers only that, best first, with libx264 as an
   unconditional floor. Platform detection was the wrong tool: whether nvenc
   works is a question about the hardware, not about `sys.platform`.
+
+## 10. Models fetched on first use (`app/models.py`)
+
+The two ONNX files are 174 MB and 230 KB. Keeping them in the repository was
+fine while this only ever ran from a checkout; it stops being fine the moment
+anything is distributed, where they are half the download and never change.
+
+They are now fetched the first time something needs them -- at the moment the
+detector or embedder is constructed, not at import and not at install -- and
+`app/models.py` is the only place that knows where they live or how to get
+them.
+
+### The download source had to be fixed before the feature was worth having
+
+ArcFace ships inside InsightFace's `buffalo_l` bundle: **288,621,354 bytes to
+extract a 174,383,860 byte file**. A first-run fetch of the bundle would make
+the user download 275 MB to keep 166 MB -- more than bundling costs them, so
+the feature would have been a regression. It is mirrored standalone on Hugging
+Face, where `content-length` matches this project's own copy exactly.
+
+### Verification is the point, not a nicety
+
+Every spec pins a SHA-256, checked after download, and the file is moved into
+place only if it matches. This is not defensive habit: an earlier model in
+this project arrived through a text-mode round trip at 70 MB instead of 38 MB
+with 16 million replacement characters in it, and presented as five confusing
+test errors rather than as a download problem (7). A downloader turns that
+from a one-off into something every user can hit.
+
+Pinning also answers the mirror question. A third-party mirror is a
+supply-chain exposure; the hash means it is *this project's* copy of the model
+that is authorised, not whatever that URL serves later. If the mirror changes,
+verification fails and nothing loads.
+
+### Atomicity is what makes retrying safe
+
+The download goes to a `.part` file beside the destination -- same filesystem,
+so the rename is atomic -- and is renamed only after the hash matches. An
+interrupted download therefore leaves nothing that a later run could mistake
+for a finished one, which is what allows the answer to a failed fetch to be
+simply "run it again". The cleanup catches `BaseException`, because the UI
+cancels by raising through the progress callback and a `KeyboardInterrupt`
+must not leave a half file either.
+
+### Where they go
+
+A per-user data directory, not next to the app: a frozen `.app` in
+`/Applications` may sit on a read-only volume, and writing into an application
+bundle is wrong even when it is permitted. `FLUXCUTTER_MODEL_DIR` overrides
+it. A copy in `assets/models/` still wins over the cache, so an existing
+checkout keeps working and no one is made to re-download what they have.
+
+### Two callers, two kinds of progress
+
+A 166 MB download on a slow connection takes minutes, and silence for minutes
+is indistinguishable from a hang:
+
+- The **CLI** gets `ensure_model_cli`, which says what it is fetching and how
+  big before it starts, then redraws a bar in place.
+- The **window** cannot use stdout at all, so `worker.fetch_models` pulls the
+  download forward to before the pipeline starts and reports it through the
+  same queue as everything else. Left to the detector and embedder to trigger
+  on construction, it would have happened several frames deep with nowhere to
+  report to.
+
+Pulling it forward has a second benefit: a first run no longer decodes two
+minutes of video before discovering it has no model to embed the faces with.
+
+### What is not tested
+
+The suite never touches the network. That the pinned URLs still serve the
+pinned hashes is a fact about the outside world rather than about this code,
+and belongs in `python -m app models fetch`, not in a test that fails on a
+train. What is tested is the part that fails quietly: rejection of a file that
+is not what was expected, and that neither a rejected nor an interrupted
+download leaves anything behind.
+
+### Verified against the live mirror
+
+The pinned ArcFace URL was fetched end to end through `download_model`:
+174,383,860 bytes, sha256 matching the pin, in **1161 seconds** on a domestic
+connection. That number is the argument for the progress UI rather than an
+aside -- a first run can be a nineteen-minute wait, and nineteen minutes of
+silence is indistinguishable from a hang.
+
+An earlier attempt at the same URL is worth recording because it is the case
+this design exists for. `curl` returned **135,783,125 bytes of the
+174,383,860 byte file and exited 0** -- a 38 MB shortfall reported as
+success. The hash caught it. The size check now catches it first and says
+"stopped early ... running the same command again will retry it", because
+"not the expected file" would have sent someone to distrust the mirror when
+the actual fix was to retry the transfer. The mirror was fine; the transfer
+was not.

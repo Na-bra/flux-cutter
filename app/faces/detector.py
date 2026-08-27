@@ -4,6 +4,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.models import MODELS, ModelDownloadError, ensure_model_cli
+
 
 @dataclass(frozen=True)
 class BoundingBox:
@@ -125,17 +127,31 @@ class FaceDetector:
 
     @classmethod
     def _default_model_path(cls) -> Path:
-        return Path(__file__).resolve().parents[2] / "assets" / "models" / cls.DEFAULT_MODEL_FILENAME
+        """Where the model is, fetching it on first use if it is not here.
+
+        The download happens at this point rather than at import: it is the
+        moment the model is actually needed, so a run that never touches
+        detection never pays for it. See app/models.py.
+        """
+        return ensure_model_cli(MODELS["detector"])
 
     @classmethod
     def _resolve_model_path(cls, model_path: str | Path | None) -> Path:
-        resolved_path = Path(model_path) if model_path is not None else cls._default_model_path()
-        if resolved_path.is_file():
-            return resolved_path
+        # An explicitly passed path is used as given and never downloaded --
+        # someone naming a file means that file, and silently substituting a
+        # different one would be worse than failing.
+        if model_path is not None:
+            resolved_path = Path(model_path)
+            if resolved_path.is_file():
+                return resolved_path
+            raise FileNotFoundError(
+                f"YuNet model not found at '{resolved_path}'."
+            )
 
-        raise FileNotFoundError(
-            f"YuNet model not found at '{resolved_path}'. Download the official model from {cls.DEFAULT_MODEL_SOURCE}."
-        )
+        try:
+            return cls._default_model_path()
+        except ModelDownloadError as error:
+            raise FileNotFoundError(str(error)) from error
 
     def _create_detector(self):
         backend_id = cv2.dnn.DNN_BACKEND_OPENCV

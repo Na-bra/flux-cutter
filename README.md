@@ -99,23 +99,37 @@ sudo apt install python3-tk          # Debian/Ubuntu
 
 Only the desktop window needs this. Every CLI command works without it — `app/__main__.py` imports the UI lazily for exactly that reason — so a headless machine can still run the whole pipeline.
 
-### 3. Download the YuNet and ArcFace models
+### 3. The models fetch themselves
 
-The detector uses the official OpenCV Zoo YuNet model. Identity grouping uses ArcFace (`w600k_r50`, a ResNet50 trained on WebFace600K), shipped inside InsightFace's `buffalo_l` bundle. Download both once and keep them in the repository-local model directory:
+Nothing to do here. The detector uses the official OpenCV Zoo YuNet model (230 KB) and identity grouping uses ArcFace `w600k_r50` (174 MB, a ResNet50 trained on WebFace600K). **Both download automatically the first time something needs them** — the moment you run a command that detects or embeds a face, not at install and not at import.
+
+They land in a per-user cache (`~/Library/Application Support/FluxCutter/models` on macOS, `%LOCALAPPDATA%` on Windows, `$XDG_DATA_HOME` on Linux), so a frozen app on a read-only volume still works. Set `FLUXCUTTER_MODEL_DIR` to put them elsewhere.
+
+```bash
+python -m app models          # where they are, and whether they are present
+python -m app models fetch    # download now rather than mid-scan
+python -m app models clear    # delete the downloaded copies
+```
+
+Each file's SHA-256 is pinned, verified after download, and the file is only moved into place once it matches — so a truncated download, a proxy that mangles it, or a mirror that changes what it serves is rejected rather than loaded. An interrupted download leaves nothing behind and can simply be retried. This is not theoretical: an earlier model in this project arrived corrupted through a text-mode round trip at 70 MB instead of 38 MB and surfaced as five confusing test failures rather than as a download error.
+
+<details>
+<summary>Fetching them by hand instead</summary>
+
+A copy in `assets/models/` always wins over the cache, so a checkout with the models already in it keeps working untouched and never re-downloads:
 
 ```bash
 mkdir -p assets/models
 curl -L --fail -o assets/models/face_detection_yunet_2026may.onnx \
 	https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
 
-# ArcFace ships in a bundle; extract just the recognition model and rename it.
-curl -L --fail -o /tmp/buffalo_l.zip \
-	https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip
-unzip -o -j /tmp/buffalo_l.zip 'w600k_r50.onnx' -d assets/models
-mv assets/models/w600k_r50.onnx assets/models/face_recognition_arcface_w600k_r50.onnx
+curl -L --fail -o assets/models/face_recognition_arcface_w600k_r50.onnx \
+	https://huggingface.co/public-data/insightface/resolve/main/models/buffalo_l/w600k_r50.onnx
 ```
 
-The `buffalo_l` download is ~290MB but only `w600k_r50.onnx` (~174MB) is kept; the other models in the bundle are detection/landmark/attribute models this project doesn't use.
+ArcFace is fetched standalone rather than from InsightFace's `buffalo_l` bundle, which is 275MB to extract the same 166MB file — the rest of it is detection/landmark/attribute models this project doesn't use. Verify with `shasum -a 256`; the expected hashes are pinned in [app/models.py](app/models.py).
+
+</details>
 
 Both models load through OpenCV's DNN module (`cv2.FaceDetectorYN` for detection, `cv2.dnn.readNetFromONNX` for ArcFace), so no extra Python package is needed beyond what's already installed -- no torch, no onnxruntime.
 

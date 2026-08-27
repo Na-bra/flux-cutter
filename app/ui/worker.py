@@ -32,6 +32,7 @@ from app.faces.grouper import (
     auto_min_detections,
 )
 from app.main import run_identity_pipeline
+from app.models import MODELS, ensure_model, find_model
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
@@ -203,11 +204,42 @@ def _tracked_frames(frames, total_frames, cancel, report):
         yield item
 
 
+def missing_models() -> list:
+    """Which models still have to be fetched before a scan can run."""
+    return [spec for spec in MODELS.values() if find_model(spec) is None]
+
+
+def fetch_models(on_progress=None, cancel: threading.Event | None = None) -> None:
+    """Downloads any model that is not on disk yet.
+
+    Done here, before the pipeline starts, rather than left to the detector
+    and embedder to trigger on construction. Those would fetch it several
+    frames deep with nowhere to report to but stdout, which a window does
+    not have; pulling it forward means the download is a visible phase with
+    a progress bar of its own.
+
+    Args:
+        on_progress: Called as (description, fraction, done, total).
+        cancel: Checked as the bytes arrive, so a 166 MB download can be
+            stopped. The partial file is discarded, never left to look
+            like a finished one.
+    """
+    for spec in missing_models():
+        def report(fraction: float, done: int, total: int, spec=spec) -> None:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled()
+            if on_progress is not None:
+                on_progress(spec.description, fraction, done, total)
+
+        ensure_model(spec, on_progress=report)
+
+
 def scan(
     video_path: Path,
     settings: ScanSettings | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
+    on_download=None,
 ) -> ScanResult:
     """Finds every distinct person in a video.
 
@@ -217,13 +249,24 @@ def scan(
         on_progress: Called as (fraction, timestamp_seconds) per sampled
             frame. Fraction is 0.0 when the duration is unknown and no
             estimate is possible.
-        cancel: Set it to stop the scan at the next sampled frame.
+        cancel: Set it to stop the scan at the next sampled frame, or
+            during a model download.
+        on_download: Called as (description, fraction, done, total) while a
+            model is being fetched on first run.
 
     Raises:
-        Cancelled: If `cancel` was set while scanning.
+        Cancelled: If `cancel` was set while scanning or downloading.
+        ModelDownloadError: If a model cannot be fetched or fails its
+            checksum.
         VideoLoadError: If the video cannot be opened.
     """
     settings = settings or ScanSettings()
+
+    # Before the video is even opened: a first run should not decode two
+    # minutes of frames and only then discover it has no model to embed
+    # them with.
+    fetch_models(on_progress=on_download, cancel=cancel)
+
     video_path = Path(video_path)
     started = time.monotonic()
 

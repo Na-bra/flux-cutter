@@ -25,6 +25,14 @@ from app.main import (
     run_face_gallery,
     run_face_grouping,
 )
+from app.models import (
+    MODELS,
+    ModelDownloadError,
+    cache_dir,
+    clear_cache,
+    ensure_model_cli,
+    find_model,
+)
 from app.video.frames import extract_frames
 from app.video.loader import VideoLoadError, get_video_info, load_video
 
@@ -48,6 +56,21 @@ def main():
         nargs="?",
         default=None,
         help="Optional video to preload into the window.",
+    )
+
+    # 'models' command
+    models_parser = subparsers.add_parser(
+        "models",
+        help="Show, fetch, or delete the face models (fetched on first use).",
+    )
+    models_parser.add_argument(
+        "action",
+        nargs="?",
+        default="status",
+        choices=["status", "fetch", "clear"],
+        help="status: where they are and whether they are present. "
+        "fetch: download any that are missing now, rather than mid-scan. "
+        "clear: delete the downloaded copies.",
     )
 
     # 'extract' command
@@ -365,6 +388,27 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.command == "models":
+        if args.action == "clear":
+            removed = clear_cache()
+            print(f"Removed {removed} downloaded model(s) from {cache_dir()}.")
+            return
+        if args.action == "fetch":
+            try:
+                for spec in MODELS.values():
+                    ensure_model_cli(spec)
+            except ModelDownloadError as error:
+                print(f"Error: {error}", file=sys.stderr)
+                sys.exit(1)
+            return
+
+        print(f"Model cache: {cache_dir()}")
+        for spec in MODELS.values():
+            found = find_model(spec)
+            where = str(found.parent) if found else "not present - will download on first use"
+            print(f"  {spec.description} ({spec.size_label})\n    {where}")
+        return
 
     if args.command == "ui":
         # Imported here rather than at module scope so the other commands

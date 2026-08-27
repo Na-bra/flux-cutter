@@ -38,6 +38,7 @@ from app.ui.worker import (
     quality_for,
     scan,
 )
+from app.models import ModelDownloadError
 from app.video.export import ExportError
 from app.video.loader import VideoLoadError
 
@@ -461,10 +462,26 @@ class FluxCutterApp(ctk.CTk):
                 ("progress", fraction, f"Scanning {_clock(timestamp)}...")
             )
 
+        def downloading(description: str, fraction: float, done: int, total: int) -> None:
+            self._messages.put((
+                "progress",
+                fraction,
+                f"First run: downloading the {description} "
+                f"({done / 1_000_000:.0f} of {total / 1_000_000:.0f} MB)...",
+            ))
+
         try:
-            result = scan(video_path, settings, on_progress=report, cancel=self._cancel)
+            result = scan(
+                video_path,
+                settings,
+                on_progress=report,
+                cancel=self._cancel,
+                on_download=downloading,
+            )
         except Cancelled:
             self._messages.put(("cancelled", "Scan stopped."))
+        except ModelDownloadError as error:
+            self._messages.put(("error", "Could not get the face models", str(error)))
         except (VideoLoadError, ValueError) as error:
             self._messages.put(("error", "Could not scan that video", str(error)))
         except Exception as error:  # noqa: BLE001 - a UI must not die silently
