@@ -253,6 +253,8 @@ python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
 
 Pick a video, press **Scan for people**, click a face, press **Export reel**. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
 
+**Folder** and **File name** are separate fields because they change on different rhythms. A folder is chosen once for a session's worth of reels (**Choose...** opens a directory picker, and a folder that does not exist yet is created on export). The file name follows whichever face is selected — `test_3-person-2.mp4` — but only while it is still the name the app suggested; type your own and it survives clicking through the whole gallery. A missing `.mp4` extension is added for you.
+
 Both long operations run on a worker thread, so the window keeps drawing, the progress bar tracks real work (frames sampled while scanning, cuts encoded while exporting), and the action button turns into **Cancel**. Cancelling a scan stops at the next sampled frame; cancelling an export stops after the current cut and leaves no partial file behind.
 
 The window and the CLI drive the same `run_identity_pipeline`, and `ScanSettings` defaults to the same constants the CLI parser does, so the same video and interval give the same people either way. A test asserts that, because a UI that quietly grouped differently from the command line would be a genuinely confusing thing to debug.
@@ -260,7 +262,9 @@ The window and the CLI drive the same `run_identity_pipeline`, and `ScanSettings
 Two defaults differ from the CLI, both deliberately:
 
 - **Sampling defaults to 0.5s**, matching `export` rather than `group`. Someone who opened a window wants a reel.
-- **The encoder defaults to `h264_videotoolbox` on Apple silicon**, where it is ~3.6x faster than `libx264`. It is a visible dropdown rather than a hidden default, and `ExportSettings` still defaults to portable `libx264` for any other caller.
+- **The encoder defaults to `h264_videotoolbox` on Apple silicon**, where it is ~5x faster than `libx264` (4.7s versus 23.9s on the same 12-second reel). It is a visible dropdown rather than a hidden default, and `ExportSettings` still defaults to portable `libx264` for any other caller.
+
+**Quality** is a named level rather than a number, because the two encoders' scales run in opposite directions — `-crf` is 0–51 and lower is better, `-q:v` is 0–100 and higher is better. `Standard`/`High`/`Maximum` translate per encoder. The CLI still takes `--quality` as a raw number, so it wants the right scale for the encoder you picked.
 
 ## Troubleshooting
 

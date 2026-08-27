@@ -15,7 +15,6 @@ The pipeline itself lives in app/main.py and app/ui/worker.py. Nothing
 here decides anything about faces; this module is windows and buttons.
 """
 
-import platform
 import queue
 import sys
 import threading
@@ -26,13 +25,17 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from app.ui.worker import (
+    DEFAULT_QUALITY_LEVEL,
+    QUALITY_LEVELS,
     Cancelled,
     ExportSettings,
     Person,
     ScanResult,
     ScanSettings,
+    available_encoders,
     export,
     plan_export,
+    quality_for,
     scan,
 )
 from app.video.export import ExportError
@@ -57,6 +60,11 @@ INTERVAL_CHOICES = {
 }
 DEFAULT_INTERVAL_LABEL = "0.5s - balanced"
 
+# Matches the CLI's --output default, so the two front ends put their
+# reels in the same place unless told otherwise.
+DEFAULT_OUTPUT_DIR = Path("output")
+DEFAULT_FILENAME = "reel.mp4"
+
 
 def _clock(seconds: float) -> str:
     """Formats seconds as a clock time for display: 4:07, or 1:04:07."""
@@ -66,19 +74,6 @@ def _clock(seconds: float) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
-
-
-def _default_encoder() -> str:
-    """Picks the encoder that will not make the user wait needlessly.
-
-    videotoolbox ran 3.67x realtime on the test footage against libx264's
-    crawl, and every Apple-silicon Mac has it. Elsewhere, libx264 is the
-    portable choice. Either way the menu shows which one is selected --
-    a speed difference that large should not be a hidden default.
-    """
-    if sys.platform == "darwin" and platform.machine() == "arm64":
-        return "h264_videotoolbox"
-    return "libx264"
 
 
 class PersonCard(ctk.CTkFrame):
@@ -154,13 +149,14 @@ class FluxCutterApp(ctk.CTk):
         self._messages: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
         self._cancel = threading.Event()
+        self._drain_job: str | None = None
         self._scan_result: ScanResult | None = None
         self._selected: Person | None = None
         self._cards: list[PersonCard] = []
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(POLL_INTERVAL_MS, self._drain_messages)
+        self._drain_job = self.after(POLL_INTERVAL_MS, self._drain_messages)
 
         if video_path is not None:
             self._video_var.set(str(video_path))
@@ -256,24 +252,42 @@ class FluxCutterApp(ctk.CTk):
             row=0, column=0, columnspan=3, padx=16, pady=(12, 4), sticky="ew"
         )
 
-        ctk.CTkLabel(frame, text="Save to").grid(row=1, column=0, padx=(16, 8), pady=8, sticky="w")
-        self._output_var = ctk.StringVar(value=str(Path("output/reel.mp4")))
-        ctk.CTkEntry(frame, textvariable=self._output_var).grid(
-            row=1, column=1, padx=8, pady=8, sticky="ew"
+        ctk.CTkLabel(frame, text="Folder").grid(row=1, column=0, padx=(16, 8), pady=8, sticky="w")
+        self._output_dir_var = ctk.StringVar(value=str(DEFAULT_OUTPUT_DIR))
+        ctk.CTkEntry(
+            frame, textvariable=self._output_dir_var, placeholder_text="Where to save reels"
+        ).grid(row=1, column=1, padx=8, pady=8, sticky="ew")
+        ctk.CTkButton(
+            frame, text="Choose...", width=100, command=self._browse_output_dir
+        ).grid(row=1, column=2, padx=(8, 16), pady=8)
+
+        ctk.CTkLabel(frame, text="File name").grid(
+            row=2, column=0, padx=(16, 8), pady=(0, 8), sticky="w"
         )
-        ctk.CTkButton(frame, text="Browse...", width=100, command=self._browse_output).grid(
-            row=1, column=2, padx=(8, 16), pady=8
+        self._filename_var = ctk.StringVar(value=DEFAULT_FILENAME)
+        # Remembers what was last filled in automatically, so a name the
+        # user typed themselves is never overwritten when they click a
+        # different face -- but an untouched one still keeps up.
+        self._suggested_filename = DEFAULT_FILENAME
+        ctk.CTkEntry(frame, textvariable=self._filename_var).grid(
+            row=2, column=1, columnspan=2, padx=(8, 16), pady=(0, 8), sticky="ew"
         )
 
         options = ctk.CTkFrame(frame, fg_color="transparent")
-        options.grid(row=2, column=0, columnspan=3, padx=16, pady=(0, 14), sticky="ew")
+        options.grid(row=3, column=0, columnspan=3, padx=16, pady=(0, 14), sticky="ew")
 
         ctk.CTkLabel(options, text="Encoder").pack(side="left", padx=(0, 8))
-        self._encoder_menu = ctk.CTkOptionMenu(
-            options, values=["h264_videotoolbox", "libx264"], width=180
-        )
-        self._encoder_menu.set(_default_encoder())
+        encoders = available_encoders()
+        self._encoder_menu = ctk.CTkOptionMenu(options, values=encoders, width=180)
+        self._encoder_menu.set(encoders[0])
         self._encoder_menu.pack(side="left")
+
+        ctk.CTkLabel(options, text="Quality").pack(side="left", padx=(16, 8))
+        self._quality_menu = ctk.CTkOptionMenu(
+            options, values=list(QUALITY_LEVELS), width=120
+        )
+        self._quality_menu.set(DEFAULT_QUALITY_LEVEL)
+        self._quality_menu.pack(side="left")
 
         self._audio_switch = ctk.CTkSwitch(options, text="Keep audio")
         self._audio_switch.select()
@@ -296,15 +310,51 @@ class FluxCutterApp(ctk.CTk):
             self._video_var.set(chosen)
             self._set_status("Ready to scan.")
 
-    def _browse_output(self) -> None:
-        chosen = filedialog.asksaveasfilename(
-            title="Save reel as",
-            defaultextension=".mp4",
-            initialfile=Path(self._output_var.get()).name or "reel.mp4",
-            filetypes=[("MP4 video", "*.mp4")],
+    def _browse_output_dir(self) -> None:
+        current = Path(self._output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR)
+        chosen = filedialog.askdirectory(
+            title="Choose a folder for exported reels",
+            initialdir=str(current if current.is_dir() else Path.cwd()),
+            mustexist=False,
         )
         if chosen:
-            self._output_var.set(chosen)
+            self._output_dir_var.set(chosen)
+
+    def _output_path(self) -> Path:
+        """Where the next export will be written.
+
+        The folder and the name are separate fields because they change on
+        different rhythms: a folder is chosen once for a session's worth of
+        reels, while the name wants to follow whichever face is selected.
+        """
+        directory = Path(self._output_dir_var.get().strip() or DEFAULT_OUTPUT_DIR)
+        name = self._filename_var.get().strip() or DEFAULT_FILENAME
+        if not name.lower().endswith(".mp4"):
+            name = f"{name}.mp4"
+        return directory / name
+
+    def _suggest_filename(self, person: Person) -> None:
+        """Names the file after the video and the person, if that is free.
+
+        Only replaces a name this method put there itself; anything typed
+        by hand survives clicking through the gallery.
+
+        The name comes from the scan's video rather than from the path box,
+        which can have been edited since. Export always cuts from the
+        scanned video, so reading the box here produced a file named after
+        footage it does not contain.
+        """
+        source = (
+            self._scan_result.video_path
+            if self._scan_result is not None
+            else Path(self._video_var.get().strip())
+        )
+        video_stem = source.stem or "reel"
+        suggestion = f"{video_stem}-person-{person.index + 1}.mp4"
+
+        if self._filename_var.get().strip() == self._suggested_filename:
+            self._filename_var.set(suggestion)
+        self._suggested_filename = suggestion
 
     def _on_scan_clicked(self) -> None:
         if self._is_busy():
@@ -338,14 +388,16 @@ class FluxCutterApp(ctk.CTk):
         if self._scan_result is None or self._selected is None:
             return
 
-        output_path = Path(self._output_var.get().strip() or "output/reel.mp4")
+        output_path = self._output_path()
         if output_path.exists() and not messagebox.askyesno(
             "Overwrite?", f"{output_path.name} already exists. Replace it?"
         ):
             return
 
+        encoder = self._encoder_menu.get()
         settings = ExportSettings(
-            video_encoder=self._encoder_menu.get(),
+            video_encoder=encoder,
+            quality=quality_for(encoder, self._quality_menu.get()),
             include_audio=bool(self._audio_switch.get()),
         )
 
@@ -356,9 +408,17 @@ class FluxCutterApp(ctk.CTk):
         )
 
     def _on_person_selected(self, person: Person) -> None:
+        # The gallery stays visible during an export but must not accept a
+        # new selection: the running job already holds its own person, so
+        # letting the click through changed the label and the filename to
+        # describe someone the encode is not cutting.
+        if self._is_busy():
+            return
+
         self._selected = person
         for card in self._cards:
             card.set_selected(card.person.index == person.index)
+        self._suggest_filename(person)
 
         assert self._scan_result is not None
         _, segments = plan_export(
@@ -380,6 +440,11 @@ class FluxCutterApp(ctk.CTk):
         # do not block the close on it. The worker is a daemon, so the
         # process exits regardless.
         self._cancel.set()
+        # The drain loop reschedules itself, so without this the timer
+        # fires once more against a half-destroyed window.
+        if self._drain_job is not None:
+            self.after_cancel(self._drain_job)
+            self._drain_job = None
         self.destroy()
 
     # ---------------------------------------------------------------- workers
@@ -451,7 +516,7 @@ class FluxCutterApp(ctk.CTk):
         except queue.Empty:
             pass
         finally:
-            self.after(POLL_INTERVAL_MS, self._drain_messages)
+            self._drain_job = self.after(POLL_INTERVAL_MS, self._drain_messages)
 
     def _handle_message(self, message: tuple) -> None:
         kind = message[0]
@@ -513,15 +578,31 @@ class FluxCutterApp(ctk.CTk):
             else:
                 self._export_button.configure(text="Cancel")
                 self._scan_button.configure(state="disabled")
-            self._interval_menu.configure(state="disabled")
+            self._set_settings_enabled(False)
         else:
             self._scan_button.configure(text="Scan for people", state="normal")
             self._export_button.configure(
                 text="Export reel",
                 state="normal" if self._selected is not None else "disabled",
             )
-            self._interval_menu.configure(state="normal")
+            self._set_settings_enabled(True)
             self._worker = None
+
+    def _set_settings_enabled(self, enabled: bool) -> None:
+        """Freezes every knob while a job runs.
+
+        The running job captured its settings when it started, so a control
+        that still moves is telling the user something untrue about what is
+        happening.
+        """
+        state = "normal" if enabled else "disabled"
+        for widget in (
+            self._interval_menu,
+            self._encoder_menu,
+            self._quality_menu,
+            self._audio_switch,
+        ):
+            widget.configure(state=state)
 
     def _set_status(self, text: str) -> None:
         self._status.configure(text=text)

@@ -22,12 +22,16 @@ from app.faces.grouper import (
     FaceObservation,
 )
 from app.ui.worker import (
+    DEFAULT_QUALITY_LEVEL,
     Cancelled,
     ExportSettings,
     Person,
     ScanSettings,
     _tracked_frames,
+    available_encoders,
+    default_encoder,
     plan_export,
+    quality_for,
 )
 
 
@@ -179,3 +183,54 @@ def test_export_settings_default_to_a_portable_encoder():
     """The window may offer videotoolbox, but the setting itself stays portable."""
     assert ExportSettings().video_encoder == "libx264"
     assert ExportSettings().include_audio is True
+
+
+def test_quality_levels_translate_per_encoder():
+    """The two encoders' scales run in opposite directions.
+
+    -crf is 0-51 and lower is better; -q:v is 0-100 and higher is better.
+    Passing one number to both silently produced a 1.7 Mbps videotoolbox
+    file where libx264 gave 13.9 Mbps on the same clip.
+    """
+    assert quality_for("libx264", "Maximum") < quality_for("libx264", "Standard")
+    assert quality_for("h264_videotoolbox", "Maximum") > quality_for(
+        "h264_videotoolbox", "Standard"
+    )
+
+
+def test_unknown_encoder_gets_the_crf_style_number():
+    """crf is the common convention; videotoolbox is the one special case."""
+    assert quality_for("libsvtav1", "High") == quality_for("libx264", "High")
+
+
+def test_unknown_quality_level_falls_back_to_the_default():
+    assert quality_for("libx264", "nonsense") == quality_for(
+        "libx264", DEFAULT_QUALITY_LEVEL
+    )
+
+
+def test_available_encoders_never_comes_back_empty():
+    """libx264 is the floor; the export dropdown must always have an option."""
+    assert available_encoders()
+    assert "libx264" in available_encoders()
+
+
+def test_available_encoders_are_offered_best_first():
+    """A hardware encoder, where present, outranks libx264 by about 5x."""
+    encoders = available_encoders()
+
+    assert encoders[-1] == "libx264"
+    assert default_encoder() == encoders[0]
+
+
+def test_every_offered_encoder_can_actually_be_constructed():
+    """The list is a promise the export will not fail on.
+
+    The dropdown used to hardcode h264_videotoolbox, which does not exist
+    off macOS -- a Windows user could pick an encoder that then failed at
+    encode time.
+    """
+    from av.codec import Codec
+
+    for name in available_encoders():
+        Codec(name, "w")

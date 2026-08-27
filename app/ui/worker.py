@@ -92,6 +92,73 @@ class ExportSettings:
     include_audio: bool = True
 
 
+# Video encoders worth offering, best first. Hardware encoders are listed
+# ahead of libx264 because the gap is not subtle -- videotoolbox cut the
+# same 12s reel in 4.7s against libx264's 23.9s -- and each is specific to
+# hardware that may not be present: videotoolbox is Apple-only, nvenc is
+# NVIDIA, qsv is Intel, amf is AMD. Which of them exist is a question about
+# the machine the app is running on, not about the platform it was built
+# for, so the list is filtered by asking rather than by guessing from
+# sys.platform. libx264 is last and unconditional: it is the one that is
+# always there.
+ENCODER_PREFERENCE = (
+    "h264_videotoolbox",
+    "h264_nvenc",
+    "h264_qsv",
+    "h264_amf",
+    "libx264",
+)
+
+
+def available_encoders() -> list[str]:
+    """Which of the encoders we offer this machine can actually run.
+
+    Asks PyAV, whose FFmpeg is bundled in the wheel and therefore travels
+    with the app -- unlike the system ffmpeg binary the exporter currently
+    shells out to, which may not be installed at all. The two can in
+    principle disagree; they stop being able to once cutting moves
+    in-process onto PyAV (9).
+    """
+    from av.codec import Codec
+
+    found = []
+    for name in ENCODER_PREFERENCE:
+        try:
+            Codec(name, "w")
+        except Exception:
+            continue
+        found.append(name)
+    return found or ["libx264"]
+
+
+def default_encoder() -> str:
+    """The best encoder this machine actually has."""
+    return available_encoders()[0]
+
+
+# The two encoders take quality on scales that do not merely differ but run
+# in opposite directions: -crf is 0-51 and lower is better, -q:v is 0-100
+# and higher is better. Handing both the same number silently produced a
+# 1.7 Mbps videotoolbox file where libx264 gave 13.9 Mbps on the same clip,
+# so callers pick a named level and this translates it. It lives here rather
+# than next to the dropdown because it is a decision about encoding, and
+# because here it can be tested without a display.
+QUALITY_LEVELS = {
+    "Standard": {"libx264": 26, "h264_videotoolbox": 45},
+    "High": {"libx264": 22, "h264_videotoolbox": 55},
+    "Maximum": {"libx264": 18, "h264_videotoolbox": 70},
+}
+DEFAULT_QUALITY_LEVEL = "High"
+
+
+def quality_for(encoder: str, level: str) -> int:
+    """Translates a named quality level into what this encoder expects."""
+    settings = QUALITY_LEVELS.get(level, QUALITY_LEVELS[DEFAULT_QUALITY_LEVEL])
+    # An encoder we have no mapping for is far likelier to be crf-based than
+    # videotoolbox-like, videotoolbox being the one Apple special case.
+    return settings.get(encoder, settings["libx264"])
+
+
 @dataclass(frozen=True)
 class Person:
     """One identity, in the form the UI needs to draw and then export it."""
