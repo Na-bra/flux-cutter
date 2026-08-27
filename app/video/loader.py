@@ -34,8 +34,14 @@ def load_video(video_path: str | Path) -> av.container.InputContainer:
 
     try:
         return av.open(str(path))
-    except av.AVError as exc:
-        raise VideoLoadError(f"Could not open video: {path}") from exc
+    except av.FFmpegError as exc:
+        # av.AVError, which this used to catch, no longer exists in PyAV 18 --
+        # so the except clause itself raised AttributeError and a corrupt file
+        # surfaced as "module 'av' has no attribute 'AVError'" instead of a
+        # readable message. FFmpegError is the base every open() failure
+        # derives from (InvalidDataError for a file that is not a video,
+        # FileNotFoundError for a missing one).
+        raise VideoLoadError(f"Could not open video: {path} ({exc})") from exc
 
 
 def get_video_info(container: av.container.InputContainer) -> dict:

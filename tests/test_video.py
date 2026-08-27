@@ -62,3 +62,19 @@ def test_get_video_info_returns_basic_stream_data():
     assert info["frames"] == 701
     assert info["fps"] == pytest.approx(30.0)
     assert info["duration"] == pytest.approx(23.3666666667, rel=1e-6)
+
+
+def test_a_file_that_is_not_a_video_raises_a_readable_error(tmp_path):
+    """PyAV 18 dropped av.AVError, which the loader used to catch.
+
+    The except clause itself then raised AttributeError, so a corrupt file
+    surfaced as "module 'av' has no attribute 'AVError'" rather than as
+    anything a user could act on.
+    """
+    not_a_video = tmp_path / "broken.mp4"
+    not_a_video.write_text("this is not a video at all")
+
+    with pytest.raises(VideoLoadError) as caught:
+        load_video(not_a_video)
+
+    assert "Could not open video" in str(caught.value)
