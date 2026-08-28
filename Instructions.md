@@ -1179,3 +1179,57 @@ success. The hash caught it. The size check now catches it first and says
 "not the expected file" would have sent someone to distrust the mirror when
 the actual fix was to retry the transfer. The mirror was fine; the transfer
 was not.
+
+## 11. scikit-learn was considered and measured, then declined
+
+Recorded so it is not re-litigated from priors. Measured on the cached
+`test_3.mp4` track embeddings -- 1936 tracks, 3111 observations, 512-dim:
+
+| method | clusters | noise | time |
+| --- | --- | --- | --- |
+| current grouper (after filters) | 40 | -- | 13.88s |
+| sklearn agglomerative, d=0.65 | 277 | 0 | 4.44s |
+| sklearn DBSCAN, eps=0.5 | 62 | 266 | 0.20s |
+| sklearn HDBSCAN, min_cluster_size=5 | 46 | 545 | 11.72s |
+
+**HDBSCAN was the candidate worth testing and it lost.** Its appeal was
+native noise labelling, which looked like a principled replacement for the
+hand-built eye-span filter and the phantom identity it removes (7f). In
+practice it is no faster than what exists and discards **545 of 1936 tracks,
+28% of them** -- roughly three times the ~185 degenerate detections the
+eye-span filter targets. Replacing a working heuristic with a dependency is
+only justified if the dependency does it better; this does it worse.
+
+**Agglomerative clustering is what `grouper.py` already implements**, so it
+buys maintenance rather than quality, and costs the margin rule (7b), which
+has no sklearn equivalent. Its 277 clusters against the pipeline's 40 is the
+gap filled by the consolidation pass, the non-face filter and the minimum
+screen time -- four pieces of work sklearn does not replace, wrapped around
+the one piece it does.
+
+**KMeans and SpectralClustering are the wrong shape.** They need
+`n_clusters`, and how many people are in a video is the question, not an
+input.
+
+DBSCAN is the only genuinely interesting result: 0.20s against 13.88s, a 70x
+saving. It is still not worth taking today, because clustering is ~7% of a
+run that spends ~104s in decode and ~83s embedding. It becomes worth
+revisiting if sampling ever gets dense enough for O(n^2) to dominate -- at
+0.25s on a feature-length film, 1936 tracks becomes roughly 8000 and 13.88s
+becomes minutes. The shape to try then is DBSCAN as a cheap pre-pass that
+splits obvious groups, with the existing logic run inside each, rather than
+a wholesale swap that would discard the tuning.
+
+### The measurement that made the question worth asking
+
+The comparison began from "grouping costs 0.04s, so speed is not a reason to
+touch it". That figure was wrong, and wrong in a way worth recording:
+`add_track` only buffers, and `_cluster()` runs lazily on the first access to
+`.groups` -- which happened in `build_identity_gallery`, **after**
+`grouping_time` had already been finalised. The timer was measuring the
+buffering alone: 0.10s, against the 13.88s the clustering actually costs.
+
+A number that low is not merely inaccurate, it is an argument-stopper: it
+says clustering is free and no one need look further. `run_identity_pipeline`
+now calls `grouper.finish()` inside the timed section so the reported figure
+means what it claims.

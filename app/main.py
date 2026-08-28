@@ -277,6 +277,13 @@ def run_identity_pipeline(
     tracks = tracker.finish()
     for track in tracks:
         grouper.add_track(track)
+    # add_track only buffers; clustering is lazy and used to run on the
+    # caller's first access to .groups, which is outside this timer. The
+    # reported grouping time was therefore the buffering alone -- 0.04s
+    # against the 13.88s the clustering actually costs on test_3.mp4, a
+    # figure low enough to have been quoted as a reason not to optimise
+    # clustering at all. Forcing it here makes the number mean what it says.
+    grouper.finish()
     grouping_time += time.monotonic() - group_start
 
     return PipelineResult(
