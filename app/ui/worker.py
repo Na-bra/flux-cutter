@@ -14,6 +14,7 @@ Two rules this module exists to enforce:
   the iteration rather than the call that started it.
 """
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -110,24 +111,41 @@ ENCODER_PREFERENCE = (
 )
 
 
+def _encoder_works(name: str) -> bool:
+    """Whether this machine can really encode with `name`.
+
+    Constructing the codec is not enough. PyAV's Windows wheel compiles in
+    h264_nvenc, h264_qsv and h264_amf unconditionally, so on a PC with no
+    NVIDIA card `Codec("h264_nvenc", "w")` still succeeds and the failure
+    arrives minutes later, in the middle of an export. Actually opening an
+    encoder and pushing one frame through it costs milliseconds and asks
+    the question that matters: is the hardware there.
+    """
+    import av
+    import numpy as np
+
+    try:
+        with av.open("/dev/null" if os.name != "nt" else "NUL", mode="w", format="mp4") as sink:
+            stream = sink.add_stream(name, rate=30)
+            stream.width, stream.height, stream.pix_fmt = 160, 128, "yuv420p"
+            frame = av.VideoFrame.from_ndarray(
+                np.zeros((128, 160, 3), dtype=np.uint8), format="rgb24"
+            ).reformat(format="yuv420p")
+            frame.pts = 0
+            stream.encode(frame)
+            stream.encode()
+    except Exception:
+        return False
+    return True
+
+
 def available_encoders() -> list[str]:
     """Which of the encoders we offer this machine can actually run.
 
     Asks PyAV, whose FFmpeg is bundled in the wheel and therefore travels
-    with the app -- unlike the system ffmpeg binary the exporter currently
-    shells out to, which may not be installed at all. The two can in
-    principle disagree; they stop being able to once cutting moves
-    in-process onto PyAV (9).
+    with the app rather than having to be installed alongside it.
     """
-    from av.codec import Codec
-
-    found = []
-    for name in ENCODER_PREFERENCE:
-        try:
-            Codec(name, "w")
-        except Exception:
-            continue
-        found.append(name)
+    found = [name for name in ENCODER_PREFERENCE if _encoder_works(name)]
     return found or ["libx264"]
 
 
