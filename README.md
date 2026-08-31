@@ -282,6 +282,33 @@ Two defaults differ from the CLI, both deliberately:
 
 **Quality** is a named level rather than a number, because the two encoders' scales run in opposite directions — `-crf` is 0–51 and lower is better, `-q:v` is 0–100 and higher is better. `Standard`/`High`/`Maximum` translate per encoder. The CLI still takes `--quality` as a raw number, so it wants the right scale for the encoder you picked.
 
+## Building a desktop app
+
+```bash
+pip install pyinstaller
+pyinstaller packaging/FluxCutter.spec --noconfirm
+```
+
+Out comes `dist/FluxCutter.app` (macOS) or `dist/FluxCutter/` (Windows), about **176 MB**. The models are not bundled — the app downloads and verifies them on first use, which keeps the download to a third of what shipping them would cost.
+
+Pushing a `v*` tag runs [.github/workflows/build.yml](.github/workflows/build.yml), which builds both platforms and attaches the zips to a draft release. **PyInstaller freezes the interpreter it is running on**, so a Windows `.exe` must be built on Windows and a `.app` on macOS — there is no cross-compilation. That matrix is the whole reason the workflow exists; without a Windows machine, GitHub's runner is the Windows machine.
+
+### Neither build is signed
+
+Both platforms will warn on first launch. That is expected and it is what a certificate would buy away.
+
+**macOS** quarantines anything downloaded and Gatekeeper reports an unsigned quarantined app as *damaged* — which is a lie, but it is what your users see. Either clear the flag:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/FluxCutter.app
+```
+
+or open **System Settings → Privacy & Security → Open Anyway**. Right-click → Open no longer works; Apple removed that in Sequoia.
+
+**Windows** shows SmartScreen's "Windows protected your PC" — **More info** → **Run anyway**, once.
+
+Signing costs $99/yr (Apple, and notarization is required for distribution *outside* the App Store, not just inside it) or $200–400/yr (Windows). Worth it for a public download page; not worth it for sending a build to people who can be told about the warning.
+
 ## Troubleshooting
 
 ### The desktop window will not start

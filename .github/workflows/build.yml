@@ -1,0 +1,131 @@
+name: Build desktop apps
+
+# PyInstaller freezes the interpreter it is running on, so a Windows .exe
+# has to be built on Windows and a macOS .app on macOS. There is no
+# cross-compilation to fall back on; this matrix is the whole reason the
+# workflow exists.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: "Also create a draft release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    # The build is the point, but a green build of broken code is worse than
+    # no build. assets/ is not in the repository, so the 38 tests that need
+    # real footage skip themselves (tests/conftest.py) and the other 115 run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - name: Run the tests that do not need sample footage
+        run: pytest -q
+
+  build:
+    needs: test
+    strategy:
+      # One platform failing should not deny you the other's artifact.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: FluxCutter-macos
+            bundle: dist/FluxCutter.app
+          - os: windows-latest
+            artifact: FluxCutter-windows
+            bundle: dist/FluxCutter
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Check Tk is present
+        # customtkinter draws through Tk, and a Python without the _tkinter
+        # extension fails at import rather than at build. Better to know here
+        # than to read it out of a PyInstaller traceback.
+        run: python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt pyinstaller
+
+      - name: Build
+        run: pyinstaller packaging/FluxCutter.spec --noconfirm
+
+      - name: Check the build produced something that runs
+        # Not a smoke test of the UI -- there is no display on a runner --
+        # but it catches a bundle that cannot import its own dependencies,
+        # which is the common way a PyInstaller build fails silently.
+        shell: bash
+        run: |
+          test -e "${{ matrix.bundle }}" || { echo "no bundle at ${{ matrix.bundle }}"; exit 1; }
+          du -sh "${{ matrix.bundle }}"
+
+      - name: Package
+        # Zipped rather than raw: a .app is a directory, and uploading it
+        # unzipped loses the executable bit and the bundle structure.
+        shell: bash
+        run: |
+          cd dist
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            ditto -c -k --sequesterRsrc --keepParent FluxCutter.app ../${{ matrix.artifact }}.zip
+          else
+            7z a ../${{ matrix.artifact }}.zip FluxCutter
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.zip
+          retention-days: 30
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          draft: true
+          # Neither build is signed, so anyone downloading them needs to be
+          # told what their computer will say. Saying it here is cheaper than
+          # answering it later.
+          body: |
+            Unsigned builds. Both platforms will warn on first launch.
+
+            **macOS** — the app is quarantined on download and Gatekeeper
+            will call it damaged. It is not. Either:
+
+                xattr -dr com.apple.quarantine /path/to/FluxCutter.app
+
+            or open System Settings → Privacy & Security → **Open Anyway**.
+            (Right-click → Open no longer works; Apple removed it in Sequoia.)
+
+            **Windows** — SmartScreen shows "Windows protected your PC".
+            Click **More info** → **Run anyway**.
+
+            The face models (~174 MB) download on first use, with a progress
+            bar, and are verified against a pinned checksum.
