@@ -285,13 +285,24 @@ Two defaults differ from the CLI, both deliberately:
 ## Building a desktop app
 
 ```bash
-pip install pyinstaller
-pyinstaller packaging/FluxCutter.spec --noconfirm
+./packaging/build.sh
 ```
 
-Out comes `dist/FluxCutter.app` (macOS) or `dist/FluxCutter/` (Windows), about **176 MB**. The models are not bundled — the app downloads and verifies them on first use, which keeps the download to a third of what shipping them would cost.
+Out comes `dist/FluxCutter.app` (176 MB) and `dist/FluxCutter-macos.zip` (81 MB, which is what you send people). On Windows the same script produces `dist/FluxCutter/`. It installs PyInstaller if missing, checks Tk is present before wasting your time, and zips with `ditto` rather than `zip` because a `.app` is a directory and `zip` loses its executable bits.
 
-Pushing a `v*` tag runs [.github/workflows/build.yml](.github/workflows/build.yml), which builds both platforms and attaches the zips to a draft release. **PyInstaller freezes the interpreter it is running on**, so a Windows `.exe` must be built on Windows and a `.app` on macOS — there is no cross-compilation. That matrix is the whole reason the workflow exists; without a Windows machine, GitHub's runner is the Windows machine.
+`--no-zip` builds only; `--run` opens the result. The underlying command is `pyinstaller packaging/FluxCutter.spec --noconfirm` if you would rather drive it yourself.
+
+The models are not bundled — the app downloads and verifies them on first use, which keeps the download to a third of what shipping them would cost.
+
+### Why Windows needs something else
+
+**PyInstaller freezes the interpreter it is running on.** There is no cross-compilation: a Windows `.exe` must be built on Windows. On an Apple Silicon Mac this is not a matter of installing the right tool —
+
+- Wine would have to emulate x86 on ARM *and* host a full PyInstaller run over OpenCV and PyAV. Impractical.
+- A Windows-on-ARM VM (UTM) runs natively and quickly, but produces an **ARM64** `.exe` that most people's x64 PCs cannot run.
+- An x64 Windows VM on M1 means whole-machine emulation. Hours, if it works.
+
+So the Windows build needs a real x64 Windows machine. Pushing a `v*` tag runs [.github/workflows/build.yml](.github/workflows/build.yml), which rents one from GitHub, builds both platforms, and attaches the zips to a draft release. If you have a Windows PC to hand, `./packaging/build.sh` on it does the same thing without any of that.
 
 ### Neither build is signed
 
