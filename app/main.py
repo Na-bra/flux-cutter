@@ -20,7 +20,8 @@ from app.ui.gallery import (
     save_gallery_montage,
     save_identity_gallery_montage,
 )
-from app.video.export import ExportError, export_segments, merge_for_export
+from app.video.cutter import CutterError, cut_segments
+from app.video.export import merge_for_export
 from app.video.frames import extract_frames
 from app.video.loader import get_video_info
 from app.video.timeline import build_appearance_intervals, format_timestamp
@@ -573,8 +574,16 @@ def run_export(
     )
     print(f"Encoding with {video_encoder}...")
 
+    def report(index: int, total: int, segment) -> None:
+        print(
+            f"  cut {index + 1}/{total}  "
+            f"{format_timestamp(segment.start_time)} -> "
+            f"{format_timestamp(segment.end_time)}  "
+            f"({segment.end_time - segment.start_time:.2f}s)"
+        )
+
     try:
-        export = export_segments(
+        export = cut_segments(
             video_path,
             segments,
             output_path,
@@ -582,8 +591,9 @@ def run_export(
             audio_encoder=audio_encoder,
             quality=quality,
             include_audio=include_audio,
+            on_segment=report,
         )
-    except ExportError as error:
+    except CutterError as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)
 

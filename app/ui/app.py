@@ -39,7 +39,7 @@ from app.ui.worker import (
     scan,
 )
 from app.models import ModelDownloadError
-from app.video.export import ExportError
+from app.video.cutter import CutterError
 from app.video.loader import VideoLoadError
 
 # How often the main thread checks the worker's mailbox. Fast enough that
@@ -511,7 +511,7 @@ class FluxCutterApp(ctk.CTk):
             )
         except Cancelled:
             self._messages.put(("cancelled", "Export stopped."))
-        except ExportError as error:
+        except CutterError as error:
             self._messages.put(("error", "Could not export", str(error)))
         except Exception as error:  # noqa: BLE001 - a UI must not die silently
             self._messages.put(("error", "Export failed", f"{type(error).__name__}: {error}"))

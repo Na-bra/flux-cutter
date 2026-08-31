@@ -1233,3 +1233,54 @@ A number that low is not merely inaccurate, it is an argument-stopper: it
 says clustering is free and no one need look further. `run_identity_pipeline`
 now calls `grouper.finish()` inside the timed section so the reported figure
 means what it claims.
+
+## 12. Cutting in-process (`app/video/cutter.py`)
+
+Export no longer shells out to `ffmpeg`. The packaging trial (9) found that
+a Finder-launched .app inherits `/usr/bin:/bin:/usr/sbin:/sbin`, so a
+Homebrew ffmpeg is invisible to it: the frozen app scanned perfectly and
+then could not cut. PyAV was already a dependency, already ships FFmpeg
+inside its wheel, and already carries every encoder in use, so moving the
+work in-process removed a dependency instead of bundling one.
+
+It is also structurally simpler. The subprocess version wrote one temporary
+file per segment and joined them with the concat demuxer, because that is
+how a command-line tool must do it. Holding the output container open means
+each segment's frames encode straight into the finished reel: no temporary
+files, no second pass, no assumption that segments share codec parameters.
+
+### Three bugs found by measuring rather than reading
+
+None of these are visible in the code, and two are invisible in playback.
+
+**Frames lost at every segment boundary.** `container.decode(video, audio)`
+yields both streams interleaved, and audio runs ahead of video. Breaking the
+loop on the first frame past the segment's end therefore ended on an *audio*
+frame and discarded the video still to come: **7 frames per segment, 339 of
+an expected 360** across a three-segment reel. The output looked fine. Each
+stream is now finished independently and the loop stops only once both are
+done. `tests/test_cutter.py` asserts the 360.
+
+**Hand-computed timestamps do not mux.** Rewriting each frame's PTS against
+a running clock -- the obvious way to make three disjoint spans into one
+continuous timeline -- failed every `mux()` with EINVAL. An encoder's
+`time_base` is not what the stream reports before it has been opened, and
+arithmetic against the wrong base produces timestamps the muxer rejects.
+
+**`pts = None` muxes happily and writes a broken file.** Letting the encoder
+assign its own timestamps is the usual advice and it appears to work: the
+file plays. Probed, its *video* stream has a duration of `0.033333` -- one
+frame -- and an `avg_frame_rate` of `10800/1`. The audio stream carries a
+sane duration, which is what hides it. Each stream now counts its own
+output, video by frame number and audio by sample number, stamped against an
+explicit 90kHz base. The result probes as `30/1` and exactly `12.000000`
+seconds for three four-second segments, which is *better* than the
+subprocess version managed (`27000/901`, `12.013334`).
+
+### Verified
+
+Frame-for-frame against the path it replaces: 360 video frames from the same
+three segments, both ways, and slightly faster (3.9s against 4.6s). Then end
+to end where it actually matters -- inside the frozen bundle, under
+`env -i` with a Finder-like PATH and no ffmpeg anywhere: 4 people found, a
+three-cut 11.9s reel written, decoding cleanly.

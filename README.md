@@ -221,6 +221,8 @@ python -m app export assets/test-videos/test.mp4 --select-index 0 --output outpu
 
 `--select-index` uses the same numbering as the `group` montage. On Apple silicon, add `--encoder h264_videotoolbox --quality 55` — it runs roughly 3.6x faster than the portable `libx264` default and writes a smaller file.
 
+**Cutting happens in-process, through PyAV — `ffmpeg` is no longer needed.** It used to shell out to the binary, which broke the moment the app was packaged: a Finder-launched `.app` inherits `/usr/bin:/bin:/usr/sbin:/sbin`, so a Homebrew ffmpeg is invisible to it. PyAV was already a dependency, already ships FFmpeg in its wheel, and already carries every encoder used here, so this removed a dependency rather than adding one. Verified frame-for-frame against the old subprocess path: 360 video frames from the same three segments, either way.
+
 **Segments are re-encoded, not stream-copied.** This is deliberate and not an oversight. A stream copy can only begin at a keyframe, and keyframe spacing on real footage is coarse: on the 22-minute test video keyframes sit a median 2.67s apart (up to 7.84s) while the median appearance is 3.0s long, so a copied cut would routinely open several seconds early — on somebody else's face. The 23-second test clip is nearly all-intra (keyframes 0.03s apart) and hides this completely, so anything validated only there will look perfect and fail on real video. Joining the finished segments *is* a stream copy, safely, because they were all just written with identical codec parameters.
 
 The cut list is not the appearance list. `timestamps` answers "when was this person on screen", which is a detection question; a watchable reel is an editorial one, and they disagree. On the 22-minute footage the lead's appearances come back as 173 intervals with a median duration of 3.0s. Cut literally that is a strobe, so `merge_for_export` widens each interval, bridges gaps too short to cut across, and grows anything still under a minimum length:
@@ -236,7 +238,7 @@ More bridging means fewer, longer cuts but more footage where the person is brie
 
 A real run on the 22-minute episode: 1057 detections for the lead, 173 appearance intervals (527.0s on screen), 107 segments cut (662.2s), encoded in 180s at 3.67x realtime with `h264_videotoolbox`, peak memory 1.24 GB. The wall-clock cost is dominated by the detect/embed pass (~7 minutes), not by the cutting (~3 minutes).
 
-Clip export shells out to `ffmpeg`, which must be on PATH (`brew install ffmpeg`). This is the one place the project depends on an external binary rather than a Python package.
+Export needs no external binary. `ffmpeg` on PATH is still useful for inspecting output with `ffprobe`, and the test suite skips its verification steps without it, but nothing in the pipeline requires it.
 
 ### 7. Compute appearance timestamps for one person
 

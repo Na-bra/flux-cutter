@@ -34,11 +34,11 @@ from app.faces.grouper import (
 from app.main import run_identity_pipeline
 from app.models import MODELS, ensure_model, find_model
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
+from app.video.cutter import cut_segments
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
     DEFAULT_EXPORT_PADDING_SECONDS,
     DEFAULT_MIN_SEGMENT_SECONDS,
-    export_segments,
     merge_for_export,
 )
 from app.video.frames import extract_frames
@@ -51,10 +51,9 @@ class Cancelled(Exception):
 
     Deliberately an exception rather than a flag checked by the pipeline:
     it unwinds through run_identity_pipeline's `finally`, so the detector
-    and embedder are closed on the way out, and through export_segments'
-    temporary-directory context manager, so half-encoded segments are
-    cleaned up. Neither of those needed a cancellation concept added to
-    it to make that work.
+    and embedder are closed on the way out, and through cut_segments'
+    open output container, which is closed in its own `finally`. Neither
+    of those needed a cancellation concept added to it to make that work.
     """
 
 
@@ -389,7 +388,7 @@ def export(
 
     Raises:
         Cancelled: If `cancel` was set during the encode.
-        ExportError: If ffmpeg is missing, or a segment produced nothing.
+        CutterError: If the source cannot be read or the segments are unusable.
     """
     settings = settings or ExportSettings()
 
@@ -406,7 +405,7 @@ def export(
         if on_progress is not None:
             on_progress((index + 1) / total, index + 1, total)
 
-    return export_segments(
+    return cut_segments(
         scan_result.video_path,
         segments,
         output_path,
@@ -414,6 +413,5 @@ def export(
         audio_encoder=settings.audio_encoder,
         quality=settings.quality,
         include_audio=settings.include_audio,
-        progress=False,
         on_segment=report,
     )
