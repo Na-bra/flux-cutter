@@ -12,10 +12,23 @@ download for something the app can fetch once, in the background, with a
 progress bar.
 """
 
+import re
 import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
+
+
+def project_version(root: Path) -> str:
+    """Reads __version__ out of app/__init__.py without importing it.
+
+    Importing would pull in the whole dependency tree at spec-parse time,
+    which is both slow and a way to fail the build for a reason that has
+    nothing to do with packaging.
+    """
+    text = (root / "app" / "__init__.py").read_text()
+    match = re.search(r'^__version__ = "([^"]+)"', text, re.MULTILINE)
+    return match.group(1) if match else "0.0.0"
 
 IS_MACOS = sys.platform == "darwin"
 ROOT = Path(SPECPATH).resolve().parent
@@ -24,6 +37,8 @@ ROOT = Path(SPECPATH).resolve().parent
 # (iconutil) and this spec has to build on Windows too. Regenerate them with
 # `python packaging/make_icon.py`. A clone that has deleted them still
 # builds, just with PyInstaller's own logo.
+VERSION = project_version(ROOT)
+
 ICNS = ROOT / "packaging" / "icon.icns"
 ICO = ROOT / "packaging" / "icon.ico"
 PNG = ROOT / "packaging" / "icon.png"
@@ -81,6 +96,6 @@ if IS_MACOS:
         info_plist={
             "NSHighResolutionCapable": True,
             # Without this the window opens at 1x on a Retina display.
-            "CFBundleShortVersionString": "1.0.0",
+            "CFBundleShortVersionString": VERSION,
         },
     )
