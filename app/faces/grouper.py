@@ -53,12 +53,26 @@ DEFAULT_MARGIN_THRESHOLD = 0.0
 # consolidation pass that follows clustering. See IdentityGrouper._consolidate
 # for why average linkage cannot catch these on its own.
 #
-# Chosen from the gap in the data on test_3.mp4: among the 30 largest groups,
-# the pairs that were visibly the same actor scored 0.549, 0.550 and 0.626
-# centroid similarity, and the next-closest pair scored 0.280. Anything in
-# 0.30-0.54 separates those cleanly; 0.50 sits inside that gap on the
-# conservative side.
-DEFAULT_CONSOLIDATION_THRESHOLD = 0.50
+# Re-derived once co-occurrence gave a way to label group pairs without
+# guessing. 0.50 was fitted to the three same-actor pairs that happened to be
+# visible among the 30 largest groups; measured across all 780 pairs it turned
+# out to be far above anything that actually merges. At 0.50, and anywhere down
+# to 0.41, consolidation fires zero times on test_3.mp4.
+#
+# The labelled picture (see DEFAULT_FORBID_COOCCURRING for where the labels
+# come from):
+#
+#   pairs that provably co-occur, so are different people   max 0.334
+#   pairs free to merge, confirmed by eye to be one actor       0.400, 0.405
+#
+# 0.375 sits in that gap. It recovers both confirmed missed merges -- one
+# actor in face paint, and one girl split across two lighting setups -- while
+# staying above every pair the footage proves is two people.
+#
+# Lower would not obviously be wrong, but it would be unevidenced: below 0.334
+# there are labelled different-person pairs, and the co-occurrence rule only
+# protects pairs that happen to share a frame.
+DEFAULT_CONSOLIDATION_THRESHOLD = 0.375
 DEFAULT_MIN_CONFIDENCE = 0.7
 # Shorter side of the face box, in pixels, below which an embedding is
 # considered too unreliable to trust for identity matching.
@@ -98,6 +112,53 @@ DEFAULT_MIN_GROUP_EYE_SPAN = 0.15
 # runtime: three seconds is an eighth of a 23s clip and a rounding error in a
 # feature film. So the requirement is the larger of an absolute floor and a
 # share of the runtime.
+# Whether two identities seen in the SAME sampled frame may ever be merged.
+#
+# They may not: a person cannot stand in two places at once, so two
+# simultaneous non-overlapping face boxes are two different people. That is
+# ground truth, not a similarity estimate, and it is free -- the frame index
+# is already on every observation.
+#
+# It matters because it is the only hard evidence in the whole pipeline.
+# Everything else here is a threshold fitted to one video; this is a fact
+# about the footage. Measured on test_3.mp4 at 1.0s, the baseline grouping
+# put two same-frame faces into one identity 11 times, across 5 of its 40
+# groups -- every one a false merge, and none of them reachable by tuning:
+# the detections involved have median confidence 0.917, median box 74px and
+# not one of them falls below the blur floor that was the suspected culprit.
+#
+# It also earns its keep in the other direction. The highest-scoring pair of
+# groups that provably co-occur scores 0.334 centroid similarity, and the two
+# confirmed missed merges score 0.400 and 0.405. Blocking the co-occurring
+# pair outright is what makes it safe to lower the consolidation threshold
+# into that gap instead of sitting at 0.50 where nothing merges at all.
+#
+# The assumption it makes is that one person is not visible twice in a single
+# frame. Mirrors, photographs and screens can break that; when they do, the
+# result is a refused merge, which is this project's cheap error.
+DEFAULT_FORBID_COOCCURRING = True
+# Similarity above which a shared frame stops being evidence of two people.
+#
+# The rule above assumes one person cannot be in two places at once. Screens,
+# photographs and split-screen editing break that, and this footage does all
+# three: at t=336s and t=368s the title sequence tiles several clips of the
+# SAME actor side by side, and at t=490s YuNet finds two faces in the
+# photographs stuck to a fridge. Those pairs are not two people, and blocking
+# them costs real merges.
+#
+# They are separable because they do not look like two people. Across 4060
+# same-frame pairs on test_3.mp4 the similarity distribution is
+# median 0.024, p99 0.291 -- and only 6 pairs reach 0.50, four of which are
+# the title sequence showing one actor twice. So a shared frame is read as
+# evidence only while the two faces are as different as two people actually
+# are; past that, the split screen is the better explanation.
+#
+# 0.50 misreads 2 pairs in 4060 (0.05%), both between tiny background extras
+# rather than anyone who ends up on a person card. The alternative -- no
+# ceiling -- breaks the main cast apart at the title sequence, which is
+# measurably worse: it moved 28 of group 1's 516 detections into a duplicate
+# identity.
+DEFAULT_COOCCURRENCE_SIMILARITY_CEILING = 0.50
 DEFAULT_MIN_APPEARANCE_SECONDS = 3.0
 DEFAULT_MIN_APPEARANCE_SHARE = 0.005
 
@@ -163,6 +224,10 @@ class FaceObservation:
     face_crop: np.ndarray
     source_timestamp: float
     frame_index: int | None = None
+    # Focus of the aligned crop this embedding came from. Optional because
+    # observations built by hand (tests, and the appearance-timeline code)
+    # have no crop to measure; None means "unknown", never "bad".
+    sharpness: float | None = None
 
 
 @dataclass
@@ -209,11 +274,107 @@ def eye_span_ratio(detection: FaceDetection) -> float | None:
     return float(np.linalg.norm(left - right) / width)
 
 
-def _observation_quality(observation: FaceObservation) -> float:
-    """A simple confidence-weighted-by-area score used to pick representative images."""
+def _cooccurrence_conflicts(
+    units: list[list[FaceObservation]],
+    similarity_ceiling: float = DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+) -> np.ndarray:
+    """Which units can never be the same person, because they share a frame.
+
+    Built from a frame -> units index rather than by comparing every pair of
+    units: the work is then proportional to the number of faces that actually
+    share a frame (a few thousand) instead of to the square of the unit count
+    (nearly two million on a 22-minute episode).
+
+    Observations with no frame index contribute nothing, so hand-built
+    observations and any future caller that does not track frames simply get
+    no constraint rather than a wrong one.
+    """
+    unit_count = len(units)
+    conflict = np.zeros((unit_count, unit_count), dtype=bool)
+
+    # frame -> [(unit index, the observation that unit has in this frame)]
+    units_in_frame: dict[int, list[tuple[int, FaceObservation]]] = {}
+    for index, unit in enumerate(units):
+        for observation in unit:
+            if observation.frame_index is None:
+                continue
+            units_in_frame.setdefault(observation.frame_index, []).append((index, observation))
+
+    for sharing in units_in_frame.values():
+        if len(sharing) < 2:
+            continue
+        for position, (first, first_observation) in enumerate(sharing):
+            for second, second_observation in sharing[position + 1 :]:
+                if first == second:
+                    continue
+                # See DEFAULT_COOCCURRENCE_SIMILARITY_CEILING: too alike to be
+                # two people means the frame is showing one person twice.
+                if (
+                    cosine_similarity(first_observation.embedding, second_observation.embedding)
+                    >= similarity_ceiling
+                ):
+                    continue
+                conflict[first, second] = True
+                conflict[second, first] = True
+
+    return conflict
+
+
+# Where each factor in _observation_quality stops earning more credit. Both
+# saturate because past a point they stop describing a better picture of the
+# person: a 400px face is not twice the portrait a 200px one is, and neither
+# is a crop of a patterned shirt collar that happens to score 2000 on a
+# sharpness measure that rewards any high-frequency detail at all.
+REPRESENTATIVE_SIZE_SATURATION = 120
+REPRESENTATIVE_SHARPNESS_SATURATION = 200.0
+
+
+def _observation_quality(
+    observation: FaceObservation, centroid: np.ndarray | None = None
+) -> float:
+    """How well one observation would stand for its identity in a gallery.
+
+    Used only to choose the picture on a person card. It has no influence on
+    grouping, so getting it wrong costs a bad thumbnail rather than a bad
+    identity -- but a bad thumbnail is what the person picking a face to
+    export actually sees.
+
+    This was confidence x box area, which is dominated by area: face boxes on
+    one video vary by two orders of magnitude in area and barely one in
+    confidence, so in practice it selected "the biggest box" and nothing else.
+    A big motion-blurred lunge at the camera outranked every clean mid-shot,
+    which is how the accuracy notes ended up describing cards showing hair and
+    necks for groups whose members are mostly clean faces.
+
+    Four factors now, all in [0, 1] so none can run away with the score:
+
+    - **confidence**, as before.
+    - **size**, saturating: enough pixels to see, past which more do not help.
+    - **sharpness**, saturating: the point of the change. An observation whose
+      sharpness is unknown scores neutrally rather than badly, so hand-built
+      observations do not all rank last.
+    - **agreement with the identity's centroid**, which is what rules out the
+      hair and neck crops directly. They are not merely blurry, they are
+      unlike the rest of the group -- and unlike the person the card claims to
+      show.
+    """
     box = observation.detection.box
-    area = max(0, box.x_max - box.x_min) * max(0, box.y_max - box.y_min)
-    return observation.detection.confidence * area
+    short_side = min(max(0, box.x_max - box.x_min), max(0, box.y_max - box.y_min))
+    size_term = min(short_side, REPRESENTATIVE_SIZE_SATURATION) / REPRESENTATIVE_SIZE_SATURATION
+
+    if observation.sharpness is None:
+        sharpness_term = 0.5
+    else:
+        sharpness_term = (
+            min(observation.sharpness, REPRESENTATIVE_SHARPNESS_SATURATION)
+            / REPRESENTATIVE_SHARPNESS_SATURATION
+        )
+
+    agreement = 1.0
+    if centroid is not None and _is_valid_embedding(observation.embedding):
+        agreement = max(0.0, float(np.dot(observation.embedding, centroid)))
+
+    return observation.detection.confidence * size_term * sharpness_term * agreement
 
 
 class IdentityGrouper:
@@ -253,6 +414,8 @@ class IdentityGrouper:
         min_face_size: int = DEFAULT_MIN_FACE_SIZE,
         min_group_eye_span: float = DEFAULT_MIN_GROUP_EYE_SPAN,
         min_detections: int = 1,
+        forbid_cooccurring: bool = DEFAULT_FORBID_COOCCURRING,
+        cooccurrence_similarity_ceiling: float = DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     ):
         if not -1.0 <= similarity_threshold <= 1.0:
             raise ValueError("similarity_threshold must be within [-1.0, 1.0]")
@@ -268,6 +431,8 @@ class IdentityGrouper:
         self.min_face_size = min_face_size
         self.min_group_eye_span = min_group_eye_span
         self.min_detections = max(1, int(min_detections))
+        self.forbid_cooccurring = forbid_cooccurring
+        self.cooccurrence_similarity_ceiling = cooccurrence_similarity_ceiling
 
         self._unreliable: list[FaceObservation] = []
         self._rejected: list[FaceObservation] = []
@@ -385,6 +550,17 @@ class IdentityGrouper:
         similarity = (sums @ sums.T) / np.outer(sizes, sizes)
         np.fill_diagonal(similarity, -np.inf)
 
+        # Units seen in the same frame are different people, so their
+        # similarity is irrelevant -- struck out rather than merely
+        # discouraged, because no amount of resemblance makes two faces
+        # standing side by side one person.
+        conflict = (
+            _cooccurrence_conflicts(self._units, self.cooccurrence_similarity_ceiling)
+            if self.forbid_cooccurring
+            else np.zeros_like(similarity, dtype=bool)
+        )
+        similarity[conflict] = -np.inf
+
         members: list[list[int] | None] = [[i] for i in range(unit_count)]
         # Pairs refused as ambiguous, so a blocked pair is not retried forever.
         blocked: set[tuple[int, int]] = set()
@@ -412,6 +588,13 @@ class IdentityGrouper:
             similarity[second, :] = -np.inf
             similarity[second, first] = -np.inf
             similarity[:, second] = -np.inf
+
+            # The merged cluster inherits both halves' conflicts: anyone who
+            # could not be either of them cannot be the pair of them.
+            conflict[first] |= conflict[second]
+            conflict[:, first] = conflict[first]
+            similarity[first, conflict[first]] = -np.inf
+            similarity[conflict[first], first] = -np.inf
 
             members[first] = members[first] + members[second]
             members[second] = None
@@ -558,6 +741,20 @@ class IdentityGrouper:
             return row
 
         similarity = np.stack([centroid_row(i) for i in range(len(groups))])
+
+        # The same hard constraint as clustering. It matters more here: this
+        # pass compares whole identities by centroid, which is exactly the
+        # comparison most likely to find two different actors similar once
+        # each has enough frames to average out lighting and pose.
+        conflict = (
+            _cooccurrence_conflicts(
+                [group.observations for group in groups], self.cooccurrence_similarity_ceiling
+            )
+            if self.forbid_cooccurring
+            else np.zeros(similarity.shape, dtype=bool)
+        )
+        similarity[conflict] = -np.inf
+
         # Pairs refused as ambiguous, so a blocked pair is not retried forever.
         blocked: set[tuple[int, int]] = set()
 
@@ -588,7 +785,14 @@ class IdentityGrouper:
             similarity[second, :] = -np.inf
             similarity[:, second] = -np.inf
 
+            conflict[first] |= conflict[second]
+            conflict[:, first] = conflict[first]
+
+            # centroid_row recomputes from the embeddings and so knows nothing
+            # about the constraint; re-applying it here is what stops a merged
+            # group quietly becoming mergeable with someone it stood next to.
             row = centroid_row(int(first))
+            row[conflict[first]] = -np.inf
             similarity[first, :] = row
             similarity[:, first] = row
             # A merged group is a different group: give its pairs a fresh chance.
@@ -679,4 +883,7 @@ class IdentityGrouper:
         group.representative_embedding = mean_embedding(
             [obs.embedding for obs in group.observations]
         )
-        group.representative_observation = max(group.observations, key=_observation_quality)
+        centroid = group.representative_embedding
+        group.representative_observation = max(
+            group.observations, key=lambda obs: _observation_quality(obs, centroid)
+        )

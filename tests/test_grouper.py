@@ -30,6 +30,8 @@ def make_observation(
     face_size: int = 200,
     timestamp: float = 0.0,
     eye_span: float | None = None,
+    frame_index: int | None = None,
+    sharpness: float | None = None,
 ) -> FaceObservation:
     """Builds a FaceObservation from a raw (not necessarily normalized) vector."""
     embedding = np.array(vector, dtype=np.float32)
@@ -46,6 +48,8 @@ def make_observation(
         detection=detection,
         face_crop=face_crop,
         source_timestamp=timestamp,
+        frame_index=frame_index,
+        sharpness=sharpness,
     )
 
 
@@ -467,3 +471,163 @@ def test_group_ids_stay_contiguous_after_filtering():
         grouper.add(make_observation([0.0, 0.0, 1.0], timestamp=float(10 + i)))
 
     assert [group.group_id for group in grouper.groups] == [1, 2]
+
+
+# ------------------------------------------- two faces in one frame
+
+
+class _Track:
+    """Minimal stand-in for FaceTrack: the grouper only reads .observations."""
+
+    def __init__(self, observations):
+        self.observations = observations
+
+
+def test_two_faces_in_one_frame_are_never_one_person(monkeypatch):
+    """The only hard evidence the pipeline has, and it outranks similarity.
+
+    These two embeddings are similar enough that clustering would merge them
+    on looks alone. Sharing a frame proves they cannot be one person.
+    """
+    grouper = IdentityGrouper(min_detections=1)
+    left = make_observation([1.0, 0.0, 0.0], frame_index=7)
+    right = make_observation([0.45, 0.893, 0.0], frame_index=7)
+    similarity = cosine_similarity(left.embedding, right.embedding)
+    assert 0.35 < similarity < 0.5, "must be mergeable but below the ceiling"
+
+    grouper.add(left)
+    grouper.add(right)
+
+    assert group_containing(grouper, left) is not group_containing(grouper, right)
+
+
+def test_the_same_pair_merges_once_they_are_in_different_frames():
+    """The control: it is the shared frame doing the work, not the vectors."""
+    grouper = IdentityGrouper(min_detections=1)
+    first = make_observation([1.0, 0.0, 0.0], frame_index=7)
+    second = make_observation([0.45, 0.893, 0.0], frame_index=8)
+
+    grouper.add(first)
+    grouper.add(second)
+
+    assert group_containing(grouper, first) is group_containing(grouper, second)
+
+
+def test_a_split_screen_showing_one_actor_twice_still_merges():
+    """Above the ceiling, a shared frame is read as one person shown twice.
+
+    Title sequences, monitors and photographs all put one person in a frame
+    twice; the giveaway is that the two faces resemble each other far more
+    than two different people ever do.
+    """
+    grouper = IdentityGrouper(min_detections=1)
+    panel_a = make_observation([1.0, 0.0, 0.0], frame_index=3)
+    panel_b = make_observation([0.99, 0.14, 0.0], frame_index=3)
+    assert cosine_similarity(panel_a.embedding, panel_b.embedding) >= 0.5
+
+    grouper.add(panel_a)
+    grouper.add(panel_b)
+
+    assert group_containing(grouper, panel_a) is group_containing(grouper, panel_b)
+
+
+def test_the_ceiling_is_configurable():
+    """Raising it past 1.0 makes every shared frame count as two people."""
+    grouper = IdentityGrouper(min_detections=1, cooccurrence_similarity_ceiling=1.01)
+    panel_a = make_observation([1.0, 0.0, 0.0], frame_index=3)
+    panel_b = make_observation([0.99, 0.14, 0.0], frame_index=3)
+
+    grouper.add(panel_a)
+    grouper.add(panel_b)
+
+    assert group_containing(grouper, panel_a) is not group_containing(grouper, panel_b)
+
+
+def test_the_constraint_can_be_turned_off():
+    grouper = IdentityGrouper(min_detections=1, forbid_cooccurring=False)
+    left = make_observation([1.0, 0.0, 0.0], frame_index=7)
+    right = make_observation([0.45, 0.893, 0.0], frame_index=7)
+
+    grouper.add(left)
+    grouper.add(right)
+
+    assert group_containing(grouper, left) is group_containing(grouper, right)
+
+
+def test_observations_without_a_frame_index_are_unconstrained():
+    """Absence of frame information must mean "no evidence", not "conflict"."""
+    grouper = IdentityGrouper(min_detections=1)
+    first = make_observation([1.0, 0.0, 0.0])
+    second = make_observation([0.45, 0.893, 0.0])
+
+    grouper.add(first)
+    grouper.add(second)
+
+    assert group_containing(grouper, first) is group_containing(grouper, second)
+
+
+def test_the_constraint_follows_a_group_through_merges():
+    """A merged identity inherits both halves' conflicts.
+
+    Otherwise the rule is trivially escapable: merge with a third party
+    first, then merge with the person you were standing next to.
+    """
+    grouper = IdentityGrouper(min_detections=1)
+    anchor = make_observation([1.0, 0.0, 0.0], frame_index=1)
+    rival = make_observation([0.45, 0.893, 0.0], frame_index=1)
+    # Halfway between the two, in its own frame, so it would happily merge
+    # with either of them (0.85 to each).
+    bridge = make_observation([0.851, 0.525, 0.0], frame_index=2)
+
+    for observation in (anchor, rival, bridge):
+        grouper.add(observation)
+
+    assert group_containing(grouper, anchor) is not group_containing(grouper, rival)
+
+
+def test_a_track_conflicts_on_any_of_its_frames():
+    """The unit is the track, so one shared frame taints the whole track."""
+    grouper = IdentityGrouper(min_detections=1)
+    track = _Track([
+        make_observation([1.0, 0.0, 0.0], frame_index=10, timestamp=10.0),
+        make_observation([1.0, 0.0, 0.0], frame_index=11, timestamp=11.0),
+    ])
+    other = make_observation([0.45, 0.893, 0.0], frame_index=11, timestamp=11.0)
+
+    grouper.add_track(track)
+    grouper.add(other)
+
+    assert group_containing(grouper, track.observations[0]) is not group_containing(
+        grouper, other
+    )
+
+
+# -------------------------------------------- choosing the card image
+
+
+def test_a_big_blurry_crop_does_not_become_the_face_on_the_card():
+    """Representative selection used to be confidence x area, and area won.
+
+    Three views of one person: two clean mid-shots and one large, blurred,
+    unlike-the-rest lunge at the camera. The card should not show the lunge.
+    """
+    grouper = IdentityGrouper(min_detections=1)
+    clean_a = make_observation([1.0, 0.02, 0.0], face_size=90, sharpness=400.0)
+    clean_b = make_observation([1.0, 0.00, 0.0], face_size=95, sharpness=380.0)
+    big_blur = make_observation([0.6, 0.80, 0.0], face_size=400, sharpness=4.0)
+
+    for observation in (clean_a, clean_b, big_blur):
+        grouper.add(observation)
+
+    group = group_containing(grouper, clean_a)
+    assert group.representative_observation is not big_blur
+
+
+def test_unknown_sharpness_does_not_rank_an_observation_last():
+    """Hand-built observations carry no sharpness and must stay selectable."""
+    grouper = IdentityGrouper(min_detections=1)
+    only = make_observation([1.0, 0.0, 0.0], face_size=120)
+
+    grouper.add(only)
+
+    assert grouper.groups[0].representative_observation is only

@@ -23,6 +23,8 @@ from pathlib import Path
 from PIL import Image
 
 from app.faces.grouper import (
+    DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+    DEFAULT_FORBID_COOCCURRING,
     DEFAULT_CONSOLIDATION_THRESHOLD,
     DEFAULT_MARGIN_THRESHOLD,
     DEFAULT_MIN_CONFIDENCE,
@@ -76,6 +78,8 @@ class ScanSettings:
     min_confidence: float = DEFAULT_MIN_CONFIDENCE
     min_face_size: int = DEFAULT_MIN_FACE_SIZE
     min_group_eye_span: float = DEFAULT_MIN_GROUP_EYE_SPAN
+    forbid_cooccurring: bool = DEFAULT_FORBID_COOCCURRING
+    cooccurrence_similarity_ceiling: float = DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
     min_detections: int | None = None
 
 
@@ -378,6 +382,8 @@ def _scan_footage(source, settings, cancel, on_progress):
             min_confidence=settings.min_confidence,
             min_face_size=settings.min_face_size,
             min_group_eye_span=settings.min_group_eye_span,
+            forbid_cooccurring=settings.forbid_cooccurring,
+            cooccurrence_similarity_ceiling=settings.cooccurrence_similarity_ceiling,
             min_detections=resolved_min_detections,
         )
 

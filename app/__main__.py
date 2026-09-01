@@ -6,6 +6,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.faces.grouper import (
+    DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     DEFAULT_CONSOLIDATION_THRESHOLD,
     DEFAULT_MIN_GROUP_EYE_SPAN,
     DEFAULT_MARGIN_THRESHOLD,
@@ -215,6 +216,21 @@ def main():
         "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
     )
     group_parser.add_argument(
+        "--allow-cooccurring-identities",
+        action="store_true",
+        help="Allow two faces detected in the same frame to be grouped as one person. "
+        "Off by default: one person cannot be in two places at once, and that is the "
+        "only hard identity evidence the pipeline has.",
+    )
+    group_parser.add_argument(
+        "--cooccurrence-ceiling",
+        type=float,
+        default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+        help="Similarity above which two faces sharing a frame are read as one person "
+        "shown twice -- a split screen, a monitor, a photograph -- rather than as two "
+        "people. Set above 1.0 to treat every shared frame as two people.",
+    )
+    group_parser.add_argument(
         "--min-detections",
         type=int,
         default=None,
@@ -304,6 +320,21 @@ def main():
         "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
     )
     timestamps_parser.add_argument(
+        "--allow-cooccurring-identities",
+        action="store_true",
+        help="Allow two faces detected in the same frame to be grouped as one person. "
+        "Off by default: one person cannot be in two places at once, and that is the "
+        "only hard identity evidence the pipeline has.",
+    )
+    timestamps_parser.add_argument(
+        "--cooccurrence-ceiling",
+        type=float,
+        default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+        help="Similarity above which two faces sharing a frame are read as one person "
+        "shown twice -- a split screen, a monitor, a photograph -- rather than as two "
+        "people. Set above 1.0 to treat every shared frame as two people.",
+    )
+    timestamps_parser.add_argument(
         "--min-detections",
         type=int,
         default=None,
@@ -347,6 +378,10 @@ def main():
     export_parser.add_argument("--min-confidence", type=float, default=DEFAULT_MIN_CONFIDENCE)
     export_parser.add_argument("--min-face-size", type=int, default=DEFAULT_MIN_FACE_SIZE)
     export_parser.add_argument("--min-group-eye-span", type=float, default=DEFAULT_MIN_GROUP_EYE_SPAN)
+    export_parser.add_argument("--allow-cooccurring-identities", action="store_true")
+    export_parser.add_argument(
+        "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
+    )
     export_parser.add_argument("--min-detections", type=int, default=None)
     export_parser.add_argument("--gap-tolerance", type=float, default=None)
     export_parser.add_argument("--appearance-padding", type=float, default=None)
@@ -455,6 +490,8 @@ def main():
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
                     min_group_eye_span=args.min_group_eye_span,
+                    forbid_cooccurring=not args.allow_cooccurring_identities,
+                    cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
                     min_detections=args.min_detections,
                     select_index=args.select_index,
                 )
@@ -472,6 +509,8 @@ def main():
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
                     min_group_eye_span=args.min_group_eye_span,
+                    forbid_cooccurring=not args.allow_cooccurring_identities,
+                    cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
                     min_detections=args.min_detections,
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,
@@ -496,6 +535,8 @@ def main():
                     min_confidence=args.min_confidence,
                     min_face_size=args.min_face_size,
                     min_group_eye_span=args.min_group_eye_span,
+                    forbid_cooccurring=not args.allow_cooccurring_identities,
+                    cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
                     min_detections=args.min_detections,
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,

@@ -9,7 +9,13 @@ from PIL import Image, ImageDraw
 
 from app.faces.detector import FaceDetection, FaceDetector
 from app.faces.embedder import FaceEmbedder
-from app.faces.grouper import FaceObservation, IdentityGrouper, auto_min_detections
+from app.faces.grouper import (
+    DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+    DEFAULT_FORBID_COOCCURRING,
+    FaceObservation,
+    IdentityGrouper,
+    auto_min_detections,
+)
 from app.faces.tracker import FaceTracker
 from app.ui.gallery import (
     build_face_gallery,
@@ -192,6 +198,8 @@ def run_identity_pipeline(
     min_face_size: int,
     min_group_eye_span: float,
     min_detections: int,
+    forbid_cooccurring: bool = DEFAULT_FORBID_COOCCURRING,
+    cooccurrence_similarity_ceiling: float = DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
 ) -> "PipelineResult":
     """Runs detect -> crop -> embed -> track -> group over sampled frames.
 
@@ -219,6 +227,8 @@ def run_identity_pipeline(
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
         min_detections=min_detections,
+        forbid_cooccurring=forbid_cooccurring,
+        cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
     )
 
     total_detections = 0
@@ -257,14 +267,15 @@ def run_identity_pipeline(
 
             observations = [
                 FaceObservation(
-                    embedding=embedding,
+                    embedding=embedded.embedding,
                     detection=detection,
                     face_crop=face_crop,
                     source_timestamp=timestamp,
                     frame_index=frame_index,
+                    sharpness=embedded.sharpness,
                 )
-                for (detection, face_crop), embedding in zip(croppable, embeddings)
-                if embedding is not None
+                for (detection, face_crop), embedded in zip(croppable, embeddings)
+                if embedded is not None
             ]
 
             track_start = time.monotonic()

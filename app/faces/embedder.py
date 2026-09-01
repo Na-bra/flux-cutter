@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
@@ -6,8 +7,25 @@ import numpy as np
 from app.models import MODELS, ModelDownloadError, ensure_model_cli
 
 from app.faces.detector import FaceDetection
+from app.faces.quality import sharpness as crop_sharpness
 
 EMBEDDING_DIMENSIONS = 512
+
+
+@dataclass(frozen=True)
+class EmbeddedFace:
+    """One face's identity vector, with how usable the crop it came from was.
+
+    Sharpness rides along with the embedding because this is the only place
+    the aligned crop exists. Measuring it anywhere else would mean either
+    warping the face a second time or measuring the wrong image -- the raw
+    box crop, whose Laplacian variance depends on how big the face happened
+    to be in frame (app/faces/quality.py).
+    """
+
+    embedding: np.ndarray
+    sharpness: float
+
 
 # Canonical ArcFace 5-point reference template, in pixel coordinates on the
 # 112x112 aligned crop. Point order is the same order YuNet emits its
@@ -172,7 +190,7 @@ class FaceEmbedder:
 
     def embed_batch(
         self, frame: np.ndarray, detections: list[FaceDetection]
-    ) -> list[np.ndarray | None]:
+    ) -> list["EmbeddedFace | None"]:
         """
         Embeds several faces from one frame in a single forward pass.
 
@@ -189,17 +207,17 @@ class FaceEmbedder:
         that streaming was introduced to reclaim.
 
         Returns:
-            One entry per input detection, in the same order. An entry is None
-            where that face could not be aligned or embedded (no landmarks, or
-            degenerate geometry), so callers can drop individual failures
-            without losing the correspondence to their detections.
+            One EmbeddedFace per input detection, in the same order. An entry
+            is None where that face could not be aligned or embedded (no
+            landmarks, or degenerate geometry), so callers can drop individual
+            failures without losing the correspondence to their detections.
         """
         if frame is None or frame.ndim != 3 or frame.shape[2] < 3:
             raise ValueError("frame must be an RGB image with three channels")
         if not detections:
             return []
 
-        results: list[np.ndarray | None] = [None] * len(detections)
+        results: list[EmbeddedFace | None] = [None] * len(detections)
         aligned_faces: list[np.ndarray] = []
         source_positions: list[int] = []
 
@@ -225,7 +243,10 @@ class FaceEmbedder:
 
         for row, position in enumerate(source_positions):
             try:
-                results[position] = self._normalize(raw_features[row])
+                results[position] = EmbeddedFace(
+                    embedding=self._normalize(raw_features[row]),
+                    sharpness=crop_sharpness(aligned_faces[row]),
+                )
             except ValueError:
                 results[position] = None
 

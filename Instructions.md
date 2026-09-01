@@ -1413,3 +1413,138 @@ bundled where the frozen lookup finds it -- confirmed by pointing
 `_icon_file` at the real `Contents/Frameworks` and watching it resolve
 through to `Contents/Resources/icon.png`. The bundle then launched clean
 under `env -i` with a Finder-like PATH.
+
+## 15. Identity accuracy: what was actually wrong (`app/faces/grouper.py`)
+
+The brief was to raise identity accuracy and cut false merges. The
+investigation changed what "false merge" even meant here, so the measurement
+comes first.
+
+### Ground truth, without labelling anything by hand
+
+Two facts about the footage label a large part of the problem for free:
+
+- Two detections **in one track** are the same person -- spatial continuity
+  proves it.
+- Two detections **in one frame** are different people -- nobody is in two
+  places at once.
+
+That gave 2407 same-person and 4060 different-person pairs on `test_3.mp4`
+with no human judgement, and it is what every number below rests on.
+
+    same person        p5 0.381   median 0.704   p95 0.887
+    different people   p95 0.165   p99 0.321     max 0.664
+
+At the 0.35 floor, 0.74% of different-person pairs sit above it and 3.61% of
+same-person pairs below. The embedding and its preprocessing are not the
+limiting factor.
+
+### The blur gate, which 7c predicted and the data refuted
+
+7c proposed a Laplacian-variance gate as the next lever. The measurement
+reproduces its headline figure exactly -- 23.7% of detections score under 40
+-- and then disagrees with the conclusion:
+
+| min sharpness of the pair | different-person median | same-person median |
+| --- | --- | --- |
+| < 10 | 0.030 | 0.701 |
+| 10-20 | 0.029 | 0.704 |
+| 20-40 | 0.027 | 0.658 |
+| >= 100 | 0.020 | 0.719 |
+
+Blur neither makes different people look alike nor stops same-person matches.
+And the detections inside the actual false merges are not blurred at all:
+median sharpness 90, median confidence 0.917, median box 74px, **none** below
+the blur floor, against 13.4% of all detections. A blur gate would have
+removed 13% of the footage and not one error. It was not implemented.
+
+Visual inspection agreed: group 13 (47 detections, median sharpness 8.7) and
+group 23 (26 detections, nearly all profile) are both clean single
+identities. Gating on blur would have destroyed them.
+
+### What was actually wrong: nothing enforced that two faces are two people
+
+Counting groups that held two non-overlapping faces from a single frame
+found **11** on the baseline. Those are not near-misses; they are proof.
+
+So the rule is now enforced rather than hoped for. Units that share a frame
+have their similarity struck to -inf before clustering starts, and a merged
+cluster inherits both halves' conflicts, so the rule cannot be escaped by
+merging through a third party. It costs 3 ms to build the matrix for 1627
+units and 2.6 MB to hold it.
+
+### The correction that mattered: a shared frame is not always two people
+
+Four of those 11 were not errors. Pulling the frames up and *looking* at them
+showed t=336s and t=368s are the title sequence, which tiles clips of the
+**same** actor side by side, and t=490s is YuNet finding faces in photographs
+stuck to a fridge. Enforcing the rule blindly broke correct groups: it moved
+28 of group 1's 516 detections into a duplicate identity.
+
+They are separable, because a split screen does not look like two people.
+Only 6 of 4060 same-frame pairs reach 0.50 similarity, four of them the title
+sequence. Above that ceiling the shared frame is read as one person shown
+twice. The remaining 2 misreads are between tiny background extras.
+
+### Multiple prototypes per identity: measured, and declined
+
+Matching on the best of k=3 prototypes rather than one centroid does separate
+the extremes better (best free pair 0.525 against 0.405). It also raises the
+score of pairs that are provably different people: groups 3 and 8 -- a
+curly-haired boy and a dark-haired teenager, confirmed different by eye --
+went from 0.259 to 0.397, and 23 and 28 from 0.221 to 0.388. Best-of-k picks
+the most flattering corner of each identity, which is how a false merge gets
+in. Not implemented.
+
+### Consolidation was set far above anything that fires
+
+0.50 was fitted to three same-actor pairs visible among the 30 largest
+groups. Measured across all 780 pairs it never fires at all: consolidation is
+a no-op anywhere from 0.41 to 1.0. With the co-occurrence labels the picture
+is unambiguous -- provably-different pairs top out at 0.334, and the two
+confirmed missed merges sit at 0.400 and 0.405. **0.375** sits in that gap.
+
+Lower is tempting and unevidenced. Below 0.334 there are labelled
+different-person pairs, and co-occurrence only protects pairs that happen to
+share a frame. Note also that the false-merge count *becomes circular* once
+the constraint is enforced -- it is exactly what the rule forbids -- so it
+cannot be used to justify going lower.
+
+### Results on `test_3.mp4` (1356 frames, 3111 detections, 1.0s sampling)
+
+| | before | after |
+| --- | --- | --- |
+| Identity groups | 40 | 39 |
+| **False merges** (two people in one group) | **7** | **0** |
+| Split-screen frames correctly kept together | 4 | 4 |
+| **Unmerged pairs still scoring >= 0.375** | **2** | **0** |
+| Detections assigned to an identity | 2326 | 2394 |
+| Unassigned | 753 | 685 |
+
+Every one of the top 6 groups was inspected as a contact sheet and holds one
+person, including the hard cases the pipeline exists for: group 1 now spans
+Henry unmasked, in the Kid Danger mask, and in red face paint.
+
+`test.mp4` and `test_2.MOV` are unchanged by all of this -- 4 groups / 20
+unassigned and 2 groups / 6 unassigned before and after. Neither clip has
+enough simultaneous faces to exercise the rule, which is the same lesson 7c
+recorded: a short clip cannot tell "this parameter is harmless" from "this
+clip does not exercise it".
+
+### Cost
+
+Sharpness is 121 ms across all 3111 detections. The constraint adds 1.78s to
+the grouping stage (4.08s to 5.85s), of which 3 ms is the matrix and the rest
+is the extra merge attempts a blocked pair causes. About +0.9% on a 205s run.
+Wall-clock figures from the later runs are not comparable -- an unrelated
+video transcode was saturating the machine -- which is why the cost is quoted
+from direct measurement rather than from run totals.
+
+### A harness bug worth recording
+
+The first three "after" runs measured nothing, because the measurement script
+restated the pipeline's defaults and still said `consolidation_threshold=0.50`.
+The threshold change appeared to do nothing, and a plausible story was
+constructed for why. The script now reads the constants from the module. Any
+harness that repeats a value the code already owns will eventually measure the
+wrong build.
