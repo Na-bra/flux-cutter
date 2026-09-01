@@ -7,6 +7,7 @@ shape and the single source, not the value -- whether a change is a patch
 or a minor is a judgement no test can make.
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -31,11 +32,23 @@ def test_the_spec_reads_the_version_rather_than_repeating_it():
 
 
 def test_the_spec_can_read_the_version_it_will_ship():
-    """Exercises the spec's own reader, which nothing else would."""
-    # Only the prelude: the rest of the spec needs SPECPATH and the
-    # PyInstaller globals, which exist solely while PyInstaller is running it.
-    namespace: dict = {}
-    prelude = SPEC.read_text().split("IS_MACOS = ")[0]
-    exec(compile(prelude, str(SPEC), "exec"), namespace)
+    """Exercises the spec's own reader, which nothing else would.
+
+    Lifted out by name rather than by exec'ing the top of the file. The
+    first attempt did the latter and ran green here while failing on CI:
+    the spec's imports include PyInstaller, which is a build-time tool the
+    test job does not install, so the test quietly depended on a
+    development machine having it.
+    """
+    tree = ast.parse(SPEC.read_text(), filename=str(SPEC))
+    reader = next(
+        (node for node in tree.body
+         if isinstance(node, ast.FunctionDef) and node.name == "project_version"),
+        None,
+    )
+    assert reader is not None, "the spec no longer defines project_version"
+
+    namespace: dict = {"re": re, "Path": Path}
+    exec(compile(ast.Module(body=[reader], type_ignores=[]), str(SPEC), "exec"), namespace)
 
     assert namespace["project_version"](ROOT) == app.__version__
