@@ -1365,3 +1365,51 @@ Both paths, end to end, with a real scan in between:
 23 tests cover it, most of which need no footage: `VideoSource` validates
 and holds a descriptor without decoding, so a file with the right extension
 proves the file-system half in milliseconds.
+
+## 14. The app icon (`packaging/make_icon.py`)
+
+The bundle shipped PyInstaller's own logo, because the spec passed
+`icon=None` and that is the fallback. Everything else about the packaging
+said FluxCutter -- `CFBundleName`, the Dock label, the window title -- and
+the icon said PyInstaller.
+
+### Drawn in code, not committed as artwork
+
+The shape is a dozen numbers, so `make_icon.py` holds them and writes all
+three formats. That means the icon can be recoloured or re-cut at any size
+without hunting for an original nobody can edit, and the reason for every
+number is a comment rather than a memory. The generated `.png`, `.ico` and
+`.icns` are committed anyway, because `.icns` can only be produced on macOS
+(`iconutil`) and the Windows CI runner has to build without regenerating.
+
+### The design constraint is 16x16
+
+Focus brackets around a play triangle, split by the cut: brackets for
+"find someone", the triangle for "video", the split for "cut". Interior
+detail is pointless at Dock size, so what matters is the silhouette.
+
+The first attempt failed exactly there. A bracket stroke of 38/1024 is 0.6
+of a pixel at 16px, and the brackets dissolved into the gradient -- 4 white
+pixels out of 256. Thickening the stroke to 64/1024 and shortening the arms
+gives 16, and the corners read. `tests/test_icon.py` keeps that number
+above 12, which sits between the two measurements: a guard against thinning
+the artwork again, not a claim that 12 is where legibility begins.
+
+### Two places the icon has to be installed
+
+The bundle's icon (`CFBundleIconFile`, and the `.ico` compiled into the
+Windows `.exe`) covers the Dock, the Finder and the taskbar. It does not
+cover the window: Tk draws its own title-bar and taskbar-button icon, and
+given nothing it draws its default feather. So `app.py` also calls
+`iconphoto` with the bundled `.png`, resolved through `sys._MEIPASS` when
+frozen and from the checkout otherwise. It is cosmetic, so a missing or
+unreadable file is swallowed rather than allowed to fail a launch.
+
+### Verified
+
+Built and inspected: `CFBundleIconFile => "icon.icns"`, a 422 KB `.icns` in
+`Contents/Resources` carrying every size from 16 to 1024, and `icon.png`
+bundled where the frozen lookup finds it -- confirmed by pointing
+`_icon_file` at the real `Contents/Frameworks` and watching it resolve
+through to `Contents/Resources/icon.png`. The bundle then launched clean
+under `env -i` with a Finder-like PATH.

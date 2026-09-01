@@ -20,6 +20,15 @@ from PyInstaller.utils.hooks import collect_data_files
 IS_MACOS = sys.platform == "darwin"
 ROOT = Path(SPECPATH).resolve().parent
 
+# Both formats are committed, because .icns can only be produced on macOS
+# (iconutil) and this spec has to build on Windows too. Regenerate them with
+# `python packaging/make_icon.py`. A clone that has deleted them still
+# builds, just with PyInstaller's own logo.
+ICNS = ROOT / "packaging" / "icon.icns"
+ICO = ROOT / "packaging" / "icon.ico"
+PNG = ROOT / "packaging" / "icon.png"
+EXE_ICON = str(ICNS if IS_MACOS else ICO) if (ICNS.exists() and ICO.exists()) else None
+
 analysis = Analysis(
     [str(ROOT / "packaging" / "fluxcutter.py")],
     pathex=[str(ROOT)],
@@ -28,7 +37,10 @@ analysis = Analysis(
     # data rather than imports and so are invisible to the dependency
     # analysis. Without this the frozen app raises FileNotFoundError on the
     # theme before it ever draws a window.
-    datas=collect_data_files("customtkinter"),
+    # The .png as well as the frozen formats: Tk draws the window's own
+    # icon from an image file at runtime, which is what puts the icon in a
+    # Windows title bar and taskbar button rather than Tk's default feather.
+    datas=collect_data_files("customtkinter") + ([(str(PNG), ".")] if PNG.exists() else []),
     hiddenimports=["PIL._tkinter_finder"],
     hookspath=[],
     runtime_hooks=[],
@@ -48,6 +60,7 @@ executable = EXE(
     strip=False,
     upx=False,
     console=False,
+    icon=EXE_ICON,
 )
 
 collection = COLLECT(
@@ -63,7 +76,7 @@ if IS_MACOS:
     app = BUNDLE(
         collection,
         name="FluxCutter.app",
-        icon=None,
+        icon=str(ICNS) if ICNS.exists() else None,
         bundle_identifier="com.fluxcutter.app",
         info_plist={
             "NSHighResolutionCapable": True,

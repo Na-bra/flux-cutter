@@ -43,6 +43,21 @@ from app.video.cutter import CutterError
 from app.video.loader import VideoLoadError
 from app.video.source import SourceMismatch
 
+def _icon_file() -> Path | None:
+    """Where the window icon is, frozen or from a checkout.
+
+    PyInstaller unpacks bundled data into a temporary directory it names in
+    sys._MEIPASS, so the path that works in development is not the path that
+    works in the shipped app.
+    """
+    root = Path(getattr(sys, "_MEIPASS", "")) if hasattr(sys, "_MEIPASS") else None
+    candidates = [
+        root / "icon.png" if root is not None else None,
+        Path(__file__).resolve().parents[2] / "packaging" / "icon.png",
+    ]
+    return next((c for c in candidates if c is not None and c.is_file()), None)
+
+
 # How often the main thread checks the worker's mailbox. Fast enough that
 # a progress bar looks live, slow enough to stay off the CPU.
 POLL_INTERVAL_MS = 80
@@ -147,6 +162,7 @@ class FluxCutterApp(ctk.CTk):
         self.title("FluxCutter")
         self.geometry("900x760")
         self.minsize(720, 620)
+        self._set_window_icon()
 
         self._messages: queue.Queue = queue.Queue()
         self._worker: threading.Thread | None = None
@@ -163,6 +179,23 @@ class FluxCutterApp(ctk.CTk):
         if video_path is not None:
             self._video_var.set(str(video_path))
             self._set_status("Ready to scan.")
+
+    def _set_window_icon(self) -> None:
+        """Puts the app icon on the window itself.
+
+        macOS takes the Dock icon from the bundle and ignores this, but
+        Windows draws the title bar and taskbar button from whatever Tk was
+        given -- and given nothing, that is Tk's default feather. Cosmetic
+        either way, so a missing or unreadable icon is not worth failing a
+        launch over.
+        """
+        icon = _icon_file()
+        if icon is None:
+            return
+        try:
+            self.iconphoto(True, tkinter.PhotoImage(file=str(icon)))
+        except tkinter.TclError:
+            pass
 
     # ---------------------------------------------------------------- layout
 

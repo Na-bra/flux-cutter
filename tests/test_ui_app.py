@@ -279,3 +279,40 @@ def test_cancelling_the_file_dialog_stops_the_export(app, tmp_path, monkeypatch)
     monkeypatch.setattr(app_module.filedialog, "askopenfilename", lambda *a, **k: "")
 
     assert app._ensure_source_available() is False
+
+
+# ------------------------------------------------------------- the icon
+
+
+def test_the_icon_ships_with_the_checkout():
+    from app.ui.app import _icon_file
+
+    icon = _icon_file()
+    assert icon is not None, "packaging/icon.png is missing; run make_icon.py"
+    assert icon.is_file()
+
+
+def test_a_missing_icon_does_not_stop_the_window(monkeypatch):
+    """Cosmetic, so it must never be the reason a launch fails."""
+    from app.ui import app as app_module
+
+    monkeypatch.setattr(app_module, "_icon_file", lambda: None)
+    try:
+        window = app_module.FluxCutterApp()
+    except tkinter.TclError as error:  # pragma: no cover - depends on the host
+        pytest.skip(f"no display available: {error}")
+    window.update_idletasks()
+    window._on_close()
+
+
+def test_the_frozen_build_looks_beside_the_executable_first(tmp_path, monkeypatch):
+    """PyInstaller unpacks data to sys._MEIPASS, not next to the source tree."""
+    import sys as _sys
+
+    from app.ui.app import _icon_file
+
+    bundled = tmp_path / "icon.png"
+    bundled.write_bytes(b"stand-in")
+    monkeypatch.setattr(_sys, "_MEIPASS", str(tmp_path), raising=False)
+
+    assert _icon_file() == bundled
