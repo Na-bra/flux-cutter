@@ -321,6 +321,8 @@ def run_face_grouping(
     min_confidence: float,
     min_face_size: int,
     min_group_eye_span: float,
+    forbid_cooccurring: bool,
+    cooccurrence_similarity_ceiling: float,
     min_detections: int | None,
     select_index: int | None,
 ):
@@ -347,6 +349,8 @@ def run_face_grouping(
         min_confidence=min_confidence,
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
+        forbid_cooccurring=forbid_cooccurring,
+        cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
         min_detections=resolved_min_detections,
     )
 
@@ -395,6 +399,8 @@ def run_appearance_timestamps(
     min_confidence: float,
     min_face_size: int,
     min_group_eye_span: float,
+    forbid_cooccurring: bool,
+    cooccurrence_similarity_ceiling: float,
     min_detections: int | None,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
@@ -419,6 +425,8 @@ def run_appearance_timestamps(
         min_confidence=min_confidence,
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
+        forbid_cooccurring=forbid_cooccurring,
+        cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
         min_detections=resolved_min_detections,
     )
 
@@ -493,6 +501,8 @@ def run_export(
     min_confidence: float,
     min_face_size: int,
     min_group_eye_span: float,
+    forbid_cooccurring: bool,
+    cooccurrence_similarity_ceiling: float,
     min_detections: int | None,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
@@ -524,6 +534,8 @@ def run_export(
         min_confidence=min_confidence,
         min_face_size=min_face_size,
         min_group_eye_span=min_group_eye_span,
+        forbid_cooccurring=forbid_cooccurring,
+        cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
         min_detections=resolved_min_detections,
     )
 

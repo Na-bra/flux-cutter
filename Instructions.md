@@ -1525,11 +1525,27 @@ Every one of the top 6 groups was inspected as a contact sheet and holds one
 person, including the hard cases the pipeline exists for: group 1 now spans
 Henry unmasked, in the Kid Danger mask, and in red face paint.
 
-`test.mp4` and `test_2.MOV` are unchanged by all of this -- 4 groups / 20
-unassigned and 2 groups / 6 unassigned before and after. Neither clip has
-enough simultaneous faces to exercise the rule, which is the same lesson 7c
-recorded: a short clip cannot tell "this parameter is harmless" from "this
-clip does not exercise it".
+### The other two clips
+
+`test.mp4` improves for the second reason rather than the first. It has too
+few simultaneous faces to exercise the co-occurrence rule, but the
+consolidation change is decisive:
+
+| | before | after |
+| --- | --- | --- |
+| Identity groups | 4 | 2 |
+| Unassigned | 20 | 14 |
+
+The clip has exactly two actors. Before, each was split in two -- a lit group
+and a dark/profile group -- and 0.375 merges each pair back without merging
+the two actors together. Inspected: group 1 is entirely one actor across both
+lighting setups, group 2 entirely the other.
+
+`test_2.MOV` is unchanged at 2 groups / 6 unassigned, having neither
+simultaneous faces nor split identities to fix.
+
+An earlier draft of this section claimed `test.mp4` was unchanged. That was
+the harness bug below: it had been measured at the old threshold.
 
 ### Cost
 
