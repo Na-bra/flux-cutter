@@ -10,13 +10,17 @@ class VideoLoadError(Exception):
     """Raised when a video cannot be loaded or inspected."""
 
 
-def load_video(video_path: str | Path) -> av.container.InputContainer:
+def validate_video_path(video_path: str | Path) -> Path:
     """
-    Open a video file and return the PyAV container.
+    Check that a path is a video this app will accept, and return it.
+
+    Separated from load_video because VideoSource needs the same answer
+    without opening anything: it validates a replacement file before
+    committing to it.
 
     Raises:
-        VideoLoadError: If the file does not exist, has an unsupported
-                        extension, or cannot be opened.
+        VideoLoadError: If the file does not exist, is not a file, or has
+                        an unsupported extension.
     """
     path = Path(video_path)
 
@@ -31,6 +35,19 @@ def load_video(video_path: str | Path) -> av.container.InputContainer:
             f"Unsupported video format: {path.suffix}. "
             f"Supported formats: {', '.join(sorted(SUPPORTED_EXTENSIONS))}"
         )
+
+    return path
+
+
+def load_video(video_path: str | Path) -> av.container.InputContainer:
+    """
+    Open a video file and return the PyAV container.
+
+    Raises:
+        VideoLoadError: If the file does not exist, has an unsupported
+                        extension, or cannot be opened.
+    """
+    path = validate_video_path(video_path)
 
     try:
         return av.open(str(path))

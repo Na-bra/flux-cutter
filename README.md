@@ -52,7 +52,9 @@ flux-cutter/
 │       ├── __init__.py
 │       ├── frames.py
 │       ├── loader.py
+│       ├── source.py        # keeps a video readable after its file moves
 │       ├── timeline.py      # detections -> appearance intervals
+│       ├── cutter.py        # segments -> one reel, in-process via PyAV
 │       └── export.py        # intervals -> cut segments -> one reel
 ├── assets/
 │   ├── models/

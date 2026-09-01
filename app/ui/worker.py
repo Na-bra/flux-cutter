@@ -36,6 +36,7 @@ from app.main import run_identity_pipeline
 from app.models import MODELS, ensure_model, find_model
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.video.cutter import cut_segments
+from app.video.source import VideoSource
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
     DEFAULT_EXPORT_PADDING_SECONDS,
@@ -43,7 +44,7 @@ from app.video.export import (
     merge_for_export,
 )
 from app.video.frames import extract_frames
-from app.video.loader import get_video_info, load_video
+from app.video.loader import get_video_info
 from app.video.timeline import build_appearance_intervals
 
 
@@ -191,7 +192,14 @@ class Person:
 
 @dataclass(frozen=True)
 class ScanResult:
-    """Everything one scan produced, including what export needs later."""
+    """Everything one scan produced, including what export needs later.
+
+    `source` is the live handle on the footage and `video_path` is where it
+    was when the scan ran. They come apart the moment the user moves the
+    file: export reads through `source`, while anything cosmetic -- naming
+    the output after the video, say -- reads `video_path`. Callers that
+    own a ScanResult own the descriptor inside it, and should close it.
+    """
 
     video_path: Path
     video_duration: float
@@ -202,6 +210,12 @@ class ScanResult:
     unassigned_count: int = 0
     min_detections: int = 0
     elapsed_seconds: float = 0.0
+    source: VideoSource | None = None
+
+    def close(self) -> None:
+        """Releases the footage handle. Safe to call more than once."""
+        if self.source is not None:
+            self.source.close()
 
 
 def _tracked_frames(frames, total_frames, cancel, report):
@@ -287,7 +301,58 @@ def scan(
     video_path = Path(video_path)
     started = time.monotonic()
 
-    with load_video(video_path) as container:
+    # Opened once, held for the life of the result. The descriptor is what
+    # lets the export survive the user moving this file while they look
+    # through the gallery (app/video/source.py).
+    source = VideoSource(video_path)
+
+    try:
+        result, duration, resolved_min_detections = _scan_footage(
+            source, settings, cancel, on_progress
+        )
+    except BaseException:
+        source.close()
+        raise
+
+    gallery = build_identity_gallery(
+        result.grouper.groups,
+        unassigned_count=len(result.grouper.unassigned),
+        padding_ratio=settings.padding_ratio,
+    )
+
+    people = [
+        Person(
+            index=index,
+            thumbnail=Image.fromarray(card.representative_thumbnail),
+            detection_count=card.detection_count,
+            first_seen=card.first_seen_timestamp,
+            last_seen=card.last_seen_timestamp,
+            group=group,
+        )
+        for index, (card, group) in enumerate(zip(gallery.cards, gallery.groups))
+    ]
+
+    return ScanResult(
+        video_path=video_path,
+        video_duration=duration,
+        sample_interval=settings.sample_interval,
+        people=people,
+        frame_count=result.frame_count,
+        detection_count=result.total_detections,
+        unassigned_count=gallery.unassigned_count,
+        min_detections=resolved_min_detections,
+        elapsed_seconds=time.monotonic() - started,
+        source=source,
+    )
+
+
+def _scan_footage(source, settings, cancel, on_progress):
+    """Runs the pipeline over the footage, returning it with what it needed.
+
+    Split out of `scan` only so the container is closed and the descriptor
+    released by one `try` rather than two nested ones.
+    """
+    with source.open() as container:
         duration = get_video_info(container)["duration"]
         resolved_min_detections = (
             max(1, settings.min_detections)
@@ -322,35 +387,7 @@ def scan(
     if not duration:
         duration = result.last_timestamp
 
-    gallery = build_identity_gallery(
-        result.grouper.groups,
-        unassigned_count=len(result.grouper.unassigned),
-        padding_ratio=settings.padding_ratio,
-    )
-
-    people = [
-        Person(
-            index=index,
-            thumbnail=Image.fromarray(card.representative_thumbnail),
-            detection_count=card.detection_count,
-            first_seen=card.first_seen_timestamp,
-            last_seen=card.last_seen_timestamp,
-            group=group,
-        )
-        for index, (card, group) in enumerate(zip(gallery.cards, gallery.groups))
-    ]
-
-    return ScanResult(
-        video_path=video_path,
-        video_duration=duration,
-        sample_interval=settings.sample_interval,
-        people=people,
-        frame_count=result.frame_count,
-        detection_count=result.total_detections,
-        unassigned_count=gallery.unassigned_count,
-        min_detections=resolved_min_detections,
-        elapsed_seconds=time.monotonic() - started,
-    )
+    return result, duration, resolved_min_detections
 
 
 def plan_export(
@@ -406,7 +443,10 @@ def export(
 
     Raises:
         Cancelled: If `cancel` was set during the encode.
-        CutterError: If the source cannot be read or the segments are unusable.
+        CutterError: If the source cannot be read or the segments are
+            unusable. A source whose file has moved raises this only once
+            both the descriptor and the path have failed -- see
+            ScanResult.source.
     """
     settings = settings or ExportSettings()
 
@@ -424,7 +464,9 @@ def export(
             on_progress((index + 1) / total, index + 1, total)
 
     return cut_segments(
-        scan_result.video_path,
+        # The held descriptor when there is one, so a video moved since the
+        # scan still cuts; the recorded path otherwise.
+        scan_result.source or scan_result.video_path,
         segments,
         output_path,
         video_encoder=settings.video_encoder,

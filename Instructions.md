@@ -1284,3 +1284,84 @@ three segments, both ways, and slightly faster (3.9s against 4.6s). Then end
 to end where it actually matters -- inside the frozen bundle, under
 `env -i` with a Finder-like PATH and no ffmpeg anywhere: 4 people found, a
 three-cut 11.9s reel written, decoding cleanly.
+
+## 13. Surviving a video that moves (`app/video/source.py`)
+
+A scan takes minutes and leaves a result that is only half self-contained:
+the gallery is thumbnails in memory, but cutting the reel has to read the
+footage a second time. Between those two moments the user is free to
+rename the file, drag it to another folder, or unplug the drive it lives
+on -- and doing any of that turned a finished scan into a dialog reading
+*"Could not export: Could not open /the/old/path"*, with the only remedy
+being to scan again.
+
+The question that started this was whether to hold the video in RAM. The
+answer is no, and the measurement is the reason.
+
+### RAM buys nothing that a descriptor does not buy more cheaply
+
+Measured on `test_3.mp4` (815 MB), seeking to 10:00 and decoding 60 frames:
+
+| holding it as | decode | process RSS | survives a move |
+| --- | --- | --- | --- |
+| a path | 0.17s | 38 MB | no |
+| an open descriptor | 0.17s | 65 MB | yes |
+| bytes in RAM | 0.17s | 767 MB | yes |
+
+Decode speed is identical three ways, because the OS page cache is already
+doing the job a RAM copy would do. So the only thing a RAM copy buys is
+detachment from the path -- and an open descriptor buys exactly the same
+detachment for 27 MB instead of 767 MB. On a 4 GB feature film the RAM
+version is not merely wasteful, it is a machine the app cannot run on.
+
+### Two defences, because they fail in different situations
+
+**A held descriptor.** On macOS and Linux a descriptor refers to the inode,
+not the name. Verified by unlinking the file so that no path on the machine
+reached it, then opening, seeking and decoding through the descriptor
+anyway. `open()` hands out `os.dup()` copies rather than the descriptor
+itself, so two readers cannot seek each other sideways.
+
+**Relocation.** A descriptor dies with the process, so it does nothing for a
+video moved while the app was closed, and -- see below -- it is not held at
+all on Windows. `VideoSource.relocate` points the source at the file's new
+home and the existing scan carries on. The UI checks reachability *before*
+starting the encode, so a missing video costs a dialog rather than a
+progress bar that runs to "Preparing cuts..." and then stops.
+
+Relocation guards against picking the wrong file by comparing byte size.
+That is a guard, not a proof: two different videos of exactly equal length
+would pass it. It is worth having because the realistic mistake is choosing
+a neighbouring clip out of the same folder, which the check catches
+immediately.
+
+### Windows deliberately gets only the second
+
+CPython's `open()` on Windows does not request `FILE_SHARE_DELETE`, so a
+held descriptor would stop the user renaming or deleting their own video
+for as long as FluxCutter had it open. That trades a failed export for a
+blocked file operation, which is the worse bargain in an app that sits open
+all afternoon. `KEEPS_HANDLES` is therefore false there and Windows leans
+on `relocate`.
+
+This is reasoning from how the Windows CRT opens files, not from a test --
+there is no Windows machine here. Opening with `FILE_SHARE_DELETE` through
+`ctypes` and `msvcrt.open_osfhandle` would give Windows the descriptor too,
+and is the obvious follow-up for whoever first runs this on Windows.
+
+### Verified
+
+Both paths, end to end, with a real scan in between:
+
+- **With a descriptor:** scanned, then renamed the file *and* moved it to
+  another directory *and* deleted the directory it came from. Export ran
+  without noticing -- 3 cuts, 360 frames, `avg_frame_rate=30/1`,
+  `duration=12.000000`.
+- **Without one** (`KEEPS_HANDLES` forced false, standing in for Windows):
+  the moved file was correctly reported unavailable, a same-folder decoy
+  was refused on size, `relocate` to the real file succeeded, and the
+  export produced the identical 360 frames and 12.000000s.
+
+23 tests cover it, most of which need no footage: `VideoSource` validates
+and holds a descriptor without decoding, so a file with the right extension
+proves the file-system half in milliseconds.

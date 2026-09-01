@@ -41,6 +41,7 @@ from app.ui.worker import (
 from app.models import ModelDownloadError
 from app.video.cutter import CutterError
 from app.video.loader import VideoLoadError
+from app.video.source import SourceMismatch
 
 # How often the main thread checks the worker's mailbox. Fast enough that
 # a progress bar looks live, slow enough to stay off the CPU.
@@ -389,6 +390,9 @@ class FluxCutterApp(ctk.CTk):
         if self._scan_result is None or self._selected is None:
             return
 
+        if not self._ensure_source_available():
+            return
+
         output_path = self._output_path()
         if output_path.exists() and not messagebox.askyesno(
             "Overwrite?", f"{output_path.name} already exists. Replace it?"
@@ -407,6 +411,58 @@ class FluxCutterApp(ctk.CTk):
         self._start_worker(
             self._export_worker, self._scan_result, self._selected, output_path, settings
         )
+
+    def _ensure_source_available(self) -> bool:
+        """Makes sure the scanned footage can still be read, asking if not.
+
+        Checked before the encode starts rather than caught when it fails,
+        so a video that has gone missing costs a dialog rather than a
+        progress bar that runs to "Preparing cuts..." and then stops.
+
+        On macOS and Linux this almost never fires: the scan holds a
+        descriptor, which survives the file being renamed, moved, or
+        deleted. It is the path that people actually lose -- a file moved
+        while the app was closed, or a Windows scan, which holds no
+        descriptor on purpose (app/video/source.py).
+
+        Returns:
+            True if the export may go ahead.
+        """
+        assert self._scan_result is not None
+        source = self._scan_result.source
+        if source is None or source.is_available():
+            return True
+
+        if not messagebox.askyesno(
+            "Video moved",
+            f"FluxCutter cannot find {source.path.name} where it was scanned:\n\n"
+            f"{source.path.parent}\n\n"
+            "Locate it to export without scanning again?",
+        ):
+            return False
+
+        chosen = filedialog.askopenfilename(
+            title=f"Where is {source.path.name}?",
+            initialfile=source.path.name,
+            filetypes=[("Video files", "*.mp4 *.mov"), ("All files", "*.*")],
+        )
+        if not chosen:
+            return False
+
+        try:
+            source.relocate(chosen)
+        except SourceMismatch as error:
+            messagebox.showerror("Not the same video", str(error))
+            return False
+        except VideoLoadError as error:
+            messagebox.showerror("Cannot use that file", str(error))
+            return False
+
+        # The path box is what the user reads to know what is loaded, so it
+        # should not go on naming a folder the video left.
+        self._video_var.set(str(source.path))
+        self._set_status(f"Found it. Exporting from {source.path.parent}.")
+        return True
 
     def _on_person_selected(self, person: Person) -> None:
         # The gallery stays visible during an export but must not accept a
@@ -446,6 +502,8 @@ class FluxCutterApp(ctk.CTk):
         if self._drain_job is not None:
             self.after_cancel(self._drain_job)
             self._drain_job = None
+        if self._scan_result is not None:
+            self._scan_result.close()
         self.destroy()
 
     # ---------------------------------------------------------------- workers
@@ -629,6 +687,11 @@ class FluxCutterApp(ctk.CTk):
             card.destroy()
         self._cards.clear()
         self._selected = None
+        # A scan holds an open descriptor on its footage; dropping the
+        # reference without closing it leaks one per scan, and on Windows
+        # would keep the user's own file locked after they moved on.
+        if self._scan_result is not None:
+            self._scan_result.close()
         self._scan_result = None
         self._export_button.configure(state="disabled")
         self._selection_label.configure(text="Select a person to export.")

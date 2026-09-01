@@ -51,8 +51,11 @@ def make_person(index: int) -> Person:
     )
 
 
-def make_scan_result(video_path: str = "/videos/documentary.mp4") -> ScanResult:
+def make_scan_result(
+    video_path: str = "/videos/documentary.mp4", source=None
+) -> ScanResult:
     return ScanResult(
+        source=source,
         video_path=Path(video_path),
         video_duration=120.0,
         sample_interval=0.5,
@@ -190,3 +193,89 @@ def test_a_scan_finding_nobody_explains_the_cutoff(app):
 
     assert app._cards == []
     assert "at least 6 detections" in app._empty_label.cget("text")
+
+
+# --------------------------------------- finding a video that has moved
+
+
+def make_moved_source(tmp_path, keep_open=False):
+    """A VideoSource whose file has gone, as if moved between scan and export."""
+    from app.video.source import VideoSource
+
+    path = tmp_path / "documentary.mp4"
+    path.write_bytes(b"placeholder footage" * 50)
+    source = VideoSource(path, keep_open=keep_open)
+    path.unlink()
+    return source
+
+
+def test_export_proceeds_when_the_footage_is_still_there(app, tmp_path):
+    from app.video.source import VideoSource
+
+    path = tmp_path / "documentary.mp4"
+    path.write_bytes(b"placeholder footage" * 50)
+    with VideoSource(path, keep_open=False) as source:
+        app._scan_result = make_scan_result(source=source)
+        assert app._ensure_source_available() is True
+
+
+def test_a_scan_with_no_source_is_left_alone(app):
+    """Results built by the CLI carry no descriptor and must still export."""
+    app._scan_result = make_scan_result()
+    assert app._ensure_source_available() is True
+
+
+def test_declining_to_locate_a_moved_video_stops_the_export(app, tmp_path, monkeypatch):
+    from app.ui import app as app_module
+
+    app._scan_result = make_scan_result(source=make_moved_source(tmp_path))
+    monkeypatch.setattr(app_module.messagebox, "askyesno", lambda *a, **k: False)
+
+    assert app._ensure_source_available() is False
+
+
+def test_locating_a_moved_video_lets_the_export_run(app, tmp_path, monkeypatch):
+    """The scan is minutes of work; pointing at the file should rescue it."""
+    from app.ui import app as app_module
+
+    source = make_moved_source(tmp_path)
+    moved = tmp_path / "archive" / "documentary.mp4"
+    moved.parent.mkdir()
+    moved.write_bytes(b"placeholder footage" * 50)
+
+    app._scan_result = make_scan_result(source=source)
+    monkeypatch.setattr(app_module.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app_module.filedialog, "askopenfilename", lambda *a, **k: str(moved))
+
+    assert app._ensure_source_available() is True
+    assert source.path == moved
+    # The box names what will actually be read, not where the file was.
+    assert app._video_var.get() == str(moved)
+
+
+def test_pointing_at_the_wrong_video_is_refused(app, tmp_path, monkeypatch):
+    from app.ui import app as app_module
+
+    source = make_moved_source(tmp_path)
+    wrong = tmp_path / "holiday.mp4"
+    wrong.write_bytes(b"a completely different film")
+
+    app._scan_result = make_scan_result(source=source)
+    monkeypatch.setattr(app_module.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app_module.filedialog, "askopenfilename", lambda *a, **k: str(wrong))
+
+    shown = []
+    monkeypatch.setattr(app_module.messagebox, "showerror", lambda *a, **k: shown.append(a))
+
+    assert app._ensure_source_available() is False
+    assert shown, "the user should be told why the file was rejected"
+
+
+def test_cancelling_the_file_dialog_stops_the_export(app, tmp_path, monkeypatch):
+    from app.ui import app as app_module
+
+    app._scan_result = make_scan_result(source=make_moved_source(tmp_path))
+    monkeypatch.setattr(app_module.messagebox, "askyesno", lambda *a, **k: True)
+    monkeypatch.setattr(app_module.filedialog, "askopenfilename", lambda *a, **k: "")
+
+    assert app._ensure_source_available() is False

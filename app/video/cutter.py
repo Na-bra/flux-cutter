@@ -46,6 +46,8 @@ from pathlib import Path
 
 import av
 
+from app.video.loader import VideoLoadError
+from app.video.source import VideoSource
 from app.video.timeline import AppearanceInterval
 
 
@@ -166,7 +168,7 @@ class _AudioState:
 
 
 def cut_segments(
-    video_path: Path,
+    video: Path | VideoSource,
     segments: list[AppearanceInterval],
     output_path: Path,
     video_encoder: str = "libx264",
@@ -179,7 +181,9 @@ def cut_segments(
     Cuts each segment out of the source and writes them as one reel.
 
     Args:
-        video_path: The source video.
+        video: The source video, as a path or as a VideoSource. A
+            VideoSource keeps cutting after the file has been moved or
+            renamed since the scan.
         segments: Non-overlapping segments in chronological order, as
             returned by merge_for_export.
         output_path: Where to write the joined result.
@@ -207,17 +211,24 @@ def cut_segments(
                 "the joined output does not repeat footage."
             )
 
-    video_path = Path(video_path)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
     exported_seconds = 0.0
 
-    try:
-        source = av.open(str(video_path))
-    except av.FFmpegError as error:
-        raise CutterError(f"Could not open {video_path}: {error}") from error
+    if isinstance(video, VideoSource):
+        video_path = video.path
+        try:
+            source = video.open()
+        except VideoLoadError as error:
+            raise CutterError(str(error)) from error
+    else:
+        video_path = Path(video)
+        try:
+            source = av.open(str(video_path))
+        except av.FFmpegError as error:
+            raise CutterError(f"Could not open {video_path}: {error}") from error
 
     with source:
         if not source.streams.video:

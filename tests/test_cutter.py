@@ -6,12 +6,15 @@ was asked to, that the joins are seamless, that no frames are lost at a
 segment boundary -- cannot be checked without actually writing a file.
 """
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from app.video.cutter import CutterError, cut_segments
+from app.video.source import VideoSource
 from app.video.timeline import AppearanceInterval
 
 VIDEO = Path(__file__).resolve().parents[1] / "assets" / "test-videos" / "test.mp4"
@@ -115,3 +118,37 @@ def test_raising_from_on_segment_aborts_the_cut(tmp_path):
     with pytest.raises(Stop):
         cut_segments(VIDEO, spans((1.0, 3.0), (5.0, 7.0)), tmp_path / "out.mp4",
                      quality=30, on_segment=stop)
+
+
+@pytest.mark.slow
+def test_a_video_moved_since_the_scan_still_cuts(tmp_path):
+    """The reason VideoSource exists, proved by encoding through it.
+
+    A scan takes minutes; the user is free to reorganise their folders
+    while looking at the gallery. The held descriptor means the export
+    never notices -- here the file is unlinked outright, so no path on the
+    machine reaches the footage, and the reel is cut anyway.
+    """
+    copy = tmp_path / "moved.mp4"
+    shutil.copy(VIDEO, copy)
+    output = tmp_path / "out.mp4"
+
+    with VideoSource(copy, keep_open=True) as source:
+        os.unlink(copy)
+        assert not copy.exists()
+        result = cut_segments(source, spans((2.0, 4.0)), output, quality=30)
+
+    assert result.segment_count == 1
+    assert video_frame_count(output) == 60
+
+
+def test_a_source_whose_footage_is_gone_reports_it(tmp_path):
+    """With no descriptor held, a lost file has to surface as a CutterError."""
+    copy = tmp_path / "gone.mp4"
+    copy.write_bytes(b"placeholder" * 100)
+
+    source = VideoSource(copy, keep_open=False)
+    os.unlink(copy)
+
+    with pytest.raises(CutterError, match="no longer at"):
+        cut_segments(source, spans((1.0, 2.0)), tmp_path / "out.mp4")
