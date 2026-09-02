@@ -59,7 +59,12 @@ analysis = Analysis(
     hiddenimports=["PIL._tkinter_finder"],
     hookspath=[],
     runtime_hooks=[],
-    excludes=["matplotlib", "scipy", "sklearn", "pytest"],
+    # onnxruntime is excluded deliberately. Animation mode imports it lazily,
+    # so the dependency analysis can still find it and would add ~80 MB to a
+    # bundle for a mode many users never select. The frozen app therefore
+    # ships live-action only, and reports Animation as needing an install --
+    # which is what app/modes.availability already says.
+    excludes=["matplotlib", "scipy", "sklearn", "pytest", "onnxruntime"],
     noarchive=False,
 )
 
