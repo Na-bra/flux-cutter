@@ -19,6 +19,11 @@ from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files
 
 
+OPTIONAL_EXCLUDES = ["matplotlib", "scipy", "sklearn", "pytest"]
+if sys.platform != "darwin":
+    OPTIONAL_EXCLUDES.append("onnxruntime")
+
+
 def project_version(root: Path) -> str:
     """Reads __version__ out of app/__init__.py without importing it.
 
@@ -59,12 +64,14 @@ analysis = Analysis(
     hiddenimports=["PIL._tkinter_finder"],
     hookspath=[],
     runtime_hooks=[],
-    # onnxruntime is excluded deliberately. Animation mode imports it lazily,
-    # so the dependency analysis can still find it and would add ~80 MB to a
-    # bundle for a mode many users never select. The frozen app therefore
-    # ships live-action only, and reports Animation as needing an install --
-    # which is what app/modes.availability already says.
-    excludes=["matplotlib", "scipy", "sklearn", "pytest", "onnxruntime"],
+    # onnxruntime costs ~80 MB in the bundle, so it ships only where it earns
+    # that. On macOS it does: live-action embedding runs through its CoreML
+    # provider, which is 4-5x faster than cv2.dnn on Apple silicon, so every
+    # scan benefits and animation mode comes along for free. Elsewhere live
+    # action does not touch it and only animation mode would, so it stays out
+    # and the frozen app reports Animation as needing an install -- which is
+    # what app/modes.availability already says.
+    excludes=OPTIONAL_EXCLUDES,
     noarchive=False,
 )
 

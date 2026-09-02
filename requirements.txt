@@ -2,5 +2,12 @@ av==18.0.0
 customtkinter==6.0.0
 numpy==2.2.6
 opencv-python-headless==4.12.0.88
+# macOS only, and for live-action mode rather than animation. onnxruntime's
+# CoreML provider runs ArcFace 4-5x faster than cv2.dnn on Apple silicon
+# (5.8 ms against 25-32 ms per face). It is not a general win: onnxruntime's
+# own CPU provider measured 109 ms per face on the same machine, which is why
+# other platforms stay on cv2.dnn and do not carry this. Animation mode needs
+# the same package everywhere -- see requirements-animation.txt.
+onnxruntime==1.29.0; sys_platform == "darwin"
 pillow==12.3.0
 pytest==9.1.1

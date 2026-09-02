@@ -2,10 +2,11 @@
 #
 #     pip install -r requirements-animation.txt
 #
-# Kept out of requirements.txt on purpose. onnxruntime is 80 MB installed and
-# nothing in live-action mode imports it, so a user who only processes filmed
-# footage should not carry it -- nor should the frozen app, which would grow
-# by more than a third for a mode that machine may never use.
+# Kept out of requirements.txt on purpose for every platform but macOS, where
+# it is already pulled in for a different reason: live-action embedding runs
+# through its CoreML provider there. onnxruntime is 80 MB installed, so on
+# Windows and Linux -- where live-action mode does not use it -- a user who
+# only processes filmed footage should not carry it.
 #
 # This is also why animation mode reports itself unavailable rather than
 # failing at the first frame: see app/modes.availability.

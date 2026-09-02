@@ -1,3 +1,4 @@
+import builtins
 from dataclasses import replace
 from pathlib import Path
 
@@ -9,7 +10,15 @@ from app.faces.embedder import (
     ARCFACE_TEMPLATE_112,
     _similarity_transform,
 )
-from app.faces.embedder import EMBEDDING_DIMENSIONS, FaceEmbedder
+from app.faces.embedder import (
+    BACKEND_OVERRIDE_VARIABLE,
+    COREML_BACKEND,
+    EMBEDDING_DIMENSIONS,
+    OPENCV_BACKEND,
+    FaceEmbedder,
+    _coreml_is_worth_trying,
+    _open_coreml_session,
+)
 from app.video.frames import extract_frames
 from app.video.loader import load_video
 
@@ -283,3 +292,104 @@ def test_embeddings_are_unit_length(embedder, sampled_faces):
     """Cosine similarity is computed as a bare dot product downstream."""
     _, frame, detection = sampled_faces[0]
     assert np.linalg.norm(embedder.embed(frame, detection)) == pytest.approx(1.0, abs=1e-5)
+
+
+# ---------------------------------------------------------------- backends
+
+
+def test_an_unknown_backend_is_refused():
+    """Naming a backend is deliberate, so a typo must not fall back silently."""
+    with pytest.raises(ValueError, match="unknown embedding backend"):
+        FaceEmbedder(backend="neural-engine")
+
+
+def test_the_opencv_backend_can_always_be_forced():
+    """cv2.dnn is the floor: it needs no optional package and no accelerator."""
+    embedder = FaceEmbedder(backend=OPENCV_BACKEND)
+    try:
+        assert embedder.backend == OPENCV_BACKEND
+    finally:
+        embedder.close()
+
+
+def test_the_backend_can_be_forced_by_environment(monkeypatch):
+    """How the two are compared, and how a broken CoreML stack opts out."""
+    monkeypatch.setenv(BACKEND_OVERRIDE_VARIABLE, OPENCV_BACKEND)
+    embedder = FaceEmbedder()
+    try:
+        assert embedder.backend == OPENCV_BACKEND
+    finally:
+        embedder.close()
+
+
+def test_coreml_is_not_attempted_off_macos(monkeypatch):
+    monkeypatch.setattr("app.faces.embedder.sys.platform", "win32")
+    assert _coreml_is_worth_trying() is False
+
+
+def test_coreml_is_not_attempted_without_onnxruntime(monkeypatch):
+    """The package is optional, and its absence is not an error."""
+    monkeypatch.setattr("app.faces.embedder.sys.platform", "darwin")
+    real_import = builtins.__import__
+
+    def blocked(name, *args, **kwargs):
+        if name == "onnxruntime":
+            raise ImportError("no onnxruntime")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked)
+    assert _coreml_is_worth_trying() is False
+
+
+def test_a_session_that_fell_back_to_cpu_is_rejected(monkeypatch):
+    """onnxruntime's CPU provider is slower here than the cv2.dnn path.
+
+    Skipped where the package is absent: it patches onnxruntime itself, and
+    without it _open_coreml_session already returns None for a different
+    reason, which would not be testing this.
+
+    So a session where CoreML did not take the graph is worse than not
+    using onnxruntime at all, and must not be accepted as a success.
+    """
+    pytest.importorskip("onnxruntime")
+
+    class CpuOnlySession:
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+    monkeypatch.setattr(
+        "onnxruntime.InferenceSession", lambda *a, **k: CpuOnlySession()
+    )
+    assert _open_coreml_session(Path("unused.onnx")) is None
+
+
+@pytest.mark.skipif(not _coreml_is_worth_trying(), reason="CoreML not available here")
+def test_both_backends_agree_on_a_real_face():
+    """Different arithmetic, same identity.
+
+    CoreML computes in lower precision, so the vectors are not bit-equal.
+    What has to hold is that they are the same face: agreement here is far
+    above the 0.35 similarity that decides identity, and was 0.99974 median
+    over 3111 real faces.
+    """
+    with load_video(VIDEO_PATH) as container:
+        frame = next(extract_frames(container, sample_interval=1.0))[1]
+
+    detector = FaceDetector()
+    try:
+        detections = detector.detect(frame)
+    finally:
+        detector.close()
+    if not detections:
+        pytest.skip("no face in the first sampled frame")
+
+    vectors = {}
+    for backend in (OPENCV_BACKEND, COREML_BACKEND):
+        embedder = FaceEmbedder(backend=backend)
+        try:
+            vectors[backend] = embedder.embed_batch(frame, detections[:1])[0].embedding
+        finally:
+            embedder.close()
+
+    agreement = float(vectors[OPENCV_BACKEND] @ vectors[COREML_BACKEND])
+    assert agreement > 0.98

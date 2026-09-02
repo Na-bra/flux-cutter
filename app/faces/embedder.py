@@ -1,3 +1,5 @@
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +10,71 @@ from app.models import MODELS, ModelDownloadError, ensure_model_cli
 
 from app.faces.detector import FaceDetection
 from app.faces.quality import sharpness as crop_sharpness
+
+
+# Which library runs the forward pass. The weights, the preprocessing and
+# the output are the same either way -- this only decides who multiplies
+# the matrices.
+#
+# On Apple silicon the CoreML execution provider runs this model roughly
+# 4-5x faster than cv2.dnn (5.8 ms against 25-32 ms per face, measured over
+# 3111 real faces), because it reaches the Neural Engine. It is not simply
+# better everywhere: onnxruntime's own CPU provider measured 109 ms per
+# face on the same machine, so the win is CoreML specifically, not
+# onnxruntime, and cv2.dnn stays the default off macOS.
+#
+# The vectors are not bit-identical -- CoreML computes in lower precision
+# internally -- so this was checked rather than assumed. Against cv2.dnn
+# over those 3111 faces the median agreement is 0.99974 cosine and the
+# worst is 0.9843, and identity separation is unchanged on real footage:
+# AUC 0.99883 against 0.99881, false merges at 95% recall 0.48% against
+# 0.51%. Same embedding space, so galleries built under one backend stay
+# comparable under the other.
+COREML_BACKEND = "coreml"
+OPENCV_BACKEND = "opencv"
+
+# Set FLUXCUTTER_EMBED_BACKEND to force one, which is how the two are
+# compared and how a machine with a broken CoreML stack can opt out.
+BACKEND_OVERRIDE_VARIABLE = "FLUXCUTTER_EMBED_BACKEND"
+
+# How many faces CoreML is handed at once. See _forward_coreml: the value
+# matters far more than it looks, because the shape must never change.
+COREML_BATCH = 2
+
+
+def _coreml_is_worth_trying() -> bool:
+    """Whether to attempt CoreML at all, before paying to load anything."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import onnxruntime
+    except ImportError:
+        return False
+    return "CoreMLExecutionProvider" in onnxruntime.get_available_providers()
+
+
+def _open_coreml_session(model_path: Path):
+    """A CoreML-backed session, or None if this machine cannot give one.
+
+    Returns None rather than raising: an unavailable accelerator is a
+    reason to use the other backend, not a reason to fail a scan. It also
+    verifies that CoreML actually took the graph, because onnxruntime
+    silently falls back to its own CPU provider -- which is *slower* here
+    than the cv2.dnn path this would be replacing.
+    """
+    try:
+        import onnxruntime
+
+        session = onnxruntime.InferenceSession(
+            str(model_path),
+            providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
+        )
+    except Exception:
+        return None
+    if "CoreMLExecutionProvider" not in session.get_providers():
+        return None
+    return session
+
 
 EMBEDDING_DIMENSIONS = 512
 
@@ -126,18 +193,83 @@ class FaceEmbedder:
     INPUT_MEAN = 127.5
     INPUT_STD = 127.5
 
-    def __init__(self, model_path: str | Path | None = None):
+    def __init__(self, model_path: str | Path | None = None, backend: str | None = None):
         """
         Initializes the embedder.
 
         Args:
             model_path: Path to the ArcFace ONNX model. If omitted, uses the
                 repository-local model in assets/models.
+            backend: "coreml" or "opencv" to force one, or None to pick the
+                faster one available here. A forced backend that cannot be
+                opened raises rather than falling back, because someone who
+                names a backend is measuring something.
         """
         self.model_path = self._resolve_model_path(model_path)
-        self._net = cv2.dnn.readNetFromONNX(str(self.model_path))
-        self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-        self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        self._session = None
+        self._net = None
+
+        requested = backend or os.environ.get(BACKEND_OVERRIDE_VARIABLE) or None
+        if requested not in (None, COREML_BACKEND, OPENCV_BACKEND):
+            raise ValueError(
+                f"unknown embedding backend {requested!r}; "
+                f"expected {COREML_BACKEND!r} or {OPENCV_BACKEND!r}"
+            )
+
+        if requested == COREML_BACKEND:
+            self._session = _open_coreml_session(self.model_path)
+            if self._session is None:
+                raise RuntimeError("CoreML was requested but is not available here")
+        elif requested is None and _coreml_is_worth_trying():
+            self._session = _open_coreml_session(self.model_path)
+
+        if self._session is not None:
+            self.backend = COREML_BACKEND
+            self._input_name = self._session.get_inputs()[0].name
+        else:
+            self.backend = OPENCV_BACKEND
+            self._net = cv2.dnn.readNetFromONNX(str(self.model_path))
+            self._net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+            self._net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+
+    def _forward(self, blob: np.ndarray) -> np.ndarray:
+        """One forward pass, whichever backend is in use."""
+        if self._session is not None:
+            return self._forward_coreml(blob)
+        self._net.setInput(blob)
+        return self._net.forward()
+
+    def _forward_coreml(self, blob: np.ndarray) -> np.ndarray:
+        """CoreML, fed a batch of exactly COREML_BATCH faces every time.
+
+        This model declares its output as {1, 512}, so CoreML treats each
+        new batch size as a new graph and recompiles. Frames hold 1, 2, 3,
+        5... faces, so a naive call per frame recompiles almost every
+        frame: measured at 818 ms per face against 8.7 ms when the shape is
+        held constant, a 94x difference that made the "faster" backend far
+        slower than the one it replaced.
+
+        So the batch shape never varies. Short batches are padded with
+        zeroes and the padding is sliced back off; longer ones are split.
+        COREML_BATCH is 2 because that measured fastest over the real
+        distribution of faces per frame -- 11.6s for the test video against
+        13.1s at 1 and 36.9s at 8, where the padding waste outweighs the
+        larger batch.
+        """
+        rows = blob.shape[0]
+        outputs = []
+        for start in range(0, rows, COREML_BATCH):
+            chunk = blob[start : start + COREML_BATCH]
+            if chunk.shape[0] < COREML_BATCH:
+                padded = np.zeros(
+                    (COREML_BATCH,) + chunk.shape[1:], dtype=chunk.dtype
+                )
+                padded[: chunk.shape[0]] = chunk
+                result = self._session.run(None, {self._input_name: padded})[0]
+                outputs.append(result[: chunk.shape[0]])
+            else:
+                outputs.append(self._session.run(None, {self._input_name: chunk})[0])
+        return np.concatenate(outputs, axis=0)
 
     @classmethod
     def _default_model_path(cls) -> Path:
@@ -245,8 +377,7 @@ class FaceEmbedder:
             mean=(self.INPUT_MEAN, self.INPUT_MEAN, self.INPUT_MEAN),
             swapRB=False,
         )
-        self._net.setInput(blob)
-        raw_features = self._net.forward()
+        raw_features = self._forward(blob)
 
         for row, position in enumerate(source_positions):
             try:
@@ -284,10 +415,10 @@ class FaceEmbedder:
             mean=(self.INPUT_MEAN, self.INPUT_MEAN, self.INPUT_MEAN),
             swapRB=False,
         )
-        self._net.setInput(blob)
-        return self._normalize(self._net.forward().flatten())
+        return self._normalize(self._forward(blob).flatten())
 
     def close(self):
         """Cleans up the network resources."""
         self._net = None
+        self._session = None
         return None
