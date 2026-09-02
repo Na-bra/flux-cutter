@@ -68,6 +68,7 @@ def _iter_sampled_frames(
     """The decode loop itself, split out so validation above can stay eager."""
     next_sample_time = 0.0
 
+
     container.seek(0)
     for frame in container.decode(video_stream):
         timestamp = float(frame.time)

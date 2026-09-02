@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from app.video.loader import VideoLoadError, get_video_info, load_video
+from app.video.loader import (
+    VideoLoadError,
+    get_video_info,
+    load_video,
+    use_threaded_decoding,
+)
 
 VIDEO_DIR = Path(__file__).resolve().parents[1] / "assets" / "test-videos"
 MP4_VIDEO_PATH = VIDEO_DIR / "test.mp4"
@@ -78,3 +83,59 @@ def test_a_file_that_is_not_a_video_raises_a_readable_error(tmp_path):
         load_video(not_a_video)
 
     assert "Could not open video" in str(caught.value)
+
+
+# ------------------------------------------------- multithreaded decoding
+
+
+def test_load_video_asks_for_threaded_decoding():
+    """The speedup is invisible if it silently fails to apply.
+
+    FFmpeg only accepts thread_type while the codec is closed, so this
+    asserts the setting actually landed on the stream rather than trusting
+    that load_video called the helper.
+    """
+    with load_video(MP4_VIDEO_PATH) as container:
+        stream = next(s for s in container.streams if s.type == "video")
+        # PyAV hands back a ThreadType flag, not the string it accepts.
+        assert stream.thread_type.name == "AUTO"
+
+
+def test_threaded_decoding_is_declined_once_the_codec_is_open():
+    """Reported, not raised: a reused container is a caller's choice.
+
+    A container that has already decoded cannot change thread_type, and
+    that must not turn a working video into an error.
+    """
+    with load_video(MP4_VIDEO_PATH) as container:
+        stream = next(s for s in container.streams if s.type == "video")
+        next(container.decode(stream))
+        assert use_threaded_decoding(container) is False
+
+
+def test_threaded_decoding_reports_when_there_is_no_video_stream():
+    class Streams(list):
+        pass
+
+    class FakeContainer:
+        streams = Streams()
+
+    assert use_threaded_decoding(FakeContainer()) is False
+
+
+def test_threaded_decoding_does_not_change_the_frames_that_come_out():
+    """Byte-for-byte, not merely the same count."""
+    import hashlib
+
+    def sample(threaded: bool) -> list[tuple[float, str]]:
+        with load_video(MP4_VIDEO_PATH) as container:
+            stream = next(s for s in container.streams if s.type == "video")
+            if not threaded:
+                stream.thread_type = "NONE"
+            out = []
+            for frame in container.decode(stream):
+                pixels = frame.to_ndarray(format="rgb24")
+                out.append((round(float(frame.time), 6), hashlib.sha256(pixels).hexdigest()))
+            return out
+
+    assert sample(threaded=True) == sample(threaded=False)

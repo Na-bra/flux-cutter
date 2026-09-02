@@ -36,7 +36,7 @@ from pathlib import Path
 
 import av
 
-from app.video.loader import VideoLoadError, validate_video_path
+from app.video.loader import VideoLoadError, use_threaded_decoding, validate_video_path
 
 # See the module docstring: holding a descriptor detaches a video from its
 # path on POSIX and obstructs the user on Windows.
@@ -98,23 +98,27 @@ class VideoSource:
             view = os.fdopen(os.dup(self._handle.fileno()), "rb")
             view.seek(0)
             try:
-                return av.open(view)
+                container = av.open(view)
             except av.FFmpegError as error:
                 view.close()
                 raise VideoLoadError(
                     f"Could not open video: {self.path} ({error})"
                 ) from error
+            use_threaded_decoding(container)
+            return container
 
         if not self.path.is_file():
             raise SourceMissing(
                 f"{self.path.name} is no longer at {self.path.parent}."
             )
         try:
-            return av.open(str(self.path))
+            container = av.open(str(self.path))
         except av.FFmpegError as error:
             raise VideoLoadError(
                 f"Could not open video: {self.path} ({error})"
             ) from error
+        use_threaded_decoding(container)
+        return container
 
     def is_available(self) -> bool:
         """Whether `open` would find the footage."""

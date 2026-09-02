@@ -39,6 +39,40 @@ def validate_video_path(video_path: str | Path) -> Path:
     return path
 
 
+def use_threaded_decoding(container: av.container.InputContainer) -> bool:
+    """Ask the video stream to decode on more than one core.
+
+    Decoding was the pipeline's largest single cost: 85 ms per sampled
+    frame against 9 ms to detect a face and 29 ms to embed one. Nearly all
+    of it is waste -- at a 1-second interval on 24 fps footage 23 of every
+    24 decoded frames are dropped -- but they cannot be skipped, because a
+    frame is only decodable from the ones before it. Seeking to each sample
+    point instead is *slower*: it lands on the previous keyframe and
+    decodes forward, which measured 1.9x the work.
+
+    So decode the same frames, on more cores. Over 180 seconds of the 720p
+    test footage: 15.4s -> 3.8s, which takes the whole pipeline down about
+    40%. The frames that come out are byte-identical -- this changes how
+    they are decoded, not which.
+
+    This lives at open time because FFmpeg only accepts the setting while
+    the codec is closed, and a container that has already decoded anything
+    raises. Returns whether it was applied, so a caller that cares can tell
+    a real speedup from a silent no-op.
+    """
+    video_stream = next(
+        (stream for stream in container.streams if stream.type == "video"),
+        None,
+    )
+    if video_stream is None:
+        return False
+    try:
+        video_stream.thread_type = "AUTO"
+    except (RuntimeError, ValueError):
+        return False
+    return True
+
+
 def load_video(video_path: str | Path) -> av.container.InputContainer:
     """
     Open a video file and return the PyAV container.
@@ -50,7 +84,7 @@ def load_video(video_path: str | Path) -> av.container.InputContainer:
     path = validate_video_path(video_path)
 
     try:
-        return av.open(str(path))
+        container = av.open(str(path))
     except av.FFmpegError as exc:
         # av.AVError, which this used to catch, no longer exists in PyAV 18 --
         # so the except clause itself raised AttributeError and a corrupt file
@@ -59,6 +93,9 @@ def load_video(video_path: str | Path) -> av.container.InputContainer:
         # derives from (InvalidDataError for a file that is not a video,
         # FileNotFoundError for a missing one).
         raise VideoLoadError(f"Could not open video: {path} ({exc})") from exc
+
+    use_threaded_decoding(container)
+    return container
 
 
 def get_video_info(container: av.container.InputContainer) -> dict:
