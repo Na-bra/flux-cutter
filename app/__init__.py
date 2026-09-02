@@ -8,4 +8,4 @@
 # Keep it in step with the git tag. tests/test_version.py checks the shape,
 # not the value -- only a person can decide whether a change is a patch or
 # a minor.
-__version__ = "1.4.0"
+__version__ = "1.4.1"
