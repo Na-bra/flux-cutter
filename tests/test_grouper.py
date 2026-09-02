@@ -631,3 +631,47 @@ def test_unknown_sharpness_does_not_rank_an_observation_last():
     grouper.add(only)
 
     assert grouper.groups[0].representative_observation is only
+
+
+# --------------------------------------------- skipping work before embedding
+
+
+def test_accepts_detection_matches_what_grouping_would_keep():
+    """The pre-embed gate and the post-embed gate must agree.
+
+    They are the same two thresholds, and the pipeline skips embedding on
+    the strength of this answer -- so a face this accepts must survive
+    _is_reliable, and one it rejects must not.
+    """
+    grouper = IdentityGrouper(min_confidence=0.7, min_face_size=40)
+
+    good = make_observation([1.0, 0.0], confidence=0.9, face_size=200)
+    faint = make_observation([1.0, 0.0], confidence=0.5, face_size=200)
+    tiny = make_observation([1.0, 0.0], confidence=0.9, face_size=20)
+
+    for observation, expected in ((good, True), (faint, False), (tiny, False)):
+        assert grouper.accepts_detection(observation.detection) is expected
+        assert grouper._is_reliable(observation) is expected
+
+
+def test_accepts_detection_cannot_see_a_broken_embedding():
+    """It judges the detection only, so the embedding test still has to run.
+
+    A caller that treated acceptance as the whole answer would let a
+    non-finite vector into a group.
+    """
+    grouper = IdentityGrouper(min_confidence=0.7, min_face_size=40)
+    broken = make_observation([np.nan, np.nan], confidence=0.9, face_size=200)
+
+    assert grouper.accepts_detection(broken.detection) is True
+    assert grouper._is_reliable(broken) is False
+
+
+def test_accepts_detection_follows_the_configured_thresholds():
+    """Not hard-coded defaults -- a mode with looser floors must be honoured."""
+    strict = IdentityGrouper(min_confidence=0.9, min_face_size=100)
+    loose = IdentityGrouper(min_confidence=0.3, min_face_size=24)
+    middling = make_observation([1.0, 0.0], confidence=0.5, face_size=50)
+
+    assert strict.accepts_detection(middling.detection) is False
+    assert loose.accepts_detection(middling.detection) is True
