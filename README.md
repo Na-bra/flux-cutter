@@ -40,6 +40,8 @@ flux-cutter/
 │   │   ├── __init__.py
 │   │   ├── detector.py
 │   │   ├── embedder.py
+│   │   ├── anime.py       # animation-mode detection + embedding
+│   │   ├── quality.py
 │   │   ├── tracker.py
 │   │   └── grouper.py
 │   ├── ui/
@@ -56,6 +58,8 @@ flux-cutter/
 │       ├── timeline.py      # detections -> appearance intervals
 │       ├── cutter.py        # segments -> one reel, in-process via PyAV
 │       └── export.py        # intervals -> cut segments -> one reel
+├── modes.py             # live action / animation, chosen by the user
+├── settings.py          # the remembered choice
 ├── assets/
 │   ├── models/
 │   │   ├── face_detection_yunet_2026may.onnx

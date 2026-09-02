@@ -228,6 +228,11 @@ class FaceObservation:
     # observations built by hand (tests, and the appearance-timeline code)
     # have no crop to measure; None means "unknown", never "bad".
     sharpness: float | None = None
+    # Which model produced `embedding`. None means "not stated", which is
+    # what hand-built observations carry and is treated as compatible with
+    # anything -- the guard is against mixing two *named* spaces, not
+    # against callers that never had one.
+    embedding_space: str | None = None
 
 
 @dataclass
@@ -377,6 +382,19 @@ def _observation_quality(
     return observation.detection.confidence * size_term * sharpness_term * agreement
 
 
+class MixedEmbeddingSpaces(ValueError):
+    """Raised when observations from two different models reach one grouper.
+
+    Cosine similarity between an ArcFace vector and a CCIP one is a
+    perfectly well-formed float, which is the danger: nothing downstream
+    would notice, and every threshold in this module would be meaningless.
+    The two spaces are not even scaled alike -- two *different* anime
+    characters sit at a median 0.567 where two different people sit at 0.03
+    -- so a mixed run does not degrade gracefully, it collapses everyone
+    into one identity.
+    """
+
+
 class IdentityGrouper:
     """Groups embedded face observations into per-identity clusters.
 
@@ -434,6 +452,10 @@ class IdentityGrouper:
         self.forbid_cooccurring = forbid_cooccurring
         self.cooccurrence_similarity_ceiling = cooccurrence_similarity_ceiling
 
+        # The space every observation must agree on, learned from the first
+        # one that names it rather than configured: the grouper has no
+        # business knowing which models exist.
+        self._embedding_space: str | None = None
         self._unreliable: list[FaceObservation] = []
         self._rejected: list[FaceObservation] = []
         self._units: list[list[FaceObservation]] = []
@@ -456,6 +478,21 @@ class IdentityGrouper:
         if self._groups is None:
             self._groups = self._cluster()
         return self._groups
+
+    def _check_embedding_space(self, observation: FaceObservation) -> None:
+        """Refuses observations from a model this grouper is not already using."""
+        space = observation.embedding_space
+        if space is None:
+            return
+        if self._embedding_space is None:
+            self._embedding_space = space
+            return
+        if space != self._embedding_space:
+            raise MixedEmbeddingSpaces(
+                f"This grouper is comparing {self._embedding_space!r} embeddings "
+                f"and was given a {space!r} one. Vectors from different models "
+                "are not comparable; run each content mode as its own scan."
+            )
 
     def _is_reliable(self, observation: FaceObservation) -> bool:
         if not _is_valid_embedding(observation.embedding):
@@ -490,6 +527,7 @@ class IdentityGrouper:
             Note this is a unit index, not a group id: groups do not exist
             until clustering runs.
         """
+        self._check_embedding_space(observation)
         if not self._is_reliable(observation):
             self._unreliable.append(observation)
             return None
@@ -510,6 +548,8 @@ class IdentityGrouper:
             The unit index, or None if nothing in the track was reliable
             enough to group.
         """
+        for observation in track.observations:
+            self._check_embedding_space(observation)
         reliable = [obs for obs in track.observations if self._is_reliable(obs)]
         if not reliable:
             self._unreliable.extend(track.observations)

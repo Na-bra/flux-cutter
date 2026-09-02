@@ -95,6 +95,34 @@ MODELS = {
         size_bytes=174_383_860,
         description="ArcFace w600k_r50 recognition model",
     ),
+    # --- animation mode -------------------------------------------------
+    #
+    # Neither of these is the model the brief named, and the reasons are
+    # recorded in Instructions.md 17. In short: the anime ViT weights the
+    # reference project uses are gone -- both its Google Drive ids return a
+    # hard 404 -- and its Faster R-CNN detector needs PyTorch, which is 529 MB
+    # installed against onnxruntime's 80 MB. These two are ONNX, live, and
+    # measured on the actual test footage.
+    "anime_detector": ModelSpec(
+        filename="anime_face_detection_v1.1_s.onnx",
+        url=(
+            "https://huggingface.co/deepghs/anime_face_detection/resolve/main/"
+            "face_detect_v1.1_s/model.onnx"
+        ),
+        sha256="5ac333ce11805828f25d7abfaba543d4efbac4c1c68b82d0ec3f2890271b8df5",
+        size_bytes=44_583_229,
+        description="Anime face detector (YOLO, deepghs, MIT)",
+    ),
+    "anime_embedder": ModelSpec(
+        filename="anime_character_ccip_caformer_24.onnx",
+        url=(
+            "https://huggingface.co/deepghs/ccip_onnx/resolve/main/"
+            "ccip-caformer-24-randaug-pruned/model_feat.onnx"
+        ),
+        sha256="4ea118d16496274f4f6e08d3afc768cc592389e8f7f32f8732ce2215c228ac5f",
+        size_bytes=150_248_245,
+        description="CCIP anime character embedding (deepghs, OpenRAIL-M)",
+    ),
 }
 
 _REPOSITORY_MODELS = Path(__file__).resolve().parents[1] / "assets" / "models"

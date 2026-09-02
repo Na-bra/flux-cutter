@@ -1,0 +1,12 @@
+# Optional, for Animation mode only.
+#
+#     pip install -r requirements-animation.txt
+#
+# Kept out of requirements.txt on purpose. onnxruntime is 80 MB installed and
+# nothing in live-action mode imports it, so a user who only processes filmed
+# footage should not carry it -- nor should the frozen app, which would grow
+# by more than a third for a mode that machine may never use.
+#
+# This is also why animation mode reports itself unavailable rather than
+# failing at the first frame: see app/modes.availability.
+onnxruntime==1.29.0

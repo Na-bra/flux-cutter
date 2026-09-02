@@ -5,6 +5,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
 from app.faces.grouper import (
     DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     DEFAULT_CONSOLIDATION_THRESHOLD,
@@ -37,6 +38,38 @@ from app.models import (
 from app.video.frames import extract_frames
 from app.video.loader import VideoLoadError, get_video_info, load_video
 
+
+
+def resolve_mode_settings(args):
+    """The mode for this run, with any thresholds the user did not set.
+
+    Every value here belongs to a mode rather than to the application: a
+    similarity floor is a property of an embedding model's distribution, so
+    "the default" is only meaningful once the mode is known. Flags default to
+    None precisely so that an unset flag can inherit the mode's number
+    instead of silently inheriting live action's.
+
+    An explicitly passed flag always wins -- selecting a mode configures the
+    run, it does not overrule the person.
+    """
+    from app import settings as user_settings
+
+    mode_id = args.mode or user_settings.load().mode
+    spec = get_mode(mode_id)
+
+    def pick(name, value):
+        return value if value is not None else name
+
+    args.mode = spec.id
+    args.confidence_threshold = pick(
+        spec.detection.confidence_threshold, args.confidence_threshold
+    )
+    args.similarity_threshold = pick(spec.grouping.similarity_threshold, args.similarity_threshold)
+    args.consolidation_threshold = pick(spec.grouping.consolidation_threshold, args.consolidation_threshold)
+    args.min_confidence = pick(spec.detection.min_confidence, args.min_confidence)
+    args.min_face_size = pick(spec.detection.min_face_size, args.min_face_size)
+    args.min_group_eye_span = pick(spec.grouping.min_group_eye_span, args.min_group_eye_span)
+    return spec
 
 def main():
     """Main entry point for the command-line utility."""
@@ -168,7 +201,7 @@ def main():
     group_parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.6,
+        default=None,
         help="Minimum detection confidence to consider a face at all.",
     )
     group_parser.add_argument(
@@ -180,7 +213,7 @@ def main():
     group_parser.add_argument(
         "--similarity-threshold",
         type=float,
-        default=DEFAULT_SIMILARITY_THRESHOLD,
+        default=None,
         help="Minimum cosine similarity to an existing group's centroid to assign a match.",
     )
     group_parser.add_argument(
@@ -192,28 +225,36 @@ def main():
     group_parser.add_argument(
         "--consolidation-threshold",
         type=float,
-        default=DEFAULT_CONSOLIDATION_THRESHOLD,
+        default=None,
         help="Centroid similarity at which two whole groups are folded together after "
         "clustering. Set above 1.0 to disable the pass.",
     )
     group_parser.add_argument(
         "--min-confidence",
         type=float,
-        default=DEFAULT_MIN_CONFIDENCE,
+        default=None,
         help="Minimum detection confidence for a face to be used in grouping.",
     )
     group_parser.add_argument(
         "--min-face-size",
         type=int,
-        default=DEFAULT_MIN_FACE_SIZE,
+        default=None,
         help="Minimum face box side length (pixels) for a face to be used in grouping.",
     )
     group_parser.add_argument(
         "--min-group-eye-span",
         type=float,
-        default=DEFAULT_MIN_GROUP_EYE_SPAN,
+        default=None,
         help="Median eye separation (as a fraction of face-box width) below which a whole "
         "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
+    )
+    group_parser.add_argument(
+        "--mode",
+        choices=mode_ids(),
+        default=None,
+        help="Content type. 'live' is the original YuNet + ArcFace pipeline; "
+        "'animation' uses anime-trained detection and character embeddings. "
+        "Never chosen automatically. Defaults to the saved setting, or live.",
     )
     group_parser.add_argument(
         "--allow-cooccurring-identities",
@@ -259,7 +300,7 @@ def main():
     timestamps_parser.add_argument(
         "--confidence-threshold",
         type=float,
-        default=0.6,
+        default=None,
         help="Minimum detection confidence to consider a face at all.",
     )
     timestamps_parser.add_argument(
@@ -271,7 +312,7 @@ def main():
     timestamps_parser.add_argument(
         "--similarity-threshold",
         type=float,
-        default=DEFAULT_SIMILARITY_THRESHOLD,
+        default=None,
         help="Minimum cosine similarity to an existing group's centroid to assign a match.",
     )
     timestamps_parser.add_argument(
@@ -283,20 +324,20 @@ def main():
     timestamps_parser.add_argument(
         "--consolidation-threshold",
         type=float,
-        default=DEFAULT_CONSOLIDATION_THRESHOLD,
+        default=None,
         help="Centroid similarity at which two whole groups are folded together after "
         "clustering. Set above 1.0 to disable the pass.",
     )
     timestamps_parser.add_argument(
         "--min-confidence",
         type=float,
-        default=DEFAULT_MIN_CONFIDENCE,
+        default=None,
         help="Minimum detection confidence for a face to be used in grouping.",
     )
     timestamps_parser.add_argument(
         "--min-face-size",
         type=int,
-        default=DEFAULT_MIN_FACE_SIZE,
+        default=None,
         help="Minimum face box side length (pixels) for a face to be used in grouping.",
     )
     timestamps_parser.add_argument(
@@ -315,9 +356,17 @@ def main():
     timestamps_parser.add_argument(
         "--min-group-eye-span",
         type=float,
-        default=DEFAULT_MIN_GROUP_EYE_SPAN,
+        default=None,
         help="Median eye separation (as a fraction of face-box width) below which a whole "
         "group is treated as not-a-person and returned as unassigned. Set to 0 to disable.",
+    )
+    timestamps_parser.add_argument(
+        "--mode",
+        choices=mode_ids(),
+        default=None,
+        help="Content type. 'live' is the original YuNet + ArcFace pipeline; "
+        "'animation' uses anime-trained detection and character embeddings. "
+        "Never chosen automatically. Defaults to the saved setting, or live.",
     )
     timestamps_parser.add_argument(
         "--allow-cooccurring-identities",
@@ -370,14 +419,15 @@ def main():
         "--interval", type=float, default=0.5,
         help="Interval in seconds between sampled frames.",
     )
-    export_parser.add_argument("--confidence-threshold", type=float, default=0.6)
+    export_parser.add_argument("--confidence-threshold", type=float, default=None)
     export_parser.add_argument("--padding", type=float, default=0.08)
-    export_parser.add_argument("--similarity-threshold", type=float, default=DEFAULT_SIMILARITY_THRESHOLD)
+    export_parser.add_argument("--similarity-threshold", type=float, default=None)
     export_parser.add_argument("--margin-threshold", type=float, default=DEFAULT_MARGIN_THRESHOLD)
-    export_parser.add_argument("--consolidation-threshold", type=float, default=DEFAULT_CONSOLIDATION_THRESHOLD)
-    export_parser.add_argument("--min-confidence", type=float, default=DEFAULT_MIN_CONFIDENCE)
-    export_parser.add_argument("--min-face-size", type=int, default=DEFAULT_MIN_FACE_SIZE)
-    export_parser.add_argument("--min-group-eye-span", type=float, default=DEFAULT_MIN_GROUP_EYE_SPAN)
+    export_parser.add_argument("--consolidation-threshold", type=float, default=None)
+    export_parser.add_argument("--min-confidence", type=float, default=None)
+    export_parser.add_argument("--min-face-size", type=int, default=None)
+    export_parser.add_argument("--min-group-eye-span", type=float, default=None)
+    export_parser.add_argument("--mode", choices=mode_ids(), default=None)
     export_parser.add_argument("--allow-cooccurring-identities", action="store_true")
     export_parser.add_argument(
         "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
@@ -423,6 +473,12 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Commands that group faces inherit their thresholds from the chosen
+    # mode; the others (info, extract, detect, gallery, models, ui) have no
+    # mode and are left alone.
+    if hasattr(args, "similarity_threshold"):
+        resolve_mode_settings(args)
 
     if args.command == "models":
         if args.action == "clear":
@@ -492,6 +548,7 @@ def main():
                     min_group_eye_span=args.min_group_eye_span,
                     forbid_cooccurring=not args.allow_cooccurring_identities,
                     cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
+                    mode=args.mode,
                     min_detections=args.min_detections,
                     select_index=args.select_index,
                 )
@@ -511,6 +568,7 @@ def main():
                     min_group_eye_span=args.min_group_eye_span,
                     forbid_cooccurring=not args.allow_cooccurring_identities,
                     cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
+                    mode=args.mode,
                     min_detections=args.min_detections,
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,
@@ -537,6 +595,7 @@ def main():
                     min_group_eye_span=args.min_group_eye_span,
                     forbid_cooccurring=not args.allow_cooccurring_identities,
                     cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
+                    mode=args.mode,
                     min_detections=args.min_detections,
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,

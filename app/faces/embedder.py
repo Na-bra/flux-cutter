@@ -11,6 +11,9 @@ from app.faces.quality import sharpness as crop_sharpness
 
 EMBEDDING_DIMENSIONS = 512
 
+# The identifier stamped on every vector this module produces.
+LIVE_EMBEDDING_SPACE = "arcface-w600k-r50"
+
 
 @dataclass(frozen=True)
 class EmbeddedFace:
@@ -25,6 +28,10 @@ class EmbeddedFace:
 
     embedding: np.ndarray
     sharpness: float
+    # Which model's space this vector lives in. Two embeddings are only
+    # comparable when these match: cosine similarity between an ArcFace
+    # vector and a CCIP one is a number, and it means nothing.
+    embedding_space: str = "arcface-w600k-r50"
 
 
 # Canonical ArcFace 5-point reference template, in pixel coordinates on the
@@ -246,6 +253,7 @@ class FaceEmbedder:
                 results[position] = EmbeddedFace(
                     embedding=self._normalize(raw_features[row]),
                     sharpness=crop_sharpness(aligned_faces[row]),
+                    embedding_space=LIVE_EMBEDDING_SPACE,
                 )
             except ValueError:
                 results[position] = None

@@ -24,6 +24,8 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
+from app import settings as user_settings
+from app.modes import MODES, availability, mode_ids
 from app.ui.macos import set_application_name
 from app.ui.worker import (
     DEFAULT_QUALITY_LEVEL,
@@ -177,6 +179,8 @@ class FluxCutterApp(ctk.CTk):
         self._scan_result: ScanResult | None = None
         self._selected: Person | None = None
         self._cards: list[PersonCard] = []
+        # Restored from the settings file, so the choice survives a restart.
+        self._mode = user_settings.load().mode
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -248,6 +252,20 @@ class FluxCutterApp(ctk.CTk):
         )
         self._interval_menu.set(DEFAULT_INTERVAL_LABEL)
         self._interval_menu.pack(side="left")
+
+        # Content type is the user's call and never inferred from the video.
+        # It sits next to sampling rather than behind an Advanced panel
+        # because picking the wrong one does not fail loudly -- it quietly
+        # returns a gallery of the wrong things.
+        self._mode_labels = {MODES[m].display_name: m for m in mode_ids()}
+        self._mode_menu = ctk.CTkOptionMenu(
+            controls,
+            values=list(self._mode_labels),
+            width=150,
+            command=self._on_mode_changed,
+        )
+        self._mode_menu.set(MODES[self._mode].display_name)
+        self._mode_menu.pack(side="left", padx=(8, 0))
 
         self._scan_button = ctk.CTkButton(
             controls, text="Scan for people", width=150, command=self._on_scan_clicked
@@ -397,6 +415,26 @@ class FluxCutterApp(ctk.CTk):
             self._filename_var.set(suggestion)
         self._suggested_filename = suggestion
 
+    def _on_mode_changed(self, label: str) -> None:
+        """Records the chosen content type and reports what it needs.
+
+        Selecting a mode whose weights are missing is allowed -- the scan
+        will fetch them, with a progress bar, the same way live action does
+        on a fresh install. What is not allowed is finding out only after a
+        long scan, so the requirement is stated here.
+        """
+        self._mode = self._mode_labels.get(label, self._mode)
+
+        remembered = user_settings.load()
+        remembered.mode = self._mode
+        user_settings.save(remembered)
+
+        state = availability(self._mode)
+        if state.usable:
+            self._set_status(f"{MODES[self._mode].display_name} mode. Ready to scan.")
+        else:
+            self._set_status(f"{MODES[self._mode].display_name} mode. {state.describe()}.")
+
     def _on_scan_clicked(self) -> None:
         if self._is_busy():
             self._cancel.set()
@@ -411,8 +449,16 @@ class FluxCutterApp(ctk.CTk):
             messagebox.showerror("Not found", f"No such file:\n{video_path}")
             return
 
+        spec = MODES[self._mode]
         settings = ScanSettings(
             sample_interval=INTERVAL_CHOICES[self._interval_menu.get()],
+            mode=self._mode,
+            confidence_threshold=spec.detection.confidence_threshold,
+            min_confidence=spec.detection.min_confidence,
+            min_face_size=spec.detection.min_face_size,
+            similarity_threshold=spec.grouping.similarity_threshold,
+            consolidation_threshold=spec.grouping.consolidation_threshold,
+            min_group_eye_span=spec.grouping.min_group_eye_span,
         )
 
         self._clear_results()
@@ -712,6 +758,7 @@ class FluxCutterApp(ctk.CTk):
         state = "normal" if enabled else "disabled"
         for widget in (
             self._interval_menu,
+            self._mode_menu,
             self._encoder_menu,
             self._quality_menu,
             self._audio_switch,

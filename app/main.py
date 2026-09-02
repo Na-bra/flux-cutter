@@ -17,6 +17,7 @@ from app.faces.grouper import (
     auto_min_detections,
 )
 from app.faces.tracker import FaceTracker
+from app.modes import DEFAULT_MODE, get_mode
 from app.ui.gallery import (
     build_face_gallery,
     build_identity_gallery,
@@ -200,6 +201,7 @@ def run_identity_pipeline(
     min_detections: int,
     forbid_cooccurring: bool = DEFAULT_FORBID_COOCCURRING,
     cooccurrence_similarity_ceiling: float = DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+    mode: str = DEFAULT_MODE,
 ) -> "PipelineResult":
     """Runs detect -> crop -> embed -> track -> group over sampled frames.
 
@@ -216,9 +218,20 @@ def run_identity_pipeline(
     off a materialized list, which is exactly the thing that made memory
     scale with video length.
     """
-    detector = FaceDetector(confidence_threshold=confidence_threshold)
-    embedder = FaceEmbedder()
-    tracker = FaceTracker()
+    # The mode decides which models run. Built here, one job at a time, so
+    # that selecting Live Action never loads the animation models and vice
+    # versa -- the two sets together are most of a gigabyte resident.
+    spec = get_mode(mode)
+    detector = spec.build_detector(
+        confidence_threshold=confidence_threshold,
+        min_face_size=spec.detection.min_face_size,
+    )
+    embedder = spec.build_embedder()
+    # The tracker's contradiction floor is a similarity, so it belongs to
+    # the embedding space, not to the tracker: 0.25 separates a shot cut
+    # from a continuing face under ArcFace and never fires at all under
+    # CCIP, where two different characters already sit near 0.57.
+    tracker = FaceTracker(contradiction_floor=spec.grouping.contradiction_floor)
     grouper = IdentityGrouper(
         similarity_threshold=similarity_threshold,
         margin_threshold=margin_threshold,
@@ -268,6 +281,7 @@ def run_identity_pipeline(
             observations = [
                 FaceObservation(
                     embedding=embedded.embedding,
+                    embedding_space=embedded.embedding_space,
                     detection=detection,
                     face_crop=face_crop,
                     source_timestamp=timestamp,
@@ -323,6 +337,7 @@ def run_face_grouping(
     min_group_eye_span: float,
     forbid_cooccurring: bool,
     cooccurrence_similarity_ceiling: float,
+    mode: str,
     min_detections: int | None,
     select_index: int | None,
 ):
@@ -351,6 +366,7 @@ def run_face_grouping(
         min_group_eye_span=min_group_eye_span,
         forbid_cooccurring=forbid_cooccurring,
         cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
+        mode=mode,
         min_detections=resolved_min_detections,
     )
 
@@ -401,6 +417,7 @@ def run_appearance_timestamps(
     min_group_eye_span: float,
     forbid_cooccurring: bool,
     cooccurrence_similarity_ceiling: float,
+    mode: str,
     min_detections: int | None,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
@@ -427,6 +444,7 @@ def run_appearance_timestamps(
         min_group_eye_span=min_group_eye_span,
         forbid_cooccurring=forbid_cooccurring,
         cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
+        mode=mode,
         min_detections=resolved_min_detections,
     )
 
@@ -503,6 +521,7 @@ def run_export(
     min_group_eye_span: float,
     forbid_cooccurring: bool,
     cooccurrence_similarity_ceiling: float,
+    mode: str,
     min_detections: int | None,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
@@ -536,6 +555,7 @@ def run_export(
         min_group_eye_span=min_group_eye_span,
         forbid_cooccurring=forbid_cooccurring,
         cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
+        mode=mode,
         min_detections=resolved_min_detections,
     )
 

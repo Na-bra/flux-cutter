@@ -1608,3 +1608,117 @@ Everything in the module is cosmetic and every failure path returns False, so
 a different Objective-C runtime, an immutable dictionary on some other Python
 build, or a future macOS that stops handing out the real dictionary all leave
 the app called Python and working, which is where it started.
+
+## 17. Animation mode (`app/modes.py`, `app/faces/anime.py`)
+
+FluxCutter now has two pipelines, chosen by the user. The live-action one is
+untouched: same YuNet, same ArcFace, same tracker, same thresholds, and the
+regression run on `test.mp4` is identical to before (49 detections, 33
+tracks, 2 identities, 14 unassigned).
+
+### Why a second pipeline at all
+
+Measured, not assumed. On `animation.mp4` (a 7-minute Ben 10 episode) the
+live-action detector finds **0.26 faces per sampled frame**, and the montage
+shows most of them are not characters -- it misses the plain cartoon face in
+the second sampled frame entirely. The animation detector finds **0.45**, and
+they are the actual characters.
+
+### The models are not the ones the brief named, and that matters
+
+The brief specified the `video-to-faces` stack: a Faster R-CNN anime detector
+and ViT-B16 for embeddings. Only half of that is reachable.
+
+- **ViT-B16 and ViT-L16 weights are gone.** Both are hosted on Google Drive,
+  and both ids return a hard `404` with Google's own error page -- not a
+  consent interstitial, checked with and without the confirm-token flow.
+  `arkel23/animesion` publishes no GitHub releases and no mirror was found.
+  A default that cannot be downloaded is not a default.
+- **The Faster R-CNN detector is reachable** (158 MB, from a real GitHub
+  release) but needs PyTorch, which is **529 MB installed** here.
+
+So the substitutes were chosen on availability and weight, and both are ONNX:
+
+| role | model | size | licence |
+| --- | --- | --- | --- |
+| detection | `deepghs/anime_face_detection` v1.1_s | 45 MB | MIT |
+| embedding | `deepghs/ccip_onnx` caformer-24 | 150 MB | OpenRAIL-M |
+
+CCIP is *Contrastive Character Image Pretraining* -- an anime **character**
+embedding rather than a face embedding, which is why the crop it is given
+includes some hair and costume (on this footage, hair colour is often what
+separates two characters).
+
+Neither loads in `cv2.dnn`: the detector's graph trips OpenCV's ONNX importer
+on a Concat node. They run under **onnxruntime**, which is 80 MB installed
+against PyTorch's 529 MB, and which is an *optional* dependency --
+`requirements-animation.txt`, not `requirements.txt`. Nothing in live-action
+mode imports it, and `app/modes.availability` reports the mode unusable with
+the exact `pip install` line rather than failing at the first frame.
+
+### The thresholds do not transfer, and this is the important part
+
+CCIP similarity is not on ArcFace's scale, and not merely shifted -- the two
+distributions have different shapes. Measured on 20 hand-labelled character
+crops from `animation.mp4` (171 pairs):
+
+| | same identity | different identity |
+| --- | --- | --- |
+| **CCIP** (animation) | min 0.685, p5 0.745 | median **0.567**, p95 0.763 |
+| **ArcFace** (live) | p5 0.381 | p99 0.321, median 0.03 |
+
+Two *different* anime characters sit at 0.567 where two different people sit
+at 0.03. Running animated footage through the live-action floor of 0.35 would
+put the entire cast in one group. So every mode owns its own detection
+settings, grouping thresholds and tracker contradiction floor, and changing
+one cannot affect the other.
+
+The animation numbers are **provisional**. There is real overlap here that
+live action does not have -- at 0.75, 6.6% of different-character pairs merge
+and 8.2% of same-character pairs split -- and 20 crops is a far smaller
+sample than the live-action figures rest on.
+
+### No landmarks, and none invented
+
+The animation detector returns boxes only. `landmarks` stays `None` rather
+than being fabricated to keep the dataclass tidy: ArcFace's alignment is
+built on those five points, and feeding it invented ones would produce
+confident nonsense. It is also why the two embedders cannot be swapped
+between modes.
+
+### Embeddings cannot be mixed
+
+Every embedding carries the id of the model that made it, and
+`IdentityGrouper` raises `MixedEmbeddingSpaces` if two named spaces reach one
+grouper. This is a hard error rather than a threshold problem because the
+comparison *works*: the cosine similarity of an ArcFace vector and a CCIP
+vector is a perfectly well-formed float, and nothing downstream would notice.
+
+### What the real video produced
+
+105 frames at a 4s interval, 41 detections, 28 tracks, **7 character groups**,
+68.7s total. Inspected card by card:
+
+- **Ben** (17 detections, 88s-332s), **Gwen** (14, 164s-352s) and
+  **Grandpa Max** (6, 24s-308s) are each one character, correctly separated,
+  across profiles, expressions and distances.
+- One legitimate one-off villain face.
+- **Two false positives**: a patch of smoke (confidence 0.44) and a
+  **buffalo** (0.72). Animal and background faces are exactly the animation
+  failure mode to expect, and neither confidence nor size separates them here.
+- **One missed match**: a wide shot of Ben seeded its own card instead of
+  joining his.
+
+### Cost, measured on a quiet machine
+
+| | live action | animation |
+| --- | --- | --- |
+| detector load | 63 ms | 69 ms |
+| embedder load | 89 ms | 226 ms |
+| detection | 22 ms/frame | 209 ms/frame |
+| embedding | 117 ms/face | 412 ms/face |
+
+Animation is roughly ten times slower to detect and three times slower to
+embed. That is the model, not the plumbing, and it is reported rather than
+hidden -- CPU is the only supported target for both modes, and nothing here
+silently substitutes a smaller model to make the number look better.
