@@ -24,6 +24,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
+from app.ui.macos import set_application_name
 from app.ui.worker import (
     DEFAULT_QUALITY_LEVEL,
     QUALITY_LEVELS,
@@ -157,6 +158,11 @@ class FluxCutterApp(ctk.CTk):
     """The main window."""
 
     def __init__(self, video_path: Path | None = None):
+        # Before super(), which starts Tk: Tk reads the application name once,
+        # while building the macOS menu bar. Run from a checkout the answer
+        # would otherwise be "Python", after a framework build re-execs this
+        # process through a stub app inside the framework (app/ui/macos.py).
+        set_application_name("FluxCutter")
         super().__init__()
 
         self.title("FluxCutter")

@@ -1564,3 +1564,47 @@ The threshold change appeared to do nothing, and a plausible story was
 constructed for why. The script now reads the constants from the module. Any
 harness that repeats a value the code already owns will eventually measure the
 wrong build.
+
+## 16. Why macOS called the app "Python" (`app/ui/macos.py`)
+
+The window title always said FluxCutter; the menu bar and Dock said Python.
+Packaging 14 assumed that was cosmetic and development-only, on the grounds
+that the frozen `.app` registers correctly with LaunchServices. That was true
+and beside the point -- the app is run from a checkout far more often than it
+is run frozen, and it is the same app.
+
+macOS takes the name from `CFBundleName` on `NSBundle.mainBundle`, and the
+reason a checkout gets "Python" is not the obvious one. A framework build of
+CPython -- Homebrew's is one -- re-execs GUI processes through a stub
+application inside the framework, so the main bundle is:
+
+    .../Python.framework/Versions/3.12/Resources/Python.app
+
+whose CFBundleName is, reasonably enough, "Python". Every Tk program run from
+a framework Python is called Python in the menu bar.
+
+That bundle's info dictionary turns out to be an `__NSDictionaryM` -- mutable
+-- so the name can be written straight into it before Tk starts. Tk reads it
+once, while building the menu.
+
+An earlier attempt at this was abandoned for the right reason and with the
+wrong conclusion: it reported success without checking anything had changed,
+and "it does not raise" is not evidence. `set_application_name` now reads the
+key back and returns True only if the new value is there:
+
+    infoDictionary class : __NSDictionaryM
+    before               : 'Python'
+    after                : 'FluxCutter'
+
+### What is and is not verified
+
+The value Tk reads is verified, through the real `FluxCutterApp()`
+construction path. The menu bar itself is not: reading it needs macOS
+Accessibility permission, which is not something to switch on for a test run
+or on someone's behalf. So the claim here is "Tk is handed the right name",
+one step short of "the pixels say FluxCutter".
+
+Everything in the module is cosmetic and every failure path returns False, so
+a different Objective-C runtime, an immutable dictionary on some other Python
+build, or a future macOS that stops handing out the real dictionary all leave
+the app called Python and working, which is where it started.
