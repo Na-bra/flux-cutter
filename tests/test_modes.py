@@ -91,6 +91,11 @@ def test_animation_does_not_ask_for_landmark_geometry():
 
 
 def test_availability_reports_what_is_missing(monkeypatch):
+    # Both axes are pinned. Stubbing only the weights leaves the runtime
+    # check real, so the answer would depend on whether the machine running
+    # the tests happens to have the optional onnxruntime installed -- which
+    # is how this passed locally and failed on CI.
+    monkeypatch.setattr(modes, "missing_requirements", lambda spec: ())
     monkeypatch.setattr(modes, "find_model", lambda spec: None)
     state = modes.availability(modes.ANIMATION)
     assert not state.usable
