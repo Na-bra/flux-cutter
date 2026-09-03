@@ -322,11 +322,13 @@ def test_the_backend_can_be_forced_by_environment(monkeypatch):
         embedder.close()
 
 
+@pytest.mark.runs_without_assets
 def test_coreml_is_not_attempted_off_macos(monkeypatch):
     monkeypatch.setattr("app.faces.embedder.sys.platform", "win32")
     assert _coreml_is_worth_trying() is False
 
 
+@pytest.mark.runs_without_assets
 def test_coreml_is_not_attempted_without_onnxruntime(monkeypatch):
     """The package is optional, and its absence is not an error."""
     monkeypatch.setattr("app.faces.embedder.sys.platform", "darwin")
@@ -341,6 +343,7 @@ def test_coreml_is_not_attempted_without_onnxruntime(monkeypatch):
     assert _coreml_is_worth_trying() is False
 
 
+@pytest.mark.runs_without_assets
 def test_a_session_that_fell_back_to_cpu_is_rejected(monkeypatch):
     """onnxruntime's CPU provider is slower here than the cv2.dnn path.
 

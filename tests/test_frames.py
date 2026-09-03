@@ -161,6 +161,7 @@ def sampled_times(times, sample_interval):
     return [t for t, _ in extract_frames(FakeContainer(times), sample_interval)]
 
 
+@pytest.mark.runs_without_assets
 def test_footage_that_starts_late_is_not_sampled_in_a_burst():
     """An MP4 with a start offset, or a clip cut from the middle of a file.
 
@@ -177,6 +178,7 @@ def test_footage_that_starts_late_is_not_sampled_in_a_burst():
     assert min(round(b - a, 6) for a, b in zip(got, got[1:])) >= 1.0
 
 
+@pytest.mark.runs_without_assets
 def test_a_gap_does_not_produce_near_duplicate_samples():
     """Dropped frames and variable frame rates both leave gaps."""
     times = [i / 24 for i in range(48)] + [8.0 + i / 24 for i in range(48)]
@@ -184,6 +186,7 @@ def test_a_gap_does_not_produce_near_duplicate_samples():
     assert sampled_times(times, 1.0) == [0.0, 1.0, 8.0, 9.0]
 
 
+@pytest.mark.runs_without_assets
 def test_a_regular_timeline_still_lands_on_the_interval():
     """The ordinary case has to be untouched by the fix above."""
     times = [i / 25 for i in range(250)]
@@ -191,6 +194,7 @@ def test_a_regular_timeline_still_lands_on_the_interval():
     assert sampled_times(times, 2.0) == [0.0, 2.0, 4.0, 6.0, 8.0]
 
 
+@pytest.mark.runs_without_assets
 def test_sampling_does_not_drift_over_a_long_timeline():
     """Spacing from each yielded frame instead of the interval grid would
     accumulate a fraction of a frame every sample."""
