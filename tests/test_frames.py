@@ -122,3 +122,81 @@ def test_extract_frames_validates_arguments_eagerly(video_container):
 
     with pytest.raises(ValueError):
         extract_frames(video_container, sample_interval=-1.0)
+
+
+# ------------------------------------------- sampling an irregular timeline
+
+
+class FakeFrame:
+    def __init__(self, time: float):
+        self.time = time
+
+    def to_ndarray(self, format=None):
+        return np.zeros((2, 2, 3), dtype=np.uint8)
+
+
+class FakeContainer:
+    """Just enough container to drive the sampling schedule.
+
+    Real footage in this repository starts at zero and has no gaps, so the
+    schedule can only be exercised against timings that no sample file
+    here provides.
+    """
+
+    class _Stream:
+        type = "video"
+
+    def __init__(self, times):
+        self._times = times
+        self.streams = [self._Stream()]
+
+    def seek(self, offset):
+        pass
+
+    def decode(self, stream):
+        return (FakeFrame(t) for t in self._times)
+
+
+def sampled_times(times, sample_interval):
+    return [t for t, _ in extract_frames(FakeContainer(times), sample_interval)]
+
+
+def test_footage_that_starts_late_is_not_sampled_in_a_burst():
+    """An MP4 with a start offset, or a clip cut from the middle of a file.
+
+    The schedule starts at zero, so the first frame arrives with the
+    target far behind it. Advancing by a single interval would leave it
+    still behind, and every following frame would qualify until it caught
+    up -- six frames spanning 0.2 seconds where one was wanted.
+    """
+    times = [5.0 + i / 24 for i in range(240)]
+
+    got = sampled_times(times, 1.0)
+
+    assert got[:4] == [5.0, 6.0, 7.0, 8.0]
+    assert min(round(b - a, 6) for a, b in zip(got, got[1:])) >= 1.0
+
+
+def test_a_gap_does_not_produce_near_duplicate_samples():
+    """Dropped frames and variable frame rates both leave gaps."""
+    times = [i / 24 for i in range(48)] + [8.0 + i / 24 for i in range(48)]
+
+    assert sampled_times(times, 1.0) == [0.0, 1.0, 8.0, 9.0]
+
+
+def test_a_regular_timeline_still_lands_on_the_interval():
+    """The ordinary case has to be untouched by the fix above."""
+    times = [i / 25 for i in range(250)]
+
+    assert sampled_times(times, 2.0) == [0.0, 2.0, 4.0, 6.0, 8.0]
+
+
+def test_sampling_does_not_drift_over_a_long_timeline():
+    """Spacing from each yielded frame instead of the interval grid would
+    accumulate a fraction of a frame every sample."""
+    times = [i / 30 for i in range(30 * 600)]
+
+    got = sampled_times(times, 1.0)
+
+    assert len(got) == 600
+    assert got[-1] == pytest.approx(599.0, abs=1 / 30)

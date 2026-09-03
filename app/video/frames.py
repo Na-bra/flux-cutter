@@ -68,11 +68,27 @@ def _iter_sampled_frames(
     """The decode loop itself, split out so validation above can stay eager."""
     next_sample_time = 0.0
 
-
     container.seek(0)
     for frame in container.decode(video_stream):
         timestamp = float(frame.time)
 
         if timestamp >= next_sample_time:
             yield timestamp, frame.to_ndarray(format="rgb24")
-            next_sample_time += sample_interval
+
+            # Advance past this frame, not by a single interval. The
+            # schedule starts at zero, so footage that starts later --
+            # an MP4 with a start offset, a clip cut from the middle of a
+            # longer file -- leaves the target far behind the first frame,
+            # and a single step still leaves it behind. Every following
+            # frame then qualifies until the target catches up, so a clip
+            # beginning at 5s returned six frames spanning 0.2 seconds
+            # before settling into the interval it was asked for. Gaps
+            # mid-file do the same thing: dropped frames and variable
+            # frame rates both produce a burst of near-duplicates where
+            # one sample was wanted.
+            #
+            # The loop keeps the samples on multiples of the interval
+            # rather than spacing them from whatever frame happened to be
+            # yielded, so the timing cannot drift over a long video.
+            while next_sample_time <= timestamp:
+                next_sample_time += sample_interval
