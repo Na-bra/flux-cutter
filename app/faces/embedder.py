@@ -6,6 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.debug import onnx_log_severity
 from app.models import MODELS, ModelDownloadError, ensure_model_cli
 
 from app.faces.detector import FaceDetection
@@ -65,8 +66,15 @@ def _open_coreml_session(model_path: Path):
     try:
         import onnxruntime
 
+        # Quiet unless FLUXCUTTER_DEBUG is set. The fixed batch below does not
+        # match the {1, 512} output this graph declares, and onnxruntime says
+        # so on every call -- about 1,900 lines for a 22-minute video.
+        options = onnxruntime.SessionOptions()
+        options.log_severity_level = onnx_log_severity()
+
         session = onnxruntime.InferenceSession(
             str(model_path),
+            options,
             providers=["CoreMLExecutionProvider", "CPUExecutionProvider"],
         )
     except Exception:

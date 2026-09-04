@@ -32,6 +32,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from app.debug import onnx_log_severity
 from app.faces.detector import BoundingBox, FaceDetection
 from app.faces.embedder import EmbeddedFace
 from app.faces.quality import sharpness as crop_sharpness
@@ -78,8 +79,11 @@ def _session(model_path: Path):
             "installed.\n    pip install onnxruntime"
         ) from error
 
+    options = onnxruntime.SessionOptions()
+    options.log_severity_level = onnx_log_severity()
+
     return onnxruntime.InferenceSession(
-        str(model_path), providers=["CPUExecutionProvider"]
+        str(model_path), options, providers=["CPUExecutionProvider"]
     )
 
 
