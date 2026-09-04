@@ -225,3 +225,6 @@ output/*
 app/faces/visualize_detector.py
 
 .claude
+
+# macOS Finder leaves one of these in every folder it opens.
+.DS_Store
