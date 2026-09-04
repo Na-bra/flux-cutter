@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.models import cache_dir
-from app.modes import DEFAULT_MODE, MODES, mode_ids
+from app.modes import mode_ids
 
 SETTINGS_VERSION = 1
 
@@ -46,9 +46,17 @@ def settings_path() -> Path:
 
 @dataclass
 class Settings:
-    """The user's remembered choices."""
+    """The user's remembered choices.
 
-    mode: str = DEFAULT_MODE
+    The selected mode is deliberately not one of them. Live action is the
+    default every time FluxCutter starts, and animation is chosen per run.
+    Remembering it meant a mode picked once in the window silently became
+    the default for every later command-line run too, with no flag in sight
+    to say so -- a live-action job quietly embedded through the anime model.
+    Per-mode thresholds are still remembered, because those belong to the
+    mode rather than deciding which mode you are in.
+    """
+
     per_mode: dict[str, dict] = None
 
     def __post_init__(self):
@@ -65,7 +73,6 @@ class Settings:
     def to_dict(self) -> dict:
         return {
             "version": SETTINGS_VERSION,
-            "mode": self.mode,
             **{mode: self.per_mode.get(mode, {}) for mode in mode_ids()},
         }
 
@@ -81,19 +88,16 @@ def load() -> Settings:
     if not isinstance(raw, dict):
         return Settings()
 
-    mode = raw.get("mode", DEFAULT_MODE)
-    # A mode name from a newer version, or a typo in a hand-edited file,
-    # must not strand the user in a mode that does not exist.
-    if mode not in MODES:
-        mode = DEFAULT_MODE
-
+    # A "mode" key written by an older version is read and discarded: the
+    # mode is no longer restored, so an animation session cannot outlive
+    # itself.
     per_mode = {}
     for mode_id in mode_ids():
         values = raw.get(mode_id)
         if isinstance(values, dict):
             per_mode[mode_id] = values
 
-    return Settings(mode=mode, per_mode=per_mode)
+    return Settings(per_mode=per_mode)
 
 
 def save(settings: Settings) -> Path:

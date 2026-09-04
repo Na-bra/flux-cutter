@@ -52,9 +52,7 @@ def resolve_mode_settings(args):
     An explicitly passed flag always wins -- selecting a mode configures the
     run, it does not overrule the person.
     """
-    from app import settings as user_settings
-
-    mode_id = args.mode or user_settings.load().mode
+    mode_id = args.mode or DEFAULT_MODE
     spec = get_mode(mode_id)
 
     def pick(name, value):

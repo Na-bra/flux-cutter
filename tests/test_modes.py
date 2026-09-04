@@ -205,3 +205,62 @@ def test_a_track_is_checked_too():
     grouper.add(observation([1.0, 0.0, 0.0], "arcface-w600k-r50"))
     with pytest.raises(MixedEmbeddingSpaces):
         grouper.add_track(_Track([observation([0.0, 1.0, 0.0], "ccip-caformer-24")]))
+
+
+# ------------------------------------------- what an unset --mode means
+
+
+def _grouping_args(**overrides):
+    """The mode-owned flags argparse produces, all unset unless named."""
+    from types import SimpleNamespace
+
+    fields = {
+        "mode": None,
+        "similarity_threshold": None,
+        "consolidation_threshold": None,
+        "min_confidence": None,
+        "min_face_size": None,
+        "min_group_eye_span": None,
+        "confidence_threshold": None,
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def test_an_unset_mode_flag_means_live_action(tmp_path, monkeypatch):
+    """Not whatever mode was last selected somewhere else.
+
+    The mode used to be read back from the settings file here, so choosing
+    animation once in the window silently made it the default for every
+    later command-line run, with no flag on the command to say so -- a
+    live-action job embedding through the anime model.
+    """
+    from app.__main__ import resolve_mode_settings
+
+    monkeypatch.setenv("FLUXCUTTER_SETTINGS", str(tmp_path / "settings.json"))
+    (tmp_path / "settings.json").write_text('{"version": 1, "mode": "animation"}')
+
+    args = _grouping_args()
+    resolve_mode_settings(args)
+
+    assert args.mode == modes.LIVE
+    assert args.similarity_threshold == modes.get_mode(modes.LIVE).grouping.similarity_threshold
+
+
+def test_an_explicit_mode_flag_still_wins():
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION)
+    resolve_mode_settings(args)
+
+    assert args.mode == modes.ANIMATION
+    assert args.similarity_threshold == modes.get_mode(modes.ANIMATION).grouping.similarity_threshold
+
+
+def test_an_explicit_threshold_beats_the_mode_default():
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION, similarity_threshold=0.5)
+    resolve_mode_settings(args)
+
+    assert args.similarity_threshold == 0.5

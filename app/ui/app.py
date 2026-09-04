@@ -24,8 +24,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from app import settings as user_settings
-from app.modes import MODES, availability, mode_ids
+from app.modes import DEFAULT_MODE, MODES, availability, mode_ids
 from app.ui.macos import set_application_name
 from app.ui.worker import (
     DEFAULT_QUALITY_LEVEL,
@@ -179,8 +178,10 @@ class FluxCutterApp(ctk.CTk):
         self._scan_result: ScanResult | None = None
         self._selected: Person | None = None
         self._cards: list[PersonCard] = []
-        # Restored from the settings file, so the choice survives a restart.
-        self._mode = user_settings.load().mode
+        # Live action every time. Animation is opted into per session, so a
+        # scan can never quietly run through the anime models because of a
+        # dropdown someone changed days ago.
+        self._mode = DEFAULT_MODE
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -424,10 +425,6 @@ class FluxCutterApp(ctk.CTk):
         long scan, so the requirement is stated here.
         """
         self._mode = self._mode_labels.get(label, self._mode)
-
-        remembered = user_settings.load()
-        remembered.mode = self._mode
-        user_settings.save(remembered)
 
         state = availability(self._mode)
         if state.usable:
