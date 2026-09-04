@@ -44,12 +44,13 @@ if ! "$PYTHON" -c "import PyInstaller" 2>/dev/null; then
     "$PYTHON" -m pip install --quiet pyinstaller
 fi
 
-# Tk is a system package, not a pip one, and its absence fails at import
-# rather than at build -- clearer to say so here.
-if ! "$PYTHON" -c "import tkinter" 2>/dev/null; then
-    echo "Error: this Python has no tkinter." >&2
-    echo "  macOS:  brew install python-tk@3.12" >&2
-    echo "  Ubuntu: sudo apt install python3-tk" >&2
+# pywebview draws the window. Unlike the Tk it replaced it is a pip package,
+# so this cannot be a missing system library -- but a build that omits it
+# produces an app that dies on its first import, which is worth catching
+# here rather than after the bundle is written.
+if ! "$PYTHON" -c "import webview" 2>/dev/null; then
+    echo "Error: this Python has no pywebview." >&2
+    echo "  pip install -r requirements.txt" >&2
     exit 1
 fi
 

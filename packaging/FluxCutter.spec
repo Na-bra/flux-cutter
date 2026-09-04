@@ -16,7 +16,6 @@ import re
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
 
 
 OPTIONAL_EXCLUDES = ["matplotlib", "scipy", "sklearn", "pytest"]
@@ -53,15 +52,13 @@ analysis = Analysis(
     [str(ROOT / "packaging" / "fluxcutter.py")],
     pathex=[str(ROOT)],
     binaries=[],
-    # CustomTkinter loads its themes from .json files at runtime, which are
-    # data rather than imports and so are invisible to the dependency
-    # analysis. Without this the frozen app raises FileNotFoundError on the
-    # theme before it ever draws a window.
-    # The .png as well as the frozen formats: Tk draws the window's own
-    # icon from an image file at runtime, which is what puts the icon in a
-    # Windows title bar and taskbar button rather than Tk's default feather.
-    datas=collect_data_files("customtkinter") + ([(str(PNG), ".")] if PNG.exists() else []),
-    hiddenimports=["PIL._tkinter_finder"],
+    # window.html is the desktop window. It is read at runtime rather than
+    # imported, so the dependency analysis cannot see it, and a bundle
+    # without it raises FileNotFoundError before anything is drawn.
+    # The .png rides along for the Windows title bar and taskbar icon.
+    datas=[(str(ROOT / "app" / "ui" / "window.html"), ".")]
+    + ([(str(PNG), ".")] if PNG.exists() else []),
+    hiddenimports=[],
     hookspath=[],
     runtime_hooks=[],
     # onnxruntime costs ~80 MB in the bundle, so it ships only where it earns

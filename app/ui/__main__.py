@@ -9,7 +9,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from app.ui.app import launch
+from app.ui.web import launch
 
 
 if __name__ == "__main__":

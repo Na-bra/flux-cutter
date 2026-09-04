@@ -8,7 +8,7 @@ be exercised from a test without a display attached.
 Two rules this module exists to enforce:
 
 - Nothing here touches a widget. The UI turns these callbacks into
-  widget updates on the main thread; see app/ui/app.py.
+  updates on the main thread; see app/ui/web.py.
 - The PyAV container is opened and consumed on the same thread, inside
   one `with` block. Frames stream (7d), so the container has to outlive
   the iteration rather than the call that started it.
