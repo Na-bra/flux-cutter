@@ -502,7 +502,7 @@ def main():
     if args.command == "ui":
         # Imported here rather than at module scope so the other commands
         # keep working on a machine with no Tk bindings installed.
-        from app.ui.app import launch
+        from app.ui.web import launch
 
         launch(args.video_path)
         return

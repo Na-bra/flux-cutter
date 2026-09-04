@@ -20,8 +20,10 @@ permissions:
 jobs:
   test:
     # The build is the point, but a green build of broken code is worse than
-    # no build. assets/ is not in the repository, so the 38 tests that need
-    # real footage skip themselves (tests/conftest.py) and the other 115 run.
+    # no build. assets/ is not in the repository, so the tests that need real
+    # footage or the models skip themselves (tests/conftest.py) and the rest
+    # run -- including the ones marked runs_without_assets, which live in a
+    # gated module but touch no footage.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,14 +59,15 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Check Tk is present
-        # customtkinter draws through Tk, and a Python without the _tkinter
-        # extension fails at import rather than at build. Better to know here
-        # than to read it out of a PyInstaller traceback.
-        run: python -c "import tkinter; print('Tk', tkinter.TkVersion)"
-
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt pyinstaller
+
+      - name: Check the window's dependencies are here
+        # The window draws through the system web view, so there is no
+        # toolkit to check for -- but a build without pywebview produces an
+        # app that dies on its first import, which is better caught here
+        # than read out of a PyInstaller traceback.
+        run: python -c "import webview; print('pywebview ok')"
 
       - name: Build
         run: pyinstaller packaging/FluxCutter.spec --noconfirm

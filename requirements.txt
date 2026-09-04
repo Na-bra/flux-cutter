@@ -1,5 +1,4 @@
 av==18.0.0
-customtkinter==6.0.0
 numpy==2.2.6
 opencv-python-headless==4.12.0.88
 # macOS only, and for live-action mode rather than animation. onnxruntime's
@@ -10,4 +9,8 @@ opencv-python-headless==4.12.0.88
 # the same package everywhere -- see requirements-animation.txt.
 onnxruntime==1.29.0; sys_platform == "darwin"
 pillow==12.3.0
+# The desktop window. Draws through the system's own web view -- WebKit on
+# macOS, WebView2 on Windows -- so there is no toolkit to install alongside
+# Python, which is what Tk needed (brew install python-tk@3.12).
+pywebview==6.2.1
 pytest==9.1.1

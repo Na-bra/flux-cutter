@@ -1,0 +1,438 @@
+<title>FluxCutter</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground:  #E7EBEA;
+    --chrome:  #F4F6F5;
+    --surface: #FFFFFF;
+    --sunk:    #EAEEED;
+    --ink:     #12171A;
+    --muted:   #5A676C;
+    --faint:   #8A9599;
+    --rule:    #D3DAD9;
+    --accent:  #0E6E6B;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #DCEBEA;
+    --signal:  #9A5610;
+    --shadow:  0 1px 2px rgba(18,23,26,.06), 0 8px 24px rgba(18,23,26,.07);
+    --ui: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:  #0B0F11;
+      --chrome:  #171F22;
+      --surface: #1B2427;
+      --sunk:    #141B1E;
+      --ink:     #E6ECEA;
+      --muted:   #9AA8AB;
+      --faint:   #6E7C80;
+      --rule:    #2A3538;
+      --accent:  #46BDB4;
+      --accent-ink: #06211F;
+      --accent-soft: #123230;
+      --signal:  #E0A44B;
+      --shadow:  0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.34);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:  #0B0F11;
+    --chrome:  #171F22;
+    --surface: #1B2427;
+    --sunk:    #141B1E;
+    --ink:     #E6ECEA;
+    --muted:   #9AA8AB;
+    --faint:   #6E7C80;
+    --rule:    #2A3538;
+    --accent:  #46BDB4;
+    --accent-ink: #06211F;
+    --accent-soft: #123230;
+    --signal:  #E0A44B;
+    --shadow:  0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.34);
+  }
+
+  body { background: var(--chrome); color: var(--ink); font-family: var(--ui); font-size: 14px; -webkit-font-smoothing: antialiased; }
+
+  html, body { height: 100%; overflow: hidden; }
+  .app { display: flex; flex-direction: column; height: 100%; background: var(--chrome); }
+
+  .caption {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 10px; display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline;
+  }
+
+  /* --------------------------------------------------------- app window */
+
+  .window {
+    background: var(--chrome);
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .titlebar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: var(--chrome);
+    border-bottom: 1px solid var(--rule);
+  }
+  .lights { display: flex; gap: 7px; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; background: var(--rule); }
+  .titlebar .name { font-size: .8rem; font-weight: 600; color: var(--muted); margin: 0 auto; letter-spacing: .01em; }
+
+  /* ------------------------------------------------------------ toolbar */
+
+  .toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 12px;
+    padding: 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+    align-items: end;
+  }
+  @media (max-width: 860px) { .toolbar { grid-template-columns: 1fr 1fr; } }
+
+  .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .field > label {
+    font-family: var(--mono); font-size: .64rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint);
+  }
+
+  .control {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--sunk);
+    border: 1px solid var(--rule);
+    border-radius: 5px;
+    padding: 0 10px;
+    height: 34px;
+    min-width: 0;
+  }
+  .control .path {
+    font-family: var(--mono); font-size: .78rem; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
+  }
+  .control .dim { color: var(--faint); }
+
+  select, input[type="text"] {
+    font-family: var(--ui); font-size: .82rem; color: var(--ink);
+    background: var(--sunk); border: 1px solid var(--rule); border-radius: 5px;
+    height: 34px; padding: 0 9px; width: 100%; min-width: 0;
+  }
+
+  button {
+    font-family: var(--ui); font-size: .82rem; font-weight: 600;
+    border-radius: 5px; height: 34px; padding: 0 15px; cursor: pointer;
+    border: 1px solid var(--rule); background: var(--sunk); color: var(--ink);
+    white-space: nowrap;
+  }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.ghost { background: transparent; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ------------------------------------------------------------ status */
+
+  .status {
+    display: flex; align-items: center; gap: 14px;
+    padding: 9px 14px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--rule);
+    font-size: .8rem;
+  }
+  .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--sunk); overflow: hidden; min-width: 60px; }
+  .bar span { display: block; height: 100%; background: var(--accent); width: 100%; }
+  .status .msg { color: var(--muted); }
+  .status .msg b { color: var(--ink); font-weight: 600; }
+  .status .time { font-family: var(--mono); font-size: .74rem; color: var(--faint); }
+
+  /* ----------------------------------------------------------- gallery */
+
+  .stage { display: grid; grid-template-columns: minmax(0, 1fr) 268px; flex: 1; min-height: 0; }
+  @media (max-width: 860px) { .stage { grid-template-columns: minmax(0, 1fr); } }
+
+  .gallery { padding: 16px 14px; background: var(--ground); overflow-y: auto; min-height: 0; }
+
+  .gallery-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
+  }
+  .gallery-head h2 { font-size: .95rem; font-weight: 600; margin: 0; }
+  .gallery-head .meta { font-family: var(--mono); font-size: .72rem; color: var(--faint); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 12px; }
+  .grid > p { grid-column: 1 / -1; color: var(--faint); font-size: .8rem; margin: 0; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; overflow: hidden; cursor: pointer;
+    text-align: left; padding: 0; height: auto; display: block; width: 100%;
+    font-family: var(--ui);
+  }
+  .card:hover { border-color: var(--accent); }
+  .card[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
+  .thumb { aspect-ratio: 1; display: block; width: 100%; background: var(--sunk); }
+
+  .card .info { padding: 8px 9px 9px; border-top: 1px solid var(--rule); }
+  .card .who { font-size: .8rem; font-weight: 600; display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
+  .card .who .rank { font-family: var(--mono); font-size: .66rem; color: var(--faint); font-weight: 400; }
+  .card .stat { font-family: var(--mono); font-size: .68rem; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+
+  .unassigned {
+    margin-top: 14px; padding: 9px 11px; border: 1px dashed var(--rule);
+    border-radius: 5px; color: var(--muted); font-size: .76rem; background: var(--surface);
+  }
+
+  /* -------------------------------------------------------- export rail */
+
+  .rail { background: var(--surface); border-left: 1px solid var(--rule); padding: 16px 14px; display: flex; flex-direction: column; gap: 13px; overflow-y: auto; min-height: 0; }
+  @media (max-width: 860px) { .rail { border-left: none; border-top: 1px solid var(--rule); } }
+
+  .rail h3 {
+    font-family: var(--mono); font-size: .64rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--faint); margin: 0;
+  }
+
+  .picked { border: 1px solid var(--rule); border-radius: 6px; padding: 11px; background: var(--sunk); }
+  .picked .name { font-weight: 600; font-size: .9rem; }
+  .picked dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: .76rem; }
+  .picked dt { font-family: var(--mono); font-size: .68rem; color: var(--faint); }
+  .picked dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+
+  .pair { display: grid; grid-template-columns: 1.35fr 1fr; gap: 9px; }
+
+  .footnote { font-size: .72rem; color: var(--faint); line-height: 1.5; margin: 0; }
+
+  .legend { margin-top: 18px; display: grid; gap: 7px; font-size: .78rem; color: var(--muted); max-width: 70ch; }
+  .legend b { color: var(--ink); font-weight: 600; }
+  .legend p { margin: 0; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+
+<div class="app">
+
+  <div class="toolbar">
+    <div class="field">
+      <label>Source video</label>
+      <div class="control">
+        <span class="path" id="videoPath"><span class="dim">No video chosen</span></span>
+        <button class="ghost" id="chooseVideo" style="height:24px;padding:0 9px;font-size:.74rem">Choose…</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="mode">Content type</label>
+      <select id="mode"></select>
+    </div>
+    <div class="field">
+      <label for="interval">Sampling</label>
+      <select id="interval"></select>
+    </div>
+    <div class="field">
+      <label>&nbsp;</label>
+      <button class="primary" id="actionBtn">Scan for people</button>
+    </div>
+  </div>
+
+  <div class="status">
+    <span class="msg" id="statusMsg">Starting…</span>
+    <div class="bar"><span id="barFill" style="width:0%"></span></div>
+    <span class="time" id="statusTime"></span>
+  </div>
+
+  <div class="stage">
+    <div class="gallery">
+      <div class="gallery-head">
+        <h2 id="galleryTitle">Who's in this video</h2>
+        <span class="meta" id="galleryMeta"></span>
+      </div>
+      <div class="grid" id="grid" role="group" aria-label="People found"></div>
+      <p class="unassigned" id="unassigned" hidden></p>
+    </div>
+
+    <aside class="rail">
+      <h3>Export</h3>
+      <div class="picked" id="picked" hidden>
+        <div class="name" id="pickedName">—</div>
+        <dl>
+          <dt>on screen</dt><dd id="pickedTime">—</dd>
+          <dt>cuts</dt><dd id="pickedCuts">—</dd>
+          <dt>reel length</dt><dd id="pickedLen">—</dd>
+          <dt>detections</dt><dd id="pickedDet">—</dd>
+        </dl>
+      </div>
+
+      <div class="field">
+        <label>Folder</label>
+        <div class="control">
+          <span class="path" id="folder"></span>
+          <button class="ghost" id="chooseFolder" style="height:24px;padding:0 9px;font-size:.74rem">Choose…</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="fname">File name</label>
+        <input type="text" id="fname">
+      </div>
+
+      <div class="pair">
+        <div class="field">
+          <label for="enc">Encoder</label>
+          <select id="enc"></select>
+        </div>
+        <div class="field">
+          <label for="q">Quality</label>
+          <select id="q"></select>
+        </div>
+      </div>
+
+      <button class="primary" id="exportBtn" disabled>Export reel</button>
+      <p class="footnote" id="foot">Choose a person to export.</p>
+    </aside>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
+
+  let state = { video: "", people: [], selected: null, busy: null };
+
+  const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
+  const status = (html) => { $("statusMsg").innerHTML = html; };
+
+  function fill(select, values, chosen, labelOf) {
+    select.innerHTML = values.map(v => {
+      const value = labelOf ? v.id : v;
+      const label = labelOf ? v.label : labelOf === false ? v : v;
+      return `<option value="${value}" ${value === chosen ? "selected" : ""}>${label}</option>`;
+    }).join("");
+  }
+
+  window.addEventListener("pywebviewready", async () => {
+    const s = await pywebview.api.initial_state();
+    state.video = s.video;
+    $("videoPath").textContent = s.video || "No video chosen";
+    if (!s.video) $("videoPath").innerHTML = '<span class="dim">No video chosen</span>';
+
+    $("mode").innerHTML = s.modes.map(m =>
+      `<option value="${m.id}" ${m.id===s.mode?"selected":""}>${m.label}</option>`).join("");
+    $("interval").innerHTML = s.intervals.map(i =>
+      `<option value="${i}" ${i===s.interval?"selected":""}>Every ${i}s</option>`).join("");
+    $("enc").innerHTML = s.encoders.map(e =>
+      `<option ${e===s.encoder?"selected":""}>${e}</option>`).join("");
+    $("q").innerHTML = s.qualities.map(q =>
+      `<option ${q===s.quality?"selected":""}>${q}</option>`).join("");
+    $("folder").textContent = s.folder;
+    $("fname").value = s.filename;
+    status("<b>" + s.status + "</b>");
+    $("grid").innerHTML = "<p>Press Scan for people.</p>";
+  });
+
+  $("chooseVideo").addEventListener("click", async () => {
+    const r = await pywebview.api.choose_video();
+    if (r.path) { state.video = r.path; $("videoPath").textContent = r.path; }
+  });
+
+  $("chooseFolder").addEventListener("click", async () => {
+    const r = await pywebview.api.choose_folder();
+    if (r.path) $("folder").textContent = r.path;
+  });
+
+  $("mode").addEventListener("change", async (e) => {
+    const r = await pywebview.api.set_mode(e.target.value);
+    status("<b>" + r.status + "</b>");
+  });
+
+  $("actionBtn").addEventListener("click", async () => {
+    if (state.busy) { pywebview.api.cancel(); $("actionBtn").disabled = true; return; }
+    const r = await pywebview.api.start_scan(state.video, $("mode").value, Number($("interval").value));
+    if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
+    busy("scan");
+    status("<b>Scanning…</b>");
+  });
+
+  $("exportBtn").addEventListener("click", async () => {
+    const r = await pywebview.api.start_export(
+      $("folder").textContent, $("fname").value, $("enc").value, $("q").value);
+    if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
+    busy("export");
+    status("<b>Exporting…</b>");
+  });
+
+  function busy(kind) {
+    state.busy = kind;
+    $("actionBtn").textContent = "Cancel";
+    $("exportBtn").disabled = true;
+    ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
+  }
+
+  function idle() {
+    state.busy = null;
+    $("actionBtn").textContent = "Scan for people";
+    $("actionBtn").disabled = false;
+    $("exportBtn").disabled = state.selected === null;
+    ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
+  }
+
+  window.onStatus = (d) => status("<b>" + d.text + "</b>");
+  window.onScanProgress = (d) => { setBar(d.fraction); $("statusTime").textContent = clock(d.timestamp); };
+  window.onDownload = (d) => { setBar(d.fraction); status("<b>Downloading " + d.description + "…</b>"); };
+  window.onExportProgress = (d) => { setBar(d.fraction); $("statusTime").textContent = d.done + " / " + d.total; };
+  window.onScanCancelled = () => { idle(); setBar(0); status("<b>Scan cancelled.</b>"); };
+  window.onExportCancelled = () => { idle(); setBar(0); status("<b>Export cancelled.</b> No partial file was left behind."); };
+  window.onRelocated = (d) => { state.video = d.path; $("videoPath").textContent = d.path; };
+  window.onFailed = (d) => { idle(); setBar(0); status("<b>" + d.title + ".</b> " + d.detail); };
+  window.onExported = (d) => { idle(); setBar(1); status("<b>Reel saved.</b> " + d.path); };
+
+  window.onScanned = (d) => {
+    idle();
+    setBar(1);
+    state.people = d.people;
+    state.selected = null;
+    $("exportBtn").disabled = true;
+    $("statusTime").textContent = d.elapsed.toFixed(0) + "s";
+    status("<b>Scan complete.</b> " + d.people.length + " people in " + d.frames + " sampled frames.");
+    $("galleryMeta").textContent = "sorted by screen time";
+
+    if (!d.people.length) {
+      $("grid").innerHTML = "<p>No one found. Try a finer sampling interval.</p>";
+    } else {
+      $("grid").innerHTML = d.people.map((p, i) => `
+        <button class="card" aria-pressed="false" data-i="${p.index}">
+          <img class="thumb" src="${p.thumbnail}" alt="Person ${i+1}">
+          <span class="info">
+            <span class="who">Person ${i+1} <span class="rank">#${i+1}</span></span>
+            <span class="stat">${p.detections} det</span>
+          </span>
+        </button>`).join("");
+    }
+
+    const u = $("unassigned");
+    u.hidden = false;
+    u.innerHTML = "<b>" + d.unassigned + " detections unassigned</b> — below the screen-time cutoff, or rejected as non-faces. Nothing is discarded.";
+  };
+
+  $("grid").addEventListener("click", async (e) => {
+    const card = e.target.closest(".card");
+    if (!card) return;
+    const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
+    if (!r.accepted) return;
+
+    document.querySelectorAll(".card").forEach(c => c.setAttribute("aria-pressed", c === card));
+    state.selected = r.index;
+    $("picked").hidden = false;
+    $("pickedName").textContent = "Person " + (r.index + 1);
+    $("pickedTime").textContent = r.onScreen;
+    $("pickedCuts").textContent = r.cuts;
+    $("pickedLen").textContent = r.reel;
+    $("pickedDet").textContent = r.detections;
+    if (r.filename) $("fname").value = r.filename;
+    $("foot").textContent = "Cuts " + r.cuts + " segments and joins them into one file.";
+    $("exportBtn").disabled = false;
+  });
+</script>

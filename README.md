@@ -47,8 +47,9 @@ flux-cutter/
 │   ├── ui/
 │   │   ├── __init__.py
 │   │   ├── __main__.py      # python -m app.ui
-│   │   ├── app.py           # the CustomTkinter window
-│   │   ├── worker.py        # the window's background work, Tk-free
+│   │   ├── web.py           # the window: a thin bridge over worker.py
+│   │   ├── window.html      # what the web view draws
+│   │   ├── worker.py        # the window's background work, toolkit-free
 │   │   └── gallery.py       # thumbnail/montage rendering
 │   └── video/
 │       ├── __init__.py
@@ -94,16 +95,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-`requirements.txt` pins `opencv-python-headless` rather than `opencv-python`: the headless build skips OpenCV's camera/GUI backend, which is what caused the duplicate-`libavdevice`-symbol warning below when paired with PyAV. The project has no GUI/capture-device usage through OpenCV, so this is a safe swap and not a downgrade in capability. The desktop window is CustomTkinter, which draws through Tk and never through OpenCV, so the two do not conflict.
+`requirements.txt` pins `opencv-python-headless` rather than `opencv-python`: the headless build skips OpenCV's camera/GUI backend, which is what caused the duplicate-`libavdevice`-symbol warning below when paired with PyAV. The project has no GUI/capture-device usage through OpenCV, so this is a safe swap and not a downgrade in capability. The desktop window draws through a web view and never through OpenCV, so the two do not conflict.
 
-**Tk is a system dependency, not a pip one.** `customtkinter` installs from `requirements.txt`, but the `_tkinter` C extension it needs ships separately from Python itself and Homebrew's `python@3.12` does not include it:
+**The window needs nothing installed alongside Python.** It draws through the system's own web view — WebKit on macOS, WebView2 on Windows — so `pip install -r requirements.txt` is the whole setup. This used to be Tk, whose `_tkinter` C extension ships separately from Python and is absent from Homebrew's `python@3.12`, which meant `brew install python-tk@3.12` before the window would open at all.
 
-```bash
-brew install python-tk@3.12          # macOS/Homebrew
-sudo apt install python3-tk          # Debian/Ubuntu
-```
-
-Only the desktop window needs this. Every CLI command works without it — `app/__main__.py` imports the UI lazily for exactly that reason — so a headless machine can still run the whole pipeline.
+Every CLI command works without a web view too — `app/__main__.py` imports the UI lazily for exactly that reason — so a headless machine can still run the whole pipeline.
 
 ### 3. The models fetch themselves
 
@@ -294,7 +290,7 @@ Two defaults differ from the CLI, both deliberately:
 ./packaging/build.sh
 ```
 
-Out comes `dist/FluxCutter.app` (176 MB) and `dist/FluxCutter-macos.zip` (81 MB, which is what you send people). On Windows the same script produces `dist/FluxCutter/`. It installs PyInstaller if missing, checks Tk is present before wasting your time, and zips with `ditto` rather than `zip` because a `.app` is a directory and `zip` loses its executable bits.
+Out comes `dist/FluxCutter.app` (242 MB) and `dist/FluxCutter-macos.zip` (97 MB, which is what you send people). Most of that is cv2 (89 MB), onnxruntime (71 MB) and PyAV (43 MB); the window itself costs about 2 MB, because the web view belongs to the operating system rather than to the app. On Windows the same script produces `dist/FluxCutter/`. It installs PyInstaller if missing, checks Tk is present before wasting your time, and zips with `ditto` rather than `zip` because a `.app` is a directory and `zip` loses its executable bits.
 
 `--no-zip` builds only; `--run` opens the result. The underlying command is `pyinstaller packaging/FluxCutter.spec --noconfirm` if you would rather drive it yourself.
 
@@ -330,7 +326,7 @@ Signing costs $99/yr (Apple, and notarization is required for distribution *outs
 
 ### The desktop window will not start
 
-`ModuleNotFoundError: No module named '_tkinter'` means Python has no Tk bindings; see the install line in [step 2](#2-install-the-dependencies). Everything except `python -m app ui` works without them.
+On Windows this means the WebView2 runtime is missing. It ships with Windows 11 and arrives with Edge on Windows 10, so it is present on most machines; where it is not, Microsoft's Evergreen Runtime installer adds it. Everything except `python -m app ui` works without it.
 
 ### The virtual environment is broken or packages are missing
 
@@ -440,9 +436,9 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-115 tests covering the loader, frame extraction, the detector, the embedder, the tracker, identity grouping, appearance timelines, export segmentation, and the desktop UI's worker layer. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+289 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, appearance timelines, export segmentation, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
 
-The tests need no display: `app/ui/worker.py` deliberately imports no Tkinter, which is what lets the UI's logic be tested on a headless machine. The window itself (`app/ui/app.py`) is verified separately by driving it end to end — see [Instructions.md](Instructions.md) section 7k.
+The tests need no display. `app/ui/worker.py` deliberately imports no toolkit at all, and `app/ui/web.py` keeps every decision on the Python side, so the window's behaviour — which filename to suggest, when to refuse a click, what to do about footage that moved — is tested without opening anything.
 
 The pure decision logic — what counts as one appearance, which segments are worth cutting, when two groups are the same person — is tested without encoding a frame, which is why the suite runs in under a minute despite the pipeline taking minutes on real video.
 
