@@ -1722,3 +1722,203 @@ Animation is roughly ten times slower to detect and three times slower to
 embed. That is the model, not the plumbing, and it is reported rather than
 hidden -- CPU is the only supported target for both modes, and nothing here
 silently substitutes a smaller model to make the number look better.
+
+## 18. Sampling faster: what the roadmap expected, and what measured
+
+The roadmap named seeking as the next lever, on the reasoning that decode
+throws away 12 of every 13 frames it touches. Measured, that reasoning does
+not survive: **seeking is the slowest thing in this comparison, not the
+fastest.**
+
+Over the first 180s of `test_3.mp4` (720p, 24 fps) at a 0.5s interval:
+
+| strategy | time | frames decoded | timestamp error (median / max) |
+| --- | --- | --- | --- |
+| sequential, threaded (the baseline) | 3.44s | 4316 | 0.02s / 0.04s |
+| sequential, one thread | 14.74s | 4316 | 0.02s / 0.04s |
+| **`skip_frame=NONREF`** | **2.97s** | **2287** | 0.04s / 0.08s |
+| `skip_frame=BIDIR` | 6.11s | 1248 | 0.07s / 0.16s |
+| seek per sample | 17.95s | 16223 | 0.02s / 0.04s |
+| seek per GOP | 11.94s | 4073 | 0.02s / 0.04s |
+| keyframes only | 0.87s | 61 | 79.89s / 146.93s |
+
+### Why seeking loses, both ways round
+
+A seek lands on the previous keyframe and decodes forward from it, so it
+cannot read one frame without reading the GOP in front of it. Keyframes on
+this footage sit a median 2.38s apart (mean 2.82s, max 10.43s) while
+sampling wants a frame every 0.5s, so seeking per sample decodes *more*
+than reading straight through -- 16223 frames against 4316, and 5.2x the
+time.
+
+Seeking once per GOP instead of once per sample fixes the redundancy (4073
+frames decoded, fewer than the baseline) and is **still 3.5x slower**. That
+is the result worth keeping: the cost is not the frames, it is the seek.
+Each one flushes the decoder, and a flushed decoder gives up the threading
+that made sequential decode 4.3x faster in the first place. Seeking and
+multi-core decoding are in direct competition, and multi-core wins.
+
+Seeking would only pay at intervals sparser than the GOP spacing, which is
+the opposite of what identity grouping wants -- denser sampling is what
+gives the tracker consecutive frames to link.
+
+### What did pay
+
+`skip_frame = NONREF` asks the decoder not to fully reconstruct frames that
+nothing else is predicted from. Sampling reads one frame in 12 and discards
+the rest, so those frames are decoded purely to be thrown away.
+
+Consistent across footage, best of three runs:
+
+| | baseline | NONREF | |
+| --- | --- | --- | --- |
+| `test_3.mp4` 720p @ 0.5s | 3.46s | 3.00s | -13% |
+| `test_3.mp4` 720p @ 1.0s | 3.35s | 2.95s | -12% |
+| `animation.mp4` 1080p @ 0.5s | 5.27s | 4.52s | -14% |
+| `test_2.MOV` @ 0.5s | 1.28s | 1.21s | -5% |
+
+On all-intra footage such as `test.mp4` (keyframes 0.03s apart) there are
+no non-reference frames, so it is exactly a no-op -- the sampled timestamps
+come back identical, which is asserted by a test.
+
+### The cost, and why it was checked before shipping
+
+A sample can land on the next reference frame rather than the exact one.
+That moved sampled timestamps by a median 0.035s and at most 0.083s: two
+frames at 24 fps, against a sampling interval 500 to 1000 times larger.
+
+Cheap to say, and not enough on its own -- different frames mean different
+detections, which means different tracks, which can mean different
+identities. A 180s slice suggested it might matter (13 identities against
+11). Over the whole episode it does not:
+
+| `test_3.mp4`, 1.0s sampling | baseline | NONREF |
+| --- | --- | --- |
+| frames | 1356 | 1356 |
+| detections | 3111 | 3110 |
+| tracks | 1627 | 1625 |
+| identities | 39 | 38 |
+| **provable false merges** (15) | **2 groups / 4 pairs** | **2 groups / 4 pairs** |
+| whole-scan wall clock | 55.3s | 52.4s |
+
+The error metric is section 15's, and it needs no labelling: two
+non-overlapping faces in one frame are two people, so a group holding both
+is wrong. It is unchanged. One detection in 3111 differs.
+
+So the saving is ~13% of decode and ~5% of a whole scan, for a change that
+the accuracy measurement cannot distinguish from noise. It is on by
+default, and `extract_frames(..., skip_nonreference=False)` samples the
+exact frames on the schedule for anything that needs them.
+
+The roadmap item is closed, in the sense that matters: the lever it named
+was measured and is not there.
+
+## 19. Choosing a person with a photograph (`app/faces/reference.py`)
+
+The gallery asks a question that can only be answered after a scan: which
+of these forty faces did you mean? When the user already knows who they
+want, a photo answers it up front -- embed the picture once, score the
+scan's identities against it, and the montage never has to be looked at.
+
+Built on the pieces that already existed rather than a second matching
+path: the mode's own detector and embedder, the grouper's cosine
+similarity, and the grouper's own per-mode floor for "these are the same
+person". A reference face is one more embedding in the space the scan is
+already working in.
+
+### Scored against the centroid, not the best frame
+
+Each identity is compared on its `representative_embedding` -- the mean
+over every observation in the group. That is the same reasoning that made
+track averaging worth doing (7): a single frame's embedding on hard footage
+is noisy enough that same-person pairs fall below the floor, and matching a
+photo against one lucky frame is matching against noise.
+
+### What it measures on the real footage
+
+38 identities from `test_3.mp4` at 1.0s sampling, one reference photo
+written per identity from its own representative crop and read back through
+the full JPEG-decode-detect-embed path:
+
+    correct                    37/38
+    margin over runner-up      min 0.305   median 0.623
+    wrong-identity scores      max 0.297   p95 0.147   median 0.024
+
+The gap is wide: the right identity never scored below 0.543, and no wrong
+one reached 0.30. The default floor is the mode's own grouping threshold
+(0.35 for live action), which lands inside that gap rather than at a number
+invented for this feature.
+
+This is an in-domain floor, not a field test -- the crops come from frames
+the scan itself saw, so a real photograph, shot on a different camera under
+different light, will score lower. It establishes that the mechanism works
+and what the score distribution looks like; it does not establish a
+threshold for arbitrary photographs. `--reference-threshold` exists for
+that reason.
+
+The one failure is worth recording: identity 32's representative crop was
+tight enough that YuNet found no face in it when read back as a photo. A
+crop of a face is not always a photo of a face, and the error says so
+rather than matching on nothing.
+
+### Two things it refuses to do quietly
+
+Both produce a confidently wrong reel, which is worse than a refusal after
+minutes of encoding:
+
+- **Matching across embedding spaces.** An ArcFace vector and a CCIP vector
+  have a cosine similarity and it means nothing. A photo embedded in one
+  mode cannot select an identity grouped in the other.
+- **Choosing between two plausible people.** When the best and second-best
+  identities sit within 0.05 of each other, that is reported as ambiguous.
+  It is evidence the scan split one person in two, or that the photo is not
+  clearly either of them, and both are worth stopping for.
+
+The photograph is also read *before* the scan starts. Detecting and
+embedding one face takes a second or two, and a photo with nobody in it is
+much better discovered then than after seven minutes of scanning have
+earned the right to fail. The same reasoning moved "you did not name a
+person at all" to parse time.
+
+## 20. A folder at a time (`run_batch`)
+
+One photo, many videos, one reel each.
+
+### Cross-video identity comes free, and that is the design
+
+The obvious way to run a season is to scan episode one, take the chosen
+person's centroid, and carry it forward. That centroid then has to survive a
+change of lighting, camera, costume and hairstyle between episodes, and
+every hop compounds the last one's error.
+
+Matching every episode against the *same photograph* removes the problem
+rather than solving it. There is no notion of "the same person in video A
+and video B" anywhere in the batch: each video is matched independently
+against a vector that is identical every time, computed once before the
+first scan. A test asserts that identity -- literally, that the same object
+reaches every video.
+
+### Nothing aborts the run
+
+A season is twenty scans of several minutes each. Losing the other nineteen
+because episode three is unreadable, or holds nobody who matches, or was
+never a video, is the one failure that would make this unusable. Every
+video's outcome is recorded and the run continues:
+
+    --- Batch summary ---
+      episode-slice.mp4 -> episode-slice-reel.mp4 (26.7s)
+      test.mp4 -- No identity in this video matches person-01.jpg. The closest
+                  scored 0.08, under the 0.35 floor.
+      test_2.MOV -- No identity in this video matches person-01.jpg. The closest
+                    scored 0.04, under the 0.35 floor.
+
+    1/3 produced a reel, 26.7s of footage in total.
+
+That run is the verification: a person present in one video and absent from
+two others, matched at 0.81 where they appear and 0.08 and 0.04 where they
+do not, with the reel decoding back to 640 frames over 26.69s.
+
+This is why selection failures raise rather than exit. `_resolve_selection`
+and `cut_segments` used to `sys.exit(1)` from inside `run_export`, which is
+correct for one video and fatal for twenty; they now raise, and each caller
+decides whether that is a failed command or a skipped episode.
