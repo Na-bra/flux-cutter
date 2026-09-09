@@ -32,6 +32,7 @@ NEEDS_ASSETS = {
     "test_detector",
     "test_embedder",
     "test_frames",
+    "test_reference",
     "test_video",
 }
 
