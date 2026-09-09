@@ -16,6 +16,7 @@ from app.faces.grouper import (
     IdentityGrouper,
     auto_min_detections,
 )
+from app.faces.reference import ReferenceError, ReferenceFace, match_reference
 from app.faces.tracker import FaceTracker
 from app.modes import DEFAULT_MODE, get_mode
 from app.ui.gallery import (
@@ -30,7 +31,12 @@ from app.ui.gallery import (
 from app.video.cutter import CutterError, cut_segments
 from app.video.export import merge_for_export
 from app.video.frames import extract_frames
-from app.video.loader import get_video_info
+from app.video.loader import (
+    SUPPORTED_EXTENSIONS,
+    VideoLoadError,
+    get_video_info,
+    load_video,
+)
 from app.video.timeline import build_appearance_intervals, format_timestamp
 
 
@@ -173,6 +179,67 @@ def _resolve_min_detections(
             f"(video duration unavailable; using the floor only)."
         )
     return resolved
+
+
+class SelectionError(Exception):
+    """Raised when the run cannot tell which person it is about.
+
+    Deliberately raised rather than exited on: the single-video commands
+    turn this into a failed command, while a batch turns it into one
+    skipped episode and carries on to the next.
+    """
+
+
+def _resolve_selection(
+    identity_gallery,
+    select_index: int | None,
+    reference: ReferenceFace | None,
+    reference_threshold: float | None = None,
+    mode: str = DEFAULT_MODE,
+) -> int:
+    """Which person card the run is about, however the user said it.
+
+    An index and a photograph are two ways of naming the same thing, and
+    they resolve to the same index here so that everything downstream --
+    interval building, cutting, the report -- stays unaware of which one
+    the user reached for.
+
+    Raises:
+        SelectionError: If no person was named, the index is out of range,
+            or the reference matched nobody clearly enough.
+    """
+    if reference is not None:
+        try:
+            match = match_reference(
+                reference,
+                identity_gallery.groups,
+                minimum_similarity=reference_threshold,
+                mode=mode,
+            )
+        except ReferenceError as error:
+            raise SelectionError(str(error)) from error
+
+        runner_up = (
+            "no runner-up"
+            if match.runner_up_similarity is None
+            else f"next best {match.runner_up_similarity:.2f}"
+        )
+        print(
+            f"{reference.source.name} matched Person #{match.index + 1} "
+            f"at {match.similarity:.2f} ({runner_up})."
+        )
+        return match.index
+
+    if select_index is None:
+        raise SelectionError("Choose a person with --select-index or --reference.")
+
+    if select_index < 0 or select_index >= len(identity_gallery.groups):
+        raise SelectionError(
+            f"--select-index {select_index} is out of range "
+            f"(0-{len(identity_gallery.groups) - 1})."
+        )
+
+    return select_index
 
 
 @dataclass(frozen=True)
@@ -432,7 +499,9 @@ def run_appearance_timestamps(
     min_detections: int | None,
     gap_tolerance_seconds: float | None,
     appearance_padding_seconds: float | None,
-    select_index: int,
+    select_index: int | None = None,
+    reference: ReferenceFace | None = None,
+    reference_threshold: float | None = None,
 ):
     """Group faces, then compute appearance intervals for one selected person."""
     print(f"Sampling frames at a {sample_interval}-second interval...")
@@ -479,14 +548,9 @@ def run_appearance_timestamps(
         print("No identity groups found; nothing to compute appearance intervals for.")
         return
 
-    if select_index < 0 or select_index >= len(identity_gallery.groups):
-        print(
-            f"Error: --select-index {select_index} is out of range "
-            f"(0-{len(identity_gallery.groups) - 1}).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
+    select_index = _resolve_selection(
+        identity_gallery, select_index, reference, reference_threshold, mode
+    )
     selected_group = identity_gallery.groups[select_index]
 
     timeline_start = time.monotonic()
@@ -543,7 +607,9 @@ def run_export(
     audio_encoder: str,
     quality: int,
     include_audio: bool,
-    select_index: int,
+    select_index: int | None = None,
+    reference: ReferenceFace | None = None,
+    reference_threshold: float | None = None,
 ):
     """Groups faces, then cuts one person's appearances into a single reel."""
     print(f"Sampling frames at a {sample_interval}-second interval...")
@@ -588,14 +654,9 @@ def run_export(
         print("No identity groups found; nothing to export.")
         return
 
-    if select_index < 0 or select_index >= len(identity_gallery.groups):
-        print(
-            f"Error: --select-index {select_index} is out of range "
-            f"(0-{len(identity_gallery.groups) - 1}).",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
+    select_index = _resolve_selection(
+        identity_gallery, select_index, reference, reference_threshold, mode
+    )
     selected_group = identity_gallery.groups[select_index]
     intervals = build_appearance_intervals(
         selected_group,
@@ -636,20 +697,16 @@ def run_export(
             f"({segment.end_time - segment.start_time:.2f}s)"
         )
 
-    try:
-        export = cut_segments(
-            video_path,
-            segments,
-            output_path,
-            video_encoder=video_encoder,
-            audio_encoder=audio_encoder,
-            quality=quality,
-            include_audio=include_audio,
-            on_segment=report,
-        )
-    except CutterError as error:
-        print(f"Error: {error}", file=sys.stderr)
-        sys.exit(1)
+    export = cut_segments(
+        video_path,
+        segments,
+        output_path,
+        video_encoder=video_encoder,
+        audio_encoder=audio_encoder,
+        quality=quality,
+        include_audio=include_audio,
+        on_segment=report,
+    )
 
     total_duration = time.monotonic() - start_time
     speed = export.exported_seconds / export.encode_seconds if export.encode_seconds > 0 else 0
@@ -659,3 +716,153 @@ def run_export(
     print(f"Encoding time: {export.encode_seconds:.1f} seconds ({speed:.2f}x realtime)")
     print(f"Total processing time: {total_duration:.1f} seconds")
     print("--- End Report ---\n")
+
+    return export
+
+
+# ------------------------------------------------------------------- batch
+
+
+def collect_videos(paths: list[Path], recursive: bool = False) -> list[Path]:
+    """Expands a mix of files and folders into a sorted list of videos.
+
+    Sorted because a season is watched in order and a report that jumps
+    around is harder to read than one that does not. Duplicates are
+    dropped: naming a folder and one file inside it is a reasonable thing
+    to type and should not cut the same reel twice.
+    """
+    found: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            pattern = "**/*" if recursive else "*"
+            found.extend(
+                child
+                for child in sorted(path.glob(pattern))
+                if child.is_file() and child.suffix.lower() in SUPPORTED_EXTENSIONS
+            )
+        else:
+            found.append(path)
+
+    unique: list[Path] = []
+    seen = set()
+    for path in found:
+        resolved = path.resolve()
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(path)
+    return unique
+
+
+@dataclass(frozen=True)
+class BatchOutcome:
+    """What happened to one video in a batch."""
+
+    video_path: Path
+    output_path: Path | None = None
+    reel_seconds: float = 0.0
+    similarity: float | None = None
+    # Why nothing was written, when nothing was. None on success.
+    skipped_because: str | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.output_path is not None
+
+
+def batch_output_path(video_path: Path, output_dir: Path, suffix: str = "reel") -> Path:
+    """Names one episode's reel after the episode it came from."""
+    return output_dir / f"{video_path.stem}-{suffix}.mp4"
+
+
+def run_batch(
+    video_paths: list[Path],
+    reference: ReferenceFace,
+    output_dir: Path,
+    export_settings: dict,
+    recursive: bool = False,
+    reference_threshold: float | None = None,
+) -> list[BatchOutcome]:
+    """Cuts one person's reel out of every video, from a single photograph.
+
+    Cross-video identity comes free here, and that is the point: matching
+    every episode against the *same* reference vector needs no notion of
+    "the same person in video A and video B" at all. Carrying a centroid
+    forward from one scan to the next would have to survive a change of
+    lighting, camera and costume between episodes; a photograph is the
+    same photograph every time.
+
+    Nothing here aborts the run. A season is twenty scans of several
+    minutes each, and losing the other nineteen because episode three is
+    a different mode, or holds nobody who matches, or was never a readable
+    video, is the one failure mode that would make this unusable. Every
+    video's outcome is recorded and the summary says which produced a reel.
+    """
+    videos = collect_videos(video_paths, recursive=recursive)
+    if not videos:
+        print("No videos found to process.", file=sys.stderr)
+        return []
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(
+        f"Cutting {reference.source.name} out of {len(videos)} "
+        f"video{'s' if len(videos) != 1 else ''} into {output_dir}.\n"
+    )
+
+    outcomes: list[BatchOutcome] = []
+    for position, video_path in enumerate(videos, start=1):
+        print(f"=== [{position}/{len(videos)}] {video_path.name}")
+        destination = batch_output_path(video_path, output_dir)
+        try:
+            with load_video(video_path) as container:
+                export = run_export(
+                    container,
+                    video_path=video_path,
+                    output_path=destination,
+                    reference=reference,
+                    reference_threshold=reference_threshold,
+                    **export_settings,
+                )
+        except (VideoLoadError, SelectionError, CutterError, ReferenceError) as error:
+            print(f"  skipped: {error}\n", file=sys.stderr)
+            outcomes.append(
+                BatchOutcome(video_path=video_path, skipped_because=str(error))
+            )
+            continue
+
+        if export is None:
+            # run_export returns nothing when there was no footage worth
+            # cutting -- no frames, no identities, no segments. It has
+            # already said which on the way past.
+            outcomes.append(
+                BatchOutcome(
+                    video_path=video_path,
+                    skipped_because="nothing to cut for this person",
+                )
+            )
+            continue
+
+        outcomes.append(
+            BatchOutcome(
+                video_path=video_path,
+                output_path=export.output_path,
+                reel_seconds=export.exported_seconds,
+            )
+        )
+
+    print("--- Batch summary ---")
+    written = [outcome for outcome in outcomes if outcome.succeeded]
+    for outcome in outcomes:
+        if outcome.succeeded:
+            print(
+                f"  {outcome.video_path.name} -> {Path(outcome.output_path).name} "
+                f"({outcome.reel_seconds:.1f}s)"
+            )
+        else:
+            print(f"  {outcome.video_path.name} -- {outcome.skipped_because}")
+    total = sum(outcome.reel_seconds for outcome in written)
+    print(
+        f"\n{len(written)}/{len(outcomes)} produced a reel, "
+        f"{total:.1f}s of footage in total."
+    )
+    print("--- End Batch ---\n")
+    return outcomes
