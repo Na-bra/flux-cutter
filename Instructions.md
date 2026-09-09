@@ -1922,3 +1922,200 @@ This is why selection failures raise rather than exit. `_resolve_selection`
 and `cut_segments` used to `sys.exit(1)` from inside `run_export`, which is
 correct for one video and fatal for twenty; they now raise, and each caller
 decides whether that is a failed command or a skipped episode.
+
+## 21. Keeping a scan (`app/scans.py`)
+
+A scan is the expensive thing this app does, and until now every one was
+thrown away -- when the window closed, when a command returned. The
+documented workflow made it worse rather than better: `group` to see the
+montage, then `export --select-index 0`, which scanned the same footage a
+second time to reach the same identities.
+
+    test_3.mp4 at a 1.0s interval
+      scan        55.3s
+      save         0.32s
+      load         0.05s
+      on disk      6.3 MB   (38 groups, 3110 detections)
+
+The export that follows a `group` now spends its time encoding rather than
+rediscovering who is in the video.
+
+### Freshness is a question about the key
+
+There is no staleness check, because there is nothing to check. The key
+covers the video's identity (path, size, modification time) and every
+setting that can change what the scan produces, so a hit means the same
+scan would have produced the same answer. Getting that wrong would be
+worse than having no cache: it would serve one scan's answer to another
+scan's question.
+
+Every argument to `cache_key` is required and named. A caller that forgets
+one gets a TypeError rather than a key that quietly differs from the other
+caller's -- which is exactly what would stop the window and the command
+line sharing an entry for the same work.
+
+The app's own version is part of the key. Grouping thresholds here have
+been retuned against real footage more than once (15, 17), and a scan from
+before such a change is not merely old, it is wrong. A release therefore
+invalidates every entry: it costs a rescan and buys never silently serving
+an answer the current code would not give.
+
+The video is identified by size and modification time rather than by
+hashing its contents. Hashing an 815 MB file to avoid re-reading it is a
+poor trade, and an edit preserving both would have to be deliberate.
+
+### What is stored, and what is deliberately not
+
+The identities, not the footage: every observation's embedding, box,
+landmarks and timestamp, plus **one** representative crop per person for
+the gallery to draw. Nothing downstream reads the other crops -- only the
+representative becomes a thumbnail -- and dropping them is what keeps an
+episode's scan to 6 MB rather than hundreds.
+
+Verified by round-tripping a real scan: 38 groups, every embedding, box,
+landmark, timestamp and frame index identical, and the rebuilt gallery
+producing the same 38 cards with byte-identical thumbnails.
+
+### Nothing here raises
+
+Every caller's fallback is to do the work, so a corrupt or half-written
+entry has to cost a rescan rather than a failed scan -- turning a bad
+cache file into a broken pipeline would make the feature a liability. A
+file that cannot be read is deleted on the way past so it stops being
+tried, and writes go to a temporary file and are moved into place so an
+interrupted one leaves the previous entry intact.
+
+### Two things found by writing it
+
+`json` refuses numpy scalars, and the detector and sharpness measure both
+hand them back -- so the first save failed at the very end of a scan that
+had already cost a minute. Everything is coerced to a plain Python number
+on the way in.
+
+`list.index()` cannot be used to find an observation. `FaceObservation` is
+a frozen dataclass holding numpy arrays, so its generated `__eq__`
+compares embeddings elementwise and returns an array; `index()` raises
+"truth value is ambiguous" on the first non-matching member it tries. The
+representative is found by identity instead.
+
+### Verified end to end
+
+`timestamps --select-index 0` with and without `--rescan` produce the same
+618 lines and the same 152 appearance intervals.
+
+## 22. A reel of several people (`combined_group`)
+
+"Every scene either lead is in" is one reel. Clicking a second card used
+to displace the first; it now joins it, and `--select-index` takes several.
+
+The union is built by pooling the chosen people's detections into one
+carrier group and running the existing interval stage over the combined
+timeline -- not by building each person's intervals and merging the
+results. `build_appearance_intervals` reads nothing but sorted timestamps,
+so this is less code, and it is also the more correct answer.
+
+The case that separates them: one lead leaves a scene and the other
+arrives a second later. On the pooled timeline that is one continuous
+appearance. Two separately-built interval lists would already have cut it
+in two and padded both halves, producing a visible seam in the middle of a
+continuous shot. A test pins exactly that.
+
+On the test episode: person #1 alone is 538 detections over 152 appearance
+intervals, person #2 is 283 over 100, and the two together are 821 over
+**124** -- fewer intervals than either count suggests, because the scenes
+they share merge into one.
+
+The carrier group has no centroid and no representative face, because a
+group of two people has neither.
+
+## 23. Showing the reel before encoding it (`preview_frames`)
+
+Selecting a card said "14 cuts, about 4:31" and then asked the user to
+commit minutes of encoding to it on faith.
+
+Six frames, spread across the reel's length rather than taken from its
+opening -- a 100-cut reel has to be represented by more than its first
+minute. Measured at **0.30s** for a 22-minute episode.
+
+This is the one place in the project where seeking is right. Section 18
+measured it losing 3.5-5x for sampling, where a frame is wanted every 0.5s
+and each seek decodes the whole GOP in front of it; six frames spread over
+twenty minutes is the opposite case, and the same reasoning says seeking
+wins. The measurement did not say "seeking is slow", it said "seeking is
+slow when samples are denser than keyframes", and that distinction is what
+makes this cheap.
+
+Frames come from the middle of each segment, not its start: a cut's first
+frame often lands mid-transition and shows a face nobody would recognise.
+
+It behaves like a convenience throughout. It runs off the main thread; a
+result arriving after the user has clicked again is dropped rather than
+drawn over a selection it does not belong to; and any failure -- a moved
+file, a codec that will not seek, an exception escaping the thread --
+leaves the strip absent instead of stopping an export that would work.
+
+## 24. Correcting the identities (`app/faces/edits.py`)
+
+Grouping is fitted to real footage and gets most of a video right. What it
+still does is written down in this file already: one actor across two
+cards (15), and the show's logo clustering into a convincing phantom
+identity. The only recourse was re-tuning thresholds and rescanning.
+
+Three corrections, chosen because they are the ones a person can make and
+the clustering cannot: **merge**, **split**, **discard**.
+
+### Splitting along tracks and nowhere else
+
+A track is the only unit here that is provably one person -- spatial
+continuity across consecutive frames proves it (7), and nothing else in
+this module does. So it is the only honest place to divide a group.
+
+Those boundaries were being destroyed: `_build_groups` flattens units into
+one observation list and the runs cannot be recovered afterwards. Groups
+now record the unit sizes as they are built, and consolidation
+concatenates them -- which matters, because the consolidated groups are
+exactly the ones most likely to need splitting.
+
+Verified on the test episode: the recorded boundaries account for every
+observation in all 38 groups, with a median of 21 tracks per person and a
+maximum of 279.
+
+### The picker reads its pictures back from the video
+
+A split picker has to show one shot per track, and the cache deliberately
+keeps only one crop per person (21). Storing a crop per observation would
+take an episode's scan from 6 MB to hundreds, to serve a correction made
+rarely and looked at once. So the thumbnails are seeked out of the footage
+on demand, through the same path as the reel preview, showing the longest
+tracks first -- a mistakenly merged card is two substantial runs of
+somebody, not a scattering of single frames.
+
+### Corrections outlive the window
+
+The edited groups are written back over the scan they came from, under the
+same key, and the entry is marked as edited. The key still identifies the
+scan that produced it; the groups are no longer only what the clustering
+said, and that is the point. `--rescan` is the way back to what it
+actually said.
+
+### Two defects the tests found
+
+Both are the kind that would have been noticed late and blamed on
+something else:
+
+- **Numbering the edited gallery stamped an id onto the groups it was
+  handed.** Groups survive an edit untouched -- a discard keeps every other
+  card exactly as it was -- so renumbering in place reached back into the
+  caller's gallery and into the result of any earlier edit still holding
+  the same object. Numbering now produces new group objects.
+- **A group with no cover picture is dropped by the gallery**, so an edit
+  could make a card the user never touched disappear. Every edited group
+  is now guaranteed one.
+
+### Verified on the episode
+
+    38 people
+    merge #2 + #3        -> 37 people, 283 + 188 = 471 detections
+    split #1 on 2 tracks -> 38 people
+    discard the smallest -> 37 people
+    reopen the video     -> 37 people, reused

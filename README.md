@@ -42,6 +42,7 @@ flux-cutter/
 │   │   ├── embedder.py
 │   │   ├── anime.py       # animation-mode detection + embedding
 │   │   ├── reference.py   # picking a person with a photo
+│   │   ├── edits.py       # merging, splitting, discarding identities
 │   │   ├── quality.py
 │   │   ├── tracker.py
 │   │   └── grouper.py
@@ -61,6 +62,7 @@ flux-cutter/
 │       ├── cutter.py        # segments -> one reel, in-process via PyAV
 │       └── export.py        # intervals -> cut segments -> one reel
 ├── modes.py             # live action / animation, chosen by the user
+├── scans.py             # keeping a scan, so a video is not scanned twice
 ├── settings.py          # the remembered choice
 ├── assets/
 │   ├── models/
@@ -346,6 +348,82 @@ the one failure that would make this unusable.
 `--interval`, `--mode`, `--encoder` and the editorial knobs all apply to
 every video in the run.
 
+### 11. Scans are kept, not thrown away
+
+A scan is the expensive part — minutes of detecting and embedding on a
+full-length video — and it is now kept, so the same video under the same
+settings comes back instantly:
+
+```text
+Reusing the scan of test_3.mp4 from 4 minutes ago (55s of work skipped).
+Pass --rescan to run it again.
+```
+
+On the 22-minute test episode a scan takes 55.3s and comes back in 0.05s,
+from a 6.3 MB file. The `group` → `export` workflow above no longer scans
+the footage twice.
+
+There is no staleness check, because there is nothing to check: the key
+covers the video's identity (path, size, modification time) **and** every
+setting that can change what a scan produces, so a hit means the same scan
+would have given the same answer. The app's own version is part of it, so a
+release invalidates kept scans rather than serving an answer the current
+code would not give.
+
+```bash
+python -m app scans          # what is kept, and how much space it uses
+python -m app scans clear    # delete all of it
+python -m app export ... --rescan   # ignore what is kept, this once
+```
+
+What is stored is the identities — embeddings, boxes, landmarks,
+timestamps — plus one representative crop per person for the gallery to
+draw, not the footage. A corrupt or half-written entry costs a rescan
+rather than a failed scan.
+
+### 12. Fixing what the grouping got wrong
+
+Grouping is tuned against real footage and gets most of a video right. It
+still sometimes puts one actor on two cards, or keeps a logo as a
+convincing phantom person. In the window, select cards and correct it:
+
+- **Merge** — two or more cards that are the same person.
+- **Split…** — a card that holds two people. It shows one shot per *track*
+  and you pick the ones that are somebody else.
+- **Not a person** — for the phantom identities.
+
+Splitting happens along track boundaries and nowhere else, because a track
+is the only unit here that is provably one person: spatial continuity
+across consecutive sampled frames proves it, and nothing else does.
+
+Corrections are written back over the kept scan, so a fix survives closing
+the window. `--rescan` is the way back to what the clustering actually
+said.
+
+### 13. A reel of several people
+
+Click a second card and it joins the first rather than replacing it; on the
+command line, pass several indexes:
+
+```bash
+python -m app export episode.mp4 --select-index 0 2 --output output/leads.mp4
+```
+
+That is every scene *any* of them is in, on one combined timeline — which
+is not the same as gluing two reels together. When one lead leaves a scene
+and the other arrives a second later, the combined timeline sees one
+continuous appearance rather than cutting it in two.
+
+On the test episode, person #1 alone is 152 appearance intervals and person
+#2 is 100; the two together are 124, because the scenes they share merge.
+
+### 14. Seeing the reel before encoding it
+
+Selecting a card used to tell you "14 cuts, about 4:31" and then ask you to
+commit minutes of encoding on faith. The rail now shows six frames from the
+reel itself, spread across its length. It takes 0.30s on a 22-minute
+episode.
+
 ## The desktop window
 
 Everything above is also available as one screen, which is the shorter route if you just want a reel out of a video:
@@ -355,7 +433,7 @@ python -m app ui                                  # or: python -m app.ui
 python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
 ```
 
-Pick a video, press **Scan for people**, click a face, press **Export reel**. Reference photos and batch runs are command-line only for now; the window still selects a person by clicking their card. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
+Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid merge, split or discard cards the grouping got wrong. Reference photos and batch runs are command-line only for now. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
 
 **Folder** and **File name** are separate fields because they change on different rhythms. A folder is chosen once for a session's worth of reels (**Choose...** opens a directory picker, and a folder that does not exist yet is created on export). The file name follows whichever face is selected — `test_3-person-2.mp4` — but only while it is still the name the app suggested; type your own and it survives clicking through the whole gallery. A missing `.mp4` extension is added for you.
 
@@ -522,7 +600,7 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-317 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, appearance timelines, export segmentation, reference-photo matching, batch runs, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+389 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections, appearance timelines, export segmentation, reference-photo matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
 
 The tests need no display. `app/ui/worker.py` deliberately imports no toolkit at all, and `app/ui/web.py` keeps every decision on the Python side, so the window's behaviour — which filename to suggest, when to refuse a click, what to do about footage that moved — is tested without opening anything.
 
@@ -552,6 +630,10 @@ The next logical prototype milestones are:
 - ~~sampling faster than a full sequential decode~~ — measured, and the lever this roadmap named is not there: **seeking is 3.5–5x slower**, even done once per GOP rather than once per sample, because each seek flushes the decoder and gives up the multi-core decoding that made sequential reading fast. Skipping non-reference frames pays instead: ~13% off decode, ~5% off a whole scan, with the provable-false-merge count unchanged. See [Instructions.md](Instructions.md#18-sampling-faster-what-the-roadmap-expected-and-what-measured).
 - ~~choose a person with a photo instead of a gallery click~~
 - ~~run a whole folder of videos in one command~~
-- **next:** a scan is thrown away when the window closes, so re-opening a video re-runs the whole seven-minute detect/embed pass. Caching it keyed on (path, size, mtime, mode, interval, thresholds) is also what would let identities be merged, split or renamed after the fact, which is the only recourse today when grouping splits one actor across two cards
+- ~~keep a scan, so re-opening a video does not re-run the detect/embed pass~~ (55.3s becomes 0.05s on the test episode)
+- ~~merge, split and discard person cards, so a grouping mistake can be corrected without re-tuning thresholds~~
+- ~~cut a reel of several people at once~~
+- ~~see frames from the reel before committing to an encode~~
+- **next:** identities are still "Person #2". Naming them would follow the selection into the filename, persist with the kept scan, and give the batch command something better than an index to report
 
 This roadmap may evolve as the prototype proves which stages need refinement.
