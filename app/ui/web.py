@@ -30,6 +30,7 @@ import webview
 from app.modes import DEFAULT_MODE, MODES, availability, mode_ids
 from app.ui.macos import set_application_name
 from app.ui.worker import (
+    preview_frames,
     Cancelled,
     ExportSettings,
     Person,
@@ -124,6 +125,11 @@ class Bridge:
         # A list, because a reel can be of more than one person. Empty
         # means nothing is chosen; order is the order they were picked.
         self._selected: list[Person] = []
+        # Bumped on every selection change. A filmstrip is built off
+        # the main thread and can land after the user has clicked
+        # again, so a stale one is dropped rather than drawn over the
+        # selection it does not belong to.
+        self._preview_token = 0
         self._suggested_filename = ""
 
     # ------------------------------------------------------------- helpers
@@ -315,6 +321,7 @@ class Bridge:
                 self._selected + [person], key=lambda chosen: chosen.index
             )
 
+        self._preview_token += 1
         if not self._selected:
             return {
                 "accepted": True,
@@ -330,8 +337,11 @@ class Bridge:
         reel_seconds = sum(s.end_time - s.start_time for s in segments)
         detections = sum(chosen.detection_count for chosen in self._selected)
 
+        self._start_preview()
+
         return {
             "accepted": True,
+            "token": self._preview_token,
             "indexes": [chosen.index for chosen in self._selected],
             "cuts": len(segments),
             "reel": _clock(reel_seconds),
@@ -347,6 +357,43 @@ class Bridge:
                 f"{len(segments)} cuts, about {_clock(reel_seconds)} of footage."
             ),
         }
+
+    def _start_preview(self) -> None:
+        """Builds the filmstrip for the current selection, off the main thread.
+
+        Not a job in the `_busy` sense: it must not block a scan or an
+        export, and cancelling one has no meaning -- it is six seeks. A
+        stale result is dropped on arrival instead.
+        """
+        token = self._preview_token
+        chosen = list(self._selected)
+        result = self._scan_result
+        if result is None or not chosen:
+            return
+
+        def build() -> None:
+            try:
+                frames = preview_frames(result, chosen)
+                if token != self._preview_token:
+                    return
+                self._emit(
+                    "onPreview",
+                    {
+                        "token": token,
+                        "frames": [
+                            {"at": _clock(timestamp), "image": _data_uri(image)}
+                            for timestamp, image in frames
+                        ],
+                    },
+                )
+            except Exception:
+                # Nothing above this to catch it: an exception escaping a
+                # daemon thread prints a traceback the user cannot act on
+                # and leaves the strip showing "Reading the reel...".
+                # A preview is a convenience, so it simply does not appear.
+                self._emit("onPreview", {"token": token, "frames": []})
+
+        threading.Thread(target=build, daemon=True).start()
 
     def _selection_name(self) -> str:
         """How the chosen people are named in the window's own text."""

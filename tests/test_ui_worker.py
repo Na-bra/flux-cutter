@@ -6,6 +6,7 @@ what lets these run anywhere the rest of the suite does.
 """
 
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -447,3 +448,111 @@ def test_people_who_never_share_a_scene_keep_separate_appearances():
     intervals, _ = plan_export([early, late], video_duration=60.0, sample_interval=1.0)
 
     assert len(intervals) == 2
+
+
+# ------------------------------------------------------------- the preview
+
+
+class FakeSource:
+    def __init__(self):
+        self.opened = 0
+
+    def open(self):
+        self.opened += 1
+        raise RuntimeError("no footage behind this")
+
+
+def a_result(people, source=None, duration=600.0):
+    from app.ui.worker import ScanResult
+
+    return ScanResult(
+        video_path=Path("/videos/episode.mp4"),
+        video_duration=duration,
+        sample_interval=1.0,
+        people=people,
+        source=source,
+    )
+
+
+def test_a_preview_needs_somebody_and_some_footage():
+    from app.ui.worker import preview_frames
+
+    person = one_person(0, [1.0, 2.0])
+
+    assert preview_frames(a_result([person], source=FakeSource()), []) == []
+    assert preview_frames(a_result([person], source=None), [person]) == []
+
+
+def test_a_preview_that_cannot_be_drawn_is_not_an_error():
+    """It is a convenience. Failing to draw one must never stop an export
+    that would otherwise work."""
+    from app.ui.worker import preview_frames
+
+    person = one_person(0, [1.0, 2.0, 3.0])
+    source = FakeSource()
+
+    assert preview_frames(a_result([person], source=source), [person]) == []
+    assert source.opened == 1
+
+
+def test_the_filmstrip_is_spread_across_the_whole_reel(monkeypatch):
+    """Not the first six cuts: a 100-cut reel has to be represented by its
+    length, or the preview only ever shows its opening minute."""
+    from app.ui import worker as worker_module
+
+    asked = []
+
+    def fake_frames_at(source, timestamps, width):
+        asked.extend(timestamps)
+        return []
+
+    monkeypatch.setattr(worker_module, "_frames_at", fake_frames_at)
+    spread = one_person(0, [float(t) for t in range(0, 600, 20)])
+
+    worker_module.preview_frames(
+        a_result([spread], source=FakeSource()), [spread], limit=4
+    )
+
+    assert len(asked) == 4
+    assert asked == sorted(asked)
+    assert asked[0] < 60 and asked[-1] > 500
+
+
+def test_a_short_reel_shows_every_cut_it_has(monkeypatch):
+    from app.ui import worker as worker_module
+
+    asked = []
+    monkeypatch.setattr(
+        worker_module,
+        "_frames_at",
+        lambda source, timestamps, width: asked.extend(timestamps) or [],
+    )
+    brief = one_person(0, [1.0, 2.0, 100.0, 101.0])
+
+    worker_module.preview_frames(
+        a_result([brief], source=FakeSource()), [brief], limit=6
+    )
+
+    assert len(asked) == 2
+
+
+def test_frames_come_from_inside_the_cuts_not_their_edges(monkeypatch):
+    """A cut's first frame often lands mid-transition and shows a face
+    nobody would recognise."""
+    from app.ui import worker as worker_module
+
+    asked = []
+    monkeypatch.setattr(
+        worker_module,
+        "_frames_at",
+        lambda source, timestamps, width: asked.extend(timestamps) or [],
+    )
+    person = one_person(0, [10.0, 11.0, 12.0])
+
+    intervals, segments = worker_module.plan_export(
+        [person], video_duration=600.0, sample_interval=1.0
+    )
+    worker_module.preview_frames(a_result([person], source=FakeSource()), [person])
+
+    assert len(asked) == 1
+    assert segments[0].start_time < asked[0] < segments[0].end_time

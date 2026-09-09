@@ -200,6 +200,17 @@
   .picked dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: .76rem; }
   .picked dt { font-family: var(--mono); font-size: .68rem; color: var(--faint); }
   .picked dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+  /* What is actually in the reel. The numbers above say how much; this
+     says whether it is the right person. */
+  .strip { margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .strip figure { margin: 0; position: relative; border-radius: 3px; overflow: hidden; background: var(--sunk); aspect-ratio: 16 / 9; }
+  .strip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .strip figcaption {
+    position: absolute; bottom: 0; right: 0; padding: 1px 3px;
+    font-family: var(--mono); font-size: .58rem; color: #fff;
+    background: rgba(0,0,0,.62); border-top-left-radius: 3px;
+  }
+  .strip .waiting { grid-column: 1 / -1; font-size: .72rem; color: var(--faint); }
 
   .pair { display: grid; grid-template-columns: 1.35fr 1fr; gap: 9px; }
 
@@ -264,6 +275,7 @@
           <dt>reel length</dt><dd id="pickedLen">—</dd>
           <dt>detections</dt><dd id="pickedDet">—</dd>
         </dl>
+        <div class="strip" id="strip" hidden></div>
       </div>
 
       <div class="field">
@@ -300,7 +312,7 @@
   const $ = (id) => document.getElementById(id);
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", people: [], selected: [], busy: null };
+  let state = { video: "", people: [], selected: [], busy: null, previewToken: 0 };
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -439,6 +451,7 @@
 
     if (!r.indexes.length) {
       $("picked").hidden = true;
+      $("strip").hidden = true;
       $("foot").textContent = "Choose a person to export.";
       $("exportBtn").disabled = true;
       return;
@@ -455,5 +468,27 @@
       "Cuts " + r.cuts + " segments and joins them into one file." +
       (r.indexes.length > 1 ? " Any scene with any of them." : "");
     $("exportBtn").disabled = false;
+
+    state.previewToken = r.token;
+    const strip = $("strip");
+    strip.hidden = false;
+    strip.innerHTML = '<p class="waiting">Reading the reel…</p>';
   });
+
+  // Frames from the reel itself, so the numbers above are not the only
+  // thing standing between a click and a multi-minute encode.
+  window.onPreview = (d) => {
+    if (d.token !== state.previewToken) return;
+    const strip = $("strip");
+    if (!d.frames.length) {
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
+    strip.innerHTML = d.frames.map(f => `
+      <figure>
+        <img src="${f.image}" alt="A frame from the reel at ${f.at}">
+        <figcaption>${f.at}</figcaption>
+      </figure>`).join("");
+  };
 </script>

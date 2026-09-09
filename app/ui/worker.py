@@ -524,6 +524,102 @@ def plan_export(
     return intervals, segments
 
 
+# How many frames a preview filmstrip shows. Enough to tell whether the
+# reel opens on the right person and holds together, few enough that
+# building it is a fraction of a second rather than a wait.
+PREVIEW_FRAMES = 6
+PREVIEW_WIDTH = 192
+
+
+def preview_frames(
+    scan_result: "ScanResult",
+    people: "Person | list[Person]",
+    limit: int = PREVIEW_FRAMES,
+    width: int = PREVIEW_WIDTH,
+    settings: ExportSettings | None = None,
+) -> list[tuple[float, Image.Image]]:
+    """Frames from the reel that would be cut, spread across its length.
+
+    Selecting a card said "14 cuts, about 4:31" and then asked the user to
+    commit minutes of encoding to it on faith. This shows what is in it.
+
+    Seeking is the right tool here and nowhere else in this project. It
+    loses badly for sampling, where a frame is wanted every 0.5s and each
+    seek decodes the whole GOP in front of it (Instructions 18); for six
+    frames spread over twenty minutes it decodes six short GOPs instead of
+    the entire video, which is the case the same measurement says it wins.
+
+    Frames come from the middle of each chosen segment rather than its
+    start, because a cut's first frame often lands mid-transition and
+    shows a face nobody would recognise.
+
+    Returns (timestamp, image) pairs in chronological order, empty when
+    there is nothing to cut or the footage can no longer be read. It is a
+    preview: failing to draw one must never stop an export that would
+    otherwise work.
+    """
+    chosen = people if isinstance(people, list) else [people]
+    if not chosen or scan_result.source is None:
+        return []
+
+    _, segments = plan_export(
+        chosen,
+        video_duration=scan_result.video_duration,
+        sample_interval=scan_result.sample_interval,
+        settings=settings,
+    )
+    if not segments:
+        return []
+
+    # Spread across the reel rather than taking the first few, so a
+    # 100-cut reel is represented by its whole length.
+    if len(segments) <= limit:
+        picked = list(segments)
+    else:
+        step = (len(segments) - 1) / (limit - 1) if limit > 1 else 0
+        picked = [segments[round(position * step)] for position in range(limit)]
+
+    wanted = [
+        (segment.start_time + segment.end_time) / 2.0 for segment in picked
+    ]
+
+    try:
+        return _frames_at(scan_result.source, wanted, width)
+    except Exception:
+        # Any decode failure at all: a moved file, a truncated video, a
+        # codec that will not seek. The preview is a convenience.
+        return []
+
+
+def _frames_at(source, timestamps: list[float], width: int):
+    """Decodes one frame at each timestamp, by seeking to each in turn."""
+    frames = []
+    with source.open() as container:
+        stream = next(
+            (s for s in container.streams if s.type == "video"), None
+        )
+        if stream is None:
+            return []
+        time_base = stream.time_base
+
+        for wanted in timestamps:
+            container.seek(int(wanted / time_base), stream=stream)
+            for frame in container.decode(stream):
+                if frame.time is None:
+                    continue
+                # The first frame at or after the target. Seeking lands on
+                # the keyframe before it, so this decodes forward.
+                if frame.time + 1e-6 < wanted:
+                    continue
+                image = Image.fromarray(frame.to_ndarray(format="rgb24"))
+                height = max(1, round(image.height * width / image.width))
+                frames.append(
+                    (float(frame.time), image.resize((width, height)))
+                )
+                break
+    return frames
+
+
 def export(
     scan_result: ScanResult,
     person: Person | list[Person],

@@ -18,6 +18,8 @@ import json
 from pathlib import Path
 
 import numpy as np
+import time
+
 import pytest
 from PIL import Image
 
@@ -441,3 +443,73 @@ def test_a_reel_of_two_people_is_at_least_as_long_as_either_alone(bridge):
     assert together["indexes"] == [0, 2]
     assert together["detections"] == alone["detections"] + other["detections"]
     assert together["reel"] >= max(alone["reel"], other["reel"])
+
+
+# --------------------------------------------------------- the filmstrip
+
+
+def test_a_selection_carries_a_token_for_its_preview(bridge):
+    bridge._scan_result = make_scan_result()
+
+    first = bridge.select_person(0, "")
+    second = bridge.select_person(1, "")
+
+    assert second["token"] > first["token"]
+
+
+def test_a_late_filmstrip_for_an_old_selection_is_dropped(bridge, monkeypatch):
+    """Six seeks can land after the user has clicked again, and drawing
+    them would show frames from a reel that is no longer selected."""
+    emitted = []
+    monkeypatch.setattr(bridge, "_emit", lambda name, payload=None: emitted.append(name))
+    bridge._scan_result = make_scan_result()
+    bridge._selected = [bridge._scan_result.people[0]]
+
+    def clicked_again_while_seeking(result, chosen):
+        bridge._preview_token += 1
+        return [(1.0, Image.new("RGB", (4, 3)))]
+
+    monkeypatch.setattr("app.ui.web.preview_frames", clicked_again_while_seeking)
+    bridge._start_preview()
+
+    time.sleep(0.2)
+    assert "onPreview" not in emitted
+
+
+def test_a_current_filmstrip_is_drawn(bridge, monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        bridge, "_emit", lambda name, payload=None: sent.append((name, payload))
+    )
+    monkeypatch.setattr(
+        "app.ui.web.preview_frames",
+        lambda result, chosen: [(65.0, Image.new("RGB", (4, 3)))],
+    )
+    bridge._scan_result = make_scan_result()
+    bridge._selected = [bridge._scan_result.people[0]]
+
+    bridge._start_preview()
+
+    for _ in range(50):
+        if sent:
+            break
+        time.sleep(0.01)
+    name, payload = sent[0]
+    assert name == "onPreview"
+    assert payload["token"] == bridge._preview_token
+    assert payload["frames"][0]["at"] == "1:05"
+    assert payload["frames"][0]["image"].startswith("data:image/jpeg;base64,")
+
+
+def test_clearing_the_selection_asks_for_no_preview(bridge, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        "app.ui.web.preview_frames", lambda result, chosen: asked.append(chosen) or []
+    )
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.select_person(0, "")
+
+    assert answer["indexes"] == []
+    assert "token" not in answer
