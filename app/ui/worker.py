@@ -17,7 +17,7 @@ Two rules this module exists to enforce:
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from PIL import Image
@@ -35,6 +35,7 @@ from app.faces.grouper import (
     auto_min_detections,
 )
 from app.main import run_identity_pipeline
+from app.faces.edits import EditError, discard_groups, merge_groups, split_group
 from app.models import MODELS, ensure_model, find_model
 from app.scans import CachedScan, cache_key
 from app.scans import load as load_scan
@@ -384,17 +385,7 @@ def scan(
         padding_ratio=settings.padding_ratio,
     )
 
-    people = [
-        Person(
-            index=index,
-            thumbnail=Image.fromarray(card.representative_thumbnail),
-            detection_count=card.detection_count,
-            first_seen=card.first_seen_timestamp,
-            last_seen=card.last_seen_timestamp,
-            group=group,
-        )
-        for index, (card, group) in enumerate(zip(gallery.cards, gallery.groups))
-    ]
+    people = _people_from(gallery)
 
     return ScanResult(
         video_path=video_path,
@@ -410,6 +401,122 @@ def scan(
         reused=kept is not None,
         original_seconds=scan.scan_seconds,
     )
+
+
+def _people_from(gallery) -> list["Person"]:
+    """The person cards a gallery describes, in its own order.
+
+    Shared by the scan and by every edit: a merged or split gallery has to
+    produce cards the same way an unedited one does, or the two would
+    disagree about what a person card is.
+    """
+    return [
+        Person(
+            index=index,
+            thumbnail=Image.fromarray(card.representative_thumbnail),
+            detection_count=card.detection_count,
+            first_seen=card.first_seen_timestamp,
+            last_seen=card.last_seen_timestamp,
+            group=group,
+        )
+        for index, (card, group) in enumerate(zip(gallery.cards, gallery.groups))
+    ]
+
+
+def apply_edit(
+    scan_result: "ScanResult",
+    settings: ScanSettings,
+    operation: str,
+    indexes: list[int],
+    tracks: list[int] | None = None,
+) -> "ScanResult":
+    """Corrects the identities, and keeps the correction.
+
+    Grouping is fitted to real footage and still splits one actor across
+    two cards, or keeps a logo as a convincing phantom person. Until this
+    existed the only recourse was re-tuning thresholds and rescanning --
+    minutes of work to fix something visible at a glance.
+
+    The corrected groups are written back to the scan cache under the same
+    key, so the fix outlives the window rather than having to be repeated
+    every time the video is opened. `--rescan` still discards them, which
+    is the way back to what the clustering actually said.
+
+    Returns a new ScanResult sharing this one's footage handle; the caller
+    keeps owning that handle and should close it once.
+
+    Raises:
+        EditError: If the edit does not describe something that can be done.
+    """
+    groups = [person.group for person in scan_result.people]
+
+    if operation == "merge":
+        edited = merge_groups(groups, indexes)
+    elif operation == "split":
+        (index,) = indexes
+        edited = split_group(groups, index, tracks or [])
+    elif operation == "discard":
+        edited = discard_groups(groups, indexes)
+    else:
+        raise EditError(f"Unknown edit: {operation!r}")
+
+    gallery = build_identity_gallery(
+        edited,
+        unassigned_count=scan_result.unassigned_count,
+        padding_ratio=settings.padding_ratio,
+    )
+    people = _people_from(gallery)
+
+    updated = replace(
+        scan_result,
+        people=people,
+        # The detections did not change -- they were only regrouped -- but
+        # discarding a card removes its own from the gallery, so this is
+        # recounted rather than carried over.
+        detection_count=sum(person.detection_count for person in people),
+        reused=False,
+    )
+
+    _keep_edited(updated, settings, gallery)
+    return updated
+
+
+def _keep_edited(scan_result: "ScanResult", settings: ScanSettings, gallery) -> None:
+    """Writes corrected identities back over the scan they came from.
+
+    Best effort: an edit the user can see must not fail because the cache
+    could not be written. It would simply have to be made again.
+    """
+    key = cache_key(
+        scan_result.video_path,
+        sample_interval=settings.sample_interval,
+        confidence_threshold=settings.confidence_threshold,
+        padding_ratio=settings.padding_ratio,
+        similarity_threshold=settings.similarity_threshold,
+        margin_threshold=settings.margin_threshold,
+        consolidation_threshold=settings.consolidation_threshold,
+        min_confidence=settings.min_confidence,
+        min_face_size=settings.min_face_size,
+        min_group_eye_span=settings.min_group_eye_span,
+        mode=settings.mode,
+        forbid_cooccurring=settings.forbid_cooccurring,
+        cooccurrence_similarity_ceiling=settings.cooccurrence_similarity_ceiling,
+        min_detections=settings.min_detections,
+    )
+    existing = load_scan(key)
+    if existing is None:
+        return
+    try:
+        save_scan(
+            key,
+            replace(
+                existing,
+                groups=gallery.groups,
+                edited=True,
+            ),
+        )
+    except OSError:
+        pass
 
 
 def _scan_footage(source, settings, cancel, on_progress):
@@ -618,6 +725,66 @@ def _frames_at(source, timestamps: list[float], width: int):
                 )
                 break
     return frames
+
+
+# How many tracks a split picker shows at once. A person on a 22-minute
+# episode has a median of 21 tracks and can have hundreds, and a picker
+# nobody can read is not a correction tool.
+TRACK_PREVIEWS = 24
+
+
+def track_previews(
+    scan_result: "ScanResult",
+    person: "Person",
+    limit: int = TRACK_PREVIEWS,
+    width: int = PREVIEW_WIDTH,
+) -> list[tuple[int, float, Image.Image]]:
+    """One picture per track in a person's card, for choosing what to split.
+
+    A track is the only unit a group can honestly be split along, so this
+    is what a split picker has to show. The pictures are read back from the
+    footage rather than stored: keeping a crop for every observation would
+    multiply an episode's cached scan from 6 MB to hundreds, to serve a
+    correction that is made rarely and looked at once.
+
+    Longest tracks first, because a mistakenly merged card is two
+    substantial runs of somebody, not a scattering of single frames -- and
+    because with hundreds of tracks the short ones are the ones nobody can
+    judge from a thumbnail anyway.
+
+    Returns (track index, timestamp, image), where the track index counts
+    into `person.group.tracks`. Empty if the footage cannot be read.
+    """
+    if scan_result.source is None:
+        return []
+
+    tracks = person.group.tracks
+    if len(tracks) < 2:
+        return []
+
+    ranked = sorted(
+        range(len(tracks)), key=lambda i: (-len(tracks[i]), tracks[i][0].source_timestamp)
+    )[:limit]
+    # Shown in time order, whichever were picked as the longest.
+    ranked.sort(key=lambda i: tracks[i][0].source_timestamp)
+
+    # The middle observation of each track: the ends of a track are where
+    # a face is entering or leaving, and the middle is where it is seen.
+    wanted = [tracks[i][len(tracks[i]) // 2] for i in ranked]
+
+    try:
+        frames = _frames_at(
+            scan_result.source,
+            [observation.source_timestamp for observation in wanted],
+            width,
+        )
+    except Exception:
+        return []
+
+    return [
+        (track_index, timestamp, image)
+        for track_index, (timestamp, image) in zip(ranked, frames)
+    ]
 
 
 def export(

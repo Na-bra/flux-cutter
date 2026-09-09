@@ -513,3 +513,76 @@ def test_clearing_the_selection_asks_for_no_preview(bridge, monkeypatch):
 
     assert answer["indexes"] == []
     assert "token" not in answer
+
+
+# ------------------------------------------------------------- corrections
+
+
+def test_merging_two_cards_redraws_the_gallery(bridge, monkeypatch):
+    bridge._scan_result = make_scan_result()
+    before = len(bridge._scan_result.people)
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+
+    answer = bridge.edit_people("merge")
+
+    assert answer["applied"] is True
+    assert len(answer["people"]) == before - 1
+    assert "Merged #1, #2" in answer["note"]
+    assert len(bridge._scan_result.people) == before - 1
+
+
+def test_an_edit_clears_the_selection(bridge):
+    """The cards are renumbered, so keeping the old indexes selected would
+    leave the rail describing whoever now happens to sit at that number."""
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+
+    bridge.edit_people("merge")
+
+    assert bridge._selected == []
+
+
+def test_discarding_a_card_removes_it(bridge):
+    bridge._scan_result = make_scan_result()
+    before = len(bridge._scan_result.people)
+    bridge.select_person(1, "")
+
+    answer = bridge.edit_people("discard")
+
+    assert answer["applied"] is True
+    assert len(answer["people"]) == before - 1
+    assert "Discarded #2" in answer["note"]
+
+
+def test_an_edit_needs_a_selection(bridge):
+    bridge._scan_result = make_scan_result()
+
+    assert bridge.edit_people("merge") == {
+        "applied": False,
+        "reason": "Choose a person first.",
+    }
+
+
+def test_an_impossible_edit_says_why_and_changes_nothing(bridge):
+    bridge._scan_result = make_scan_result()
+    before = len(bridge._scan_result.people)
+    bridge.select_person(0, "")
+
+    answer = bridge.edit_people("merge")
+
+    assert answer["applied"] is False
+    assert "two people" in answer["reason"]
+    assert len(bridge._scan_result.people) == before
+
+
+def test_the_gallery_refuses_edits_while_a_job_runs(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+    bridge._worker = AliveWorker()
+
+    answer = bridge.edit_people("merge")
+
+    assert answer["applied"] is False

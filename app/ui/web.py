@@ -30,7 +30,9 @@ import webview
 from app.modes import DEFAULT_MODE, MODES, availability, mode_ids
 from app.ui.macos import set_application_name
 from app.ui.worker import (
+    apply_edit,
     preview_frames,
+    track_previews,
     Cancelled,
     ExportSettings,
     Person,
@@ -43,6 +45,7 @@ from app.ui.worker import (
     quality_for,
     scan,
 )
+from app.faces.edits import EditError
 from app.video.loader import VideoLoadError
 from app.video.source import SourceMismatch
 
@@ -107,6 +110,16 @@ def _clock(seconds: float) -> str:
     return f"{minutes}:{remainder:02d}"
 
 
+def _edit_note(operation: str, indexes: list[int]) -> str:
+    """What the window says after an edit, in the user's own terms."""
+    named = ", ".join(f"#{index + 1}" for index in indexes)
+    if operation == "merge":
+        return f"Merged {named} into one person."
+    if operation == "split":
+        return f"Split #{indexes[0] + 1} apart."
+    return f"Discarded {named}."
+
+
 class Bridge:
     """What the page may ask Python to do.
 
@@ -130,6 +143,11 @@ class Bridge:
         # again, so a stale one is dropped rather than drawn over the
         # selection it does not belong to.
         self._preview_token = 0
+        # The settings the current scan ran under. Edits are written
+        # back to the cache entry those settings key, so they have to
+        # be the same ones, not a fresh default that happens to look
+        # similar.
+        self._scan_settings: ScanSettings | None = None
         self._suggested_filename = ""
 
     # ------------------------------------------------------------- helpers
@@ -228,6 +246,7 @@ class Bridge:
         if mode in MODES:
             self._mode = mode
         settings = ScanSettings(sample_interval=float(interval), mode=self._mode)
+        self._scan_settings = settings
         self._start(self._scan_worker, path, settings)
         return {"started": True}
 
@@ -425,6 +444,76 @@ class Bridge:
         hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
         self._suggested_filename = suggestion
         return None if hand_typed else suggestion
+
+    # --------------------------------------------------------------- edits
+
+    def _settings_for_scan(self) -> ScanSettings:
+        """The settings the loaded scan was produced under."""
+        if self._scan_settings is not None:
+            return self._scan_settings
+        interval = (
+            self._scan_result.sample_interval
+            if self._scan_result is not None
+            else ScanSettings().sample_interval
+        )
+        return ScanSettings(sample_interval=interval, mode=self._mode)
+
+    def edit_people(self, operation: str, tracks=None) -> dict:
+        """Merges, splits or discards the chosen cards.
+
+        Grouping gets most of a video right and still splits one actor
+        across two cards, or keeps a logo as a person. This is the recourse
+        that used to mean re-tuning thresholds and rescanning.
+        """
+        if self._busy() or self._scan_result is None:
+            return {"applied": False, "reason": "Not while a job is running."}
+        if not self._selected:
+            return {"applied": False, "reason": "Choose a person first."}
+
+        indexes = [chosen.index for chosen in self._selected]
+        try:
+            updated = apply_edit(
+                self._scan_result,
+                self._settings_for_scan(),
+                operation,
+                indexes,
+                [int(track) for track in (tracks or [])],
+            )
+        except EditError as error:
+            return {"applied": False, "reason": str(error)}
+
+        # The footage handle is shared with the result being replaced, so
+        # the old one is dropped rather than closed -- closing it would
+        # take the descriptor out from under the export that follows.
+        self._scan_result = updated
+        self._selected = []
+        self._preview_token += 1
+        return {"applied": True, **self._scan_payload(updated), "note": _edit_note(operation, indexes)}
+
+    def tracks_of(self, index: int) -> dict:
+        """The tracks in one card, as pictures, for choosing a split point."""
+        if self._busy() or self._scan_result is None:
+            return {"tracks": []}
+
+        person = next(
+            (p for p in self._scan_result.people if p.index == int(index)), None
+        )
+        if person is None:
+            return {"tracks": []}
+
+        return {
+            "index": person.index,
+            "tracks": [
+                {
+                    "track": track_index,
+                    "at": _clock(timestamp),
+                    "image": _data_uri(image),
+                }
+                for track_index, timestamp, image in track_previews(
+                    self._scan_result, person
+                )
+            ],
+        }
 
     # -------------------------------------------------------------- export
 

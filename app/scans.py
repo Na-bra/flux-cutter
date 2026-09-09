@@ -153,6 +153,11 @@ class CachedScan:
     # reused so the saving is visible rather than merely felt.
     created_at: float = 0.0
     scan_seconds: float = 0.0
+    # True once a person has merged, split or discarded a card. The
+    # key still identifies the scan that produced this, but the groups
+    # are no longer only what the clustering said -- and that is the
+    # point: a correction the user made must outlive the window.
+    edited: bool = False
 
 
 # ------------------------------------------------------------- writing it
@@ -249,6 +254,10 @@ def save(key: str, scan: CachedScan) -> Path:
             {
                 "group_id": group.group_id,
                 "representative": representative_index,
+                # Without these a reopened scan cannot be split: track
+                # boundaries are not recoverable from the observations
+                # once they have been concatenated.
+                "unit_sizes": [int(size) for size in group.unit_sizes],
                 "observations": observations,
             }
         )
@@ -269,6 +278,7 @@ def save(key: str, scan: CachedScan) -> Path:
             None if scan.video_duration is None else float(scan.video_duration)
         ),
         "min_detections": int(scan.min_detections),
+        "edited": bool(scan.edited),
         "groups": manifest_groups,
     }
 
@@ -335,7 +345,9 @@ def load(key: str) -> CachedScan | None:
                     cursor += 1
 
                 group = FaceIdentityGroup(
-                    group_id=entry["group_id"], observations=observations
+                    group_id=entry["group_id"],
+                    observations=observations,
+                    unit_sizes=list(entry.get("unit_sizes", [])),
                 )
                 centroid_key = f"centroid_{position}"
                 if centroid_key in stored:
@@ -371,6 +383,7 @@ def load(key: str) -> CachedScan | None:
         grouping_time=manifest["grouping_time"],
         video_duration=manifest["video_duration"],
         min_detections=manifest.get("min_detections", 0),
+        edited=manifest.get("edited", False),
         created_at=manifest["created_at"],
         scan_seconds=manifest["scan_seconds"],
     )
