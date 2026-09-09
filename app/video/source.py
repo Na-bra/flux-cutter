@@ -54,9 +54,18 @@ class SourceMismatch(VideoLoadError):
 class VideoSource:
     """One video, addressed by whichever of its two handles still works.
 
-    Not thread-safe to construct or relocate, but `open` is: each call
-    duplicates the descriptor, so a reader gets its own file offset and two
-    readers cannot seek each other sideways.
+    **One reader at a time.** `open` duplicates the held descriptor, and
+    duplicated descriptors share a file offset -- so two readers do seek
+    each other sideways, and both fail with "invalid data found when
+    processing input". This docstring used to claim the opposite, which
+    was harmless only for as long as nothing read the footage twice at
+    once. Measured: two sequential opens read all 981 frames of the test
+    clip, two concurrent ones both fail.
+
+    Neither /dev/fd nor os.dup gives an independent offset on macOS, so a
+    caller that needs to read while an export is running must open the
+    file itself rather than ask for a second reader here (see
+    `_preview_container` in app/ui/worker.py).
     """
 
     def __init__(self, path: str | Path, keep_open: bool | None = None):

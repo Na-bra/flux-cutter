@@ -25,7 +25,7 @@ from PIL import Image
 
 from app.faces.detector import BoundingBox, FaceDetection
 from app.faces.grouper import FaceIdentityGroup, FaceObservation
-from app.ui.worker import Person, ScanResult
+from app.ui.worker import Person, ScanResult, quality_for
 
 pytest.importorskip("webview")
 
@@ -586,3 +586,48 @@ def test_the_gallery_refuses_edits_while_a_job_runs(bridge):
     answer = bridge.edit_people("merge")
 
     assert answer["applied"] is False
+
+
+# ------------------------------------------------------- starting an export
+
+
+def test_pressing_export_builds_settings_the_worker_accepts(bridge, monkeypatch):
+    """The window's headline action, and it was broken from the day the web
+    view replaced Tk: the bridge passed `encoder=` to a dataclass whose
+    field is `video_encoder`, so every export raised TypeError before it
+    started. Every test that touched start_export stopped at an earlier
+    guard -- no video, no person, no footage -- so nothing ever reached the
+    line that mattered.
+    """
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.start_export("/tmp/reels", "out.mp4", "libx264", "Standard")
+
+    assert answer == {"started": True}
+    path, settings = started[0]
+    assert path == Path("/tmp/reels/out.mp4")
+    assert settings.video_encoder == "libx264"
+    assert isinstance(settings.quality, int)
+
+
+def test_the_chosen_quality_level_reaches_the_encoder(bridge, monkeypatch):
+    """The two encoders' scales run in opposite directions, so a level that
+    did not translate would silently encode at the wrong quality."""
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    bridge.start_export("/tmp", "a.mp4", "libx264", "Maximum")
+    bridge.start_export("/tmp", "b.mp4", "h264_videotoolbox", "Maximum")
+
+    libx264_quality = started[0][1].quality
+    videotoolbox_quality = started[1][1].quality
+    assert libx264_quality == quality_for("libx264", "Maximum")
+    assert videotoolbox_quality == quality_for("h264_videotoolbox", "Maximum")
+    assert libx264_quality != videotoolbox_quality
