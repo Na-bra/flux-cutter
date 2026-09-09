@@ -12,6 +12,7 @@ from app.faces.embedder import FaceEmbedder
 from app.faces.grouper import (
     DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     DEFAULT_FORBID_COOCCURRING,
+    FaceIdentityGroup,
     FaceObservation,
     IdentityGrouper,
     auto_min_detections,
@@ -184,6 +185,43 @@ def _resolve_min_detections(
     return resolved
 
 
+def _selection_name(indexes: list[int]) -> str:
+    """How a chosen person, or several, is named in a report."""
+    numbers = [index + 1 for index in indexes]
+    if len(numbers) == 1:
+        return f"Person #{numbers[0]}"
+    if len(numbers) == 2:
+        return f"People #{numbers[0]} and #{numbers[1]}"
+    listed = ", ".join(f"#{number}" for number in numbers[:-1])
+    return f"People {listed} and #{numbers[-1]}"
+
+
+def combined_group(groups: list[FaceIdentityGroup]) -> FaceIdentityGroup:
+    """One group holding every chosen person's detections.
+
+    A reel of two people is the union of their appearances, and a union of
+    timestamps is all `build_appearance_intervals` reads -- so the
+    observations are pooled and the existing stage runs once over the
+    combined timeline. That is also the more correct answer than merging
+    two separately-built interval lists: when one lead leaves a scene and
+    the other arrives a second later, the pooled timeline sees one
+    continuous appearance rather than two padded halves.
+
+    The result is a carrier, not an identity. It has no centroid and no
+    representative, because a group of two people has neither.
+    """
+    if not groups:
+        raise ValueError("no groups to combine")
+    if len(groups) == 1:
+        return groups[0]
+    return FaceIdentityGroup(
+        group_id=-1,
+        observations=[
+            observation for group in groups for observation in group.observations
+        ],
+    )
+
+
 class SelectionError(Exception):
     """Raised when the run cannot tell which person it is about.
 
@@ -195,11 +233,11 @@ class SelectionError(Exception):
 
 def _resolve_selection(
     identity_gallery,
-    select_index: int | None,
+    select_index: int | list[int] | None,
     reference: ReferenceFace | None,
     reference_threshold: float | None = None,
     mode: str = DEFAULT_MODE,
-) -> int:
+) -> list[int]:
     """Which person card the run is about, however the user said it.
 
     An index and a photograph are two ways of naming the same thing, and
@@ -231,18 +269,25 @@ def _resolve_selection(
             f"{reference.source.name} matched Person #{match.index + 1} "
             f"at {match.similarity:.2f} ({runner_up})."
         )
-        return match.index
+        return [match.index]
 
     if select_index is None:
         raise SelectionError("Choose a person with --select-index or --reference.")
 
-    if select_index < 0 or select_index >= len(identity_gallery.groups):
-        raise SelectionError(
-            f"--select-index {select_index} is out of range "
-            f"(0-{len(identity_gallery.groups) - 1})."
-        )
+    wanted = [select_index] if isinstance(select_index, int) else list(select_index)
+    if not wanted:
+        raise SelectionError("Choose a person with --select-index or --reference.")
 
-    return select_index
+    for index in wanted:
+        if index < 0 or index >= len(identity_gallery.groups):
+            raise SelectionError(
+                f"--select-index {index} is out of range "
+                f"(0-{len(identity_gallery.groups) - 1})."
+            )
+
+    # Deduplicated and ordered, so `--select-index 2 0 2` is the same reel
+    # as `--select-index 0 2` rather than counting anybody twice.
+    return sorted(set(wanted))
 
 
 @dataclass(frozen=True)
@@ -667,10 +712,13 @@ def run_appearance_timestamps(
         print("No identity groups found; nothing to compute appearance intervals for.")
         return
 
-    select_index = _resolve_selection(
+    chosen = _resolve_selection(
         identity_gallery, select_index, reference, reference_threshold, mode
     )
-    selected_group = identity_gallery.groups[select_index]
+    selected_group = combined_group(
+        [identity_gallery.groups[index] for index in chosen]
+    )
+    selection_name = _selection_name(chosen)
 
     timeline_start = time.monotonic()
     intervals = build_appearance_intervals(
@@ -683,8 +731,8 @@ def run_appearance_timestamps(
     timeline_duration = time.monotonic() - timeline_start
     total_duration = time.monotonic() - start_time
 
-    print(f"\n--- Appearance Timestamps: Person #{select_index + 1} ---")
-    print(f"Detections for this person: {selected_group.size}")
+    print(f"\n--- Appearance Timestamps: {selection_name} ---")
+    print(f"Detections for this selection: {selected_group.size}")
     print(f"Video duration: {video_duration:.2f} seconds")
     print(f"Appearance intervals: {len(intervals)}")
     for index, interval in enumerate(intervals, start=1):
@@ -771,10 +819,13 @@ def run_export(
         print("No identity groups found; nothing to export.")
         return
 
-    select_index = _resolve_selection(
+    chosen = _resolve_selection(
         identity_gallery, select_index, reference, reference_threshold, mode
     )
-    selected_group = identity_gallery.groups[select_index]
+    selected_group = combined_group(
+        [identity_gallery.groups[index] for index in chosen]
+    )
+    selection_name = _selection_name(chosen)
     intervals = build_appearance_intervals(
         selected_group,
         video_duration=video_duration,
@@ -797,8 +848,8 @@ def run_export(
     appearance_seconds = sum(i.end_time - i.start_time for i in intervals)
     segment_seconds = sum(s.end_time - s.start_time for s in segments)
 
-    print(f"\n--- Export: Person #{select_index + 1} ---")
-    print(f"Detections for this person: {selected_group.size}")
+    print(f"\n--- Export: {selection_name} ---")
+    print(f"Detections for this selection: {selected_group.size}")
     print(f"Appearance intervals: {len(intervals)} ({appearance_seconds:.1f}s on screen)")
     print(
         f"Segments to cut: {len(segments)} ({segment_seconds:.1f}s) "

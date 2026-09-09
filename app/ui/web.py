@@ -121,7 +121,9 @@ class Bridge:
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._scan_result: ScanResult | None = None
-        self._selected: Person | None = None
+        # A list, because a reel can be of more than one person. Empty
+        # means nothing is chosen; order is the order they were picked.
+        self._selected: list[Person] = []
         self._suggested_filename = ""
 
     # ------------------------------------------------------------- helpers
@@ -253,7 +255,7 @@ class Bridge:
         if self._scan_result is not None:
             self._scan_result.close()
         self._scan_result = result
-        self._selected = None
+        self._selected = []
         self._suggested_filename = ""
         self._emit("onScanned", self._scan_payload(result))
 
@@ -284,10 +286,16 @@ class Bridge:
     # ----------------------------------------------------------- selection
 
     def select_person(self, index: int, current_filename: str = "") -> dict:
-        """What the reel for this person would be, before committing to it."""
+        """Adds or removes one person, and describes the reel that results.
+
+        Clicking is a toggle rather than a replacement, so a second card
+        joins the first instead of displacing it: "every scene either lead
+        is in" is one reel, and it is a thing people ask for. Clicking the
+        only selected card clears the selection.
+        """
         # The gallery stays visible during an export but must not accept a
-        # new selection: the running job already holds its own person, so
-        # letting the click through would describe someone it is not
+        # new selection: the running job already holds its own people, so
+        # letting the click through would describe a reel it is not
         # cutting.
         if self._busy() or self._scan_result is None:
             return {"accepted": False}
@@ -298,29 +306,59 @@ class Bridge:
         if person is None:
             return {"accepted": False}
 
-        self._selected = person
+        if any(chosen.index == person.index for chosen in self._selected):
+            self._selected = [
+                chosen for chosen in self._selected if chosen.index != person.index
+            ]
+        else:
+            self._selected = sorted(
+                self._selected + [person], key=lambda chosen: chosen.index
+            )
+
+        if not self._selected:
+            return {
+                "accepted": True,
+                "indexes": [],
+                "summary": "Choose a person to export.",
+            }
+
         _, segments = plan_export(
-            person,
+            self._selected,
             video_duration=self._scan_result.video_duration,
             sample_interval=self._scan_result.sample_interval,
         )
         reel_seconds = sum(s.end_time - s.start_time for s in segments)
+        detections = sum(chosen.detection_count for chosen in self._selected)
 
         return {
             "accepted": True,
-            "index": person.index,
+            "indexes": [chosen.index for chosen in self._selected],
             "cuts": len(segments),
             "reel": _clock(reel_seconds),
-            "onScreen": _clock(person.detection_count * self._scan_result.sample_interval),
-            "detections": person.detection_count,
-            "filename": self._suggest_filename(person, current_filename),
+            # Screen time is summed over the people chosen, so two of them
+            # in one shot count twice -- which is why it can exceed the
+            # reel length rather than matching it.
+            "onScreen": _clock(detections * self._scan_result.sample_interval),
+            "detections": detections,
+            "name": self._selection_name(),
+            "filename": self._suggest_filename(self._selected, current_filename),
             "summary": (
-                f"Person #{person.index + 1} selected - "
+                f"{self._selection_name()} selected - "
                 f"{len(segments)} cuts, about {_clock(reel_seconds)} of footage."
             ),
         }
 
-    def _suggest_filename(self, person: Person, current: str) -> str | None:
+    def _selection_name(self) -> str:
+        """How the chosen people are named in the window's own text."""
+        numbers = [chosen.index + 1 for chosen in self._selected]
+        if len(numbers) == 1:
+            return f"Person #{numbers[0]}"
+        if len(numbers) == 2:
+            return f"People #{numbers[0]} and #{numbers[1]}"
+        listed = ", ".join(f"#{number}" for number in numbers[:-1])
+        return f"People {listed} and #{numbers[-1]}"
+
+    def _suggest_filename(self, people: list[Person], current: str) -> str | None:
         """Names the file after the video and the person, if that is free.
 
         Returns None when the box holds something this method did not put
@@ -334,7 +372,8 @@ class Bridge:
         """
         assert self._scan_result is not None
         stem = self._scan_result.video_path.stem or "reel"
-        suggestion = f"{stem}-person-{person.index + 1}.mp4"
+        numbers = "+".join(str(chosen.index + 1) for chosen in people)
+        suggestion = f"{stem}-person-{numbers}.mp4"
 
         hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
         self._suggested_filename = suggestion
@@ -345,7 +384,7 @@ class Bridge:
     def start_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
         if self._busy():
             return {"started": False, "reason": "already running"}
-        if self._scan_result is None or self._selected is None:
+        if self._scan_result is None or not self._selected:
             return {"started": False, "reason": "Choose a person first."}
         if not self._ensure_source_available():
             return {"started": False, "reason": None}

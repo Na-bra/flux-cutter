@@ -411,9 +411,11 @@ def main():
     timestamps_parser.add_argument(
         "--select-index",
         type=int,
+        nargs="+",
         default=None,
         help="Person card index (as shown by the 'group' command) to compute "
-        "appearance intervals for. Either this or --reference.",
+        "appearance intervals for. Pass several to combine them. Either "
+        "this or --reference.",
     )
     timestamps_parser.add_argument(
         "--reference",
@@ -443,9 +445,11 @@ def main():
     export_parser.add_argument(
         "--select-index",
         type=int,
+        nargs="+",
         default=None,
         help="Person card index (as shown by the 'group' command) to export. "
-        "Either this or --reference.",
+        "Pass several to cut every scene any of them is in. Either this "
+        "or --reference.",
     )
     export_parser.add_argument(
         "--reference",

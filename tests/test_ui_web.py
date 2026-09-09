@@ -135,7 +135,7 @@ def test_selecting_a_face_previews_the_cut(bridge):
     answer = bridge.select_person(1, "reel.mp4")
 
     assert answer["accepted"] is True
-    assert answer["index"] == 1
+    assert answer["indexes"] == [1]
     assert answer["cuts"] >= 1
     assert ":" in answer["reel"]
     assert "cuts" in answer["summary"]
@@ -179,10 +179,10 @@ def test_an_untouched_filename_follows_the_selection(bridge):
     bridge._scan_result = make_scan_result()
 
     first = bridge.select_person(0, "reel.mp4")["filename"]
-    second = bridge.select_person(2, first)["filename"]
+    both = bridge.select_person(2, first)["filename"]
 
     assert first == "documentary-person-1.mp4"
-    assert second == "documentary-person-3.mp4"
+    assert both == "documentary-person-1+3.mp4"
 
 
 def test_a_hand_typed_filename_survives_changing_the_selection(bridge):
@@ -379,3 +379,65 @@ def test_the_frozen_build_reads_the_page_from_the_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(web.sys, "_MEIPASS", str(bundled), raising=False)
 
     assert web._page() == "<title>from the bundle</title>"
+
+
+# ------------------------------------------------------- several at once
+
+
+def test_a_second_card_joins_the_first_rather_than_replacing_it(bridge):
+    """"Every scene either lead is in" is one reel, and a thing people ask
+    for. Clicking used to displace the previous choice."""
+    bridge._scan_result = make_scan_result()
+
+    bridge.select_person(0, "reel.mp4")
+    answer = bridge.select_person(2, "reel.mp4")
+
+    assert answer["indexes"] == [0, 2]
+    assert answer["name"] == "People #1 and #3"
+    assert "People #1 and #3 selected" in answer["summary"]
+
+
+def test_clicking_a_chosen_card_again_removes_it(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "reel.mp4")
+    bridge.select_person(2, "reel.mp4")
+
+    answer = bridge.select_person(0, "reel.mp4")
+
+    assert answer["indexes"] == [2]
+
+
+def test_clearing_the_last_card_leaves_nothing_to_export(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(1, "reel.mp4")
+
+    answer = bridge.select_person(1, "reel.mp4")
+
+    assert answer["accepted"] is True
+    assert answer["indexes"] == []
+    assert bridge.start_export("/tmp", "reel.mp4", "libx264", "Standard") == {
+        "started": False,
+        "reason": "Choose a person first.",
+    }
+
+
+def test_the_selection_is_named_however_many_there_are(bridge):
+    bridge._scan_result = make_scan_result()
+
+    assert bridge.select_person(0, "")["name"] == "Person #1"
+    assert bridge.select_person(1, "")["name"] == "People #1 and #2"
+    assert bridge.select_person(2, "")["name"] == "People #1, #2 and #3"
+
+
+def test_a_reel_of_two_people_is_at_least_as_long_as_either_alone(bridge):
+    """The union of two appearance timelines cannot be shorter than one."""
+    bridge._scan_result = make_scan_result()
+
+    alone = bridge.select_person(0, "")
+    bridge.select_person(0, "")
+    other = bridge.select_person(2, "")
+    together = bridge.select_person(0, "")
+
+    assert together["indexes"] == [0, 2]
+    assert together["detections"] == alone["detections"] + other["detections"]
+    assert together["reel"] >= max(alone["reel"], other["reel"])

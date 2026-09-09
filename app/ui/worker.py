@@ -459,22 +459,56 @@ def _scan_footage(source, settings, cancel, on_progress):
     return result, duration, resolved_min_detections
 
 
+def combined_group(people: list[Person]) -> FaceIdentityGroup:
+    """One group holding every selected person's detections.
+
+    Two leads' scenes are the union of their appearances, and a union of
+    timestamps is all `build_appearance_intervals` reads. So rather than
+    building each person's intervals and merging the results, the
+    observations are pooled and the existing stage runs once over the
+    combined timeline.
+
+    That is not merely less code, it is the more correct answer. Gap
+    tolerance and padding then apply to the reel as it will be watched:
+    when one lead leaves a scene and the other arrives a second later,
+    the pooled timeline sees one continuous appearance, while merging two
+    separately-built interval lists would have already cut it in two and
+    padded both halves.
+
+    The group is a carrier, not an identity -- it has no centroid and no
+    representative, because a group of two people has neither.
+    """
+    if not people:
+        raise ValueError("no people to combine")
+    if len(people) == 1:
+        return people[0].group
+
+    observations = [
+        observation for person in people for observation in person.group.observations
+    ]
+    return FaceIdentityGroup(group_id=-1, observations=observations)
+
+
 def plan_export(
-    person: Person,
+    person: Person | list[Person],
     video_duration: float,
     sample_interval: float,
     settings: ExportSettings | None = None,
 ):
-    """Works out which segments a person's reel would contain.
+    """Works out which segments a reel would contain.
 
     Split out from `export` so the UI can tell someone what they are about
     to get -- how many cuts, how long -- before committing them to an
     encode that runs for minutes.
+
+    Takes one person or several; several gives the reel of every scene any
+    of them is in.
     """
     settings = settings or ExportSettings()
+    people = person if isinstance(person, list) else [person]
 
     intervals = build_appearance_intervals(
-        person.group,
+        combined_group(people),
         video_duration=video_duration,
         sample_interval=sample_interval,
         gap_tolerance_seconds=settings.gap_tolerance_seconds,
@@ -492,18 +526,19 @@ def plan_export(
 
 def export(
     scan_result: ScanResult,
-    person: Person,
+    person: Person | list[Person],
     output_path: Path,
     settings: ExportSettings | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
 ):
-    """Cuts one person's appearances into a single reel.
+    """Cuts one or more people's appearances into a single reel.
 
     Args:
         scan_result: The scan that produced `person`, for the video path,
             duration and sampling interval the intervals were built at.
-        person: Who to cut for.
+        person: Who to cut for. Several gives every scene any of them is
+            in, on one combined timeline.
         output_path: Where to write the reel.
         settings: Editorial and encoding knobs; CLI defaults when omitted.
         on_progress: Called as (fraction, cuts_done, cuts_total) after

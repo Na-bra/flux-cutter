@@ -300,7 +300,7 @@
   const $ = (id) => document.getElementById(id);
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", people: [], selected: null, busy: null };
+  let state = { video: "", people: [], selected: [], busy: null };
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -375,7 +375,7 @@
     state.busy = null;
     $("actionBtn").textContent = "Scan for people";
     $("actionBtn").disabled = false;
-    $("exportBtn").disabled = state.selected === null;
+    $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
   }
 
@@ -393,7 +393,7 @@
     idle();
     setBar(1);
     state.people = d.people;
-    state.selected = null;
+    state.selected = [];
     $("exportBtn").disabled = true;
     $("statusTime").textContent = d.elapsed.toFixed(0) + "s";
     // A scan that comes back instantly reads as one that did not look, so
@@ -430,16 +430,30 @@
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
     if (!r.accepted) return;
 
-    document.querySelectorAll(".card").forEach(c => c.setAttribute("aria-pressed", c === card));
-    state.selected = r.index;
+    // Clicking is a toggle: a second card joins the first rather than
+    // replacing it, so "every scene either lead is in" is one reel.
+    state.selected = r.indexes;
+    document.querySelectorAll(".card").forEach(c =>
+      c.setAttribute("aria-pressed", r.indexes.includes(Number(c.dataset.i)))
+    );
+
+    if (!r.indexes.length) {
+      $("picked").hidden = true;
+      $("foot").textContent = "Choose a person to export.";
+      $("exportBtn").disabled = true;
+      return;
+    }
+
     $("picked").hidden = false;
-    $("pickedName").textContent = "Person " + (r.index + 1);
+    $("pickedName").textContent = r.name;
     $("pickedTime").textContent = r.onScreen;
     $("pickedCuts").textContent = r.cuts;
     $("pickedLen").textContent = r.reel;
     $("pickedDet").textContent = r.detections;
     if (r.filename) $("fname").value = r.filename;
-    $("foot").textContent = "Cuts " + r.cuts + " segments and joins them into one file.";
+    $("foot").textContent =
+      "Cuts " + r.cuts + " segments and joins them into one file." +
+      (r.indexes.length > 1 ? " Any scene with any of them." : "");
     $("exportBtn").disabled = false;
   });
 </script>

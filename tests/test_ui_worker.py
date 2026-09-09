@@ -360,3 +360,90 @@ def test_the_models_are_not_fetched_for_a_scan_that_will_be_reused(
     reused.close()
 
     assert reused.reused is True
+
+
+# --------------------------------------------------- more than one person
+
+
+def one_person(index, timestamps):
+    group = FaceIdentityGroup(
+        group_id=index + 1,
+        observations=[observation(t) for t in timestamps],
+    )
+    return Person(
+        index=index,
+        thumbnail=None,
+        detection_count=len(timestamps),
+        first_seen=min(timestamps),
+        last_seen=max(timestamps),
+        group=group,
+    )
+
+
+def test_one_person_is_their_own_group_untouched():
+    from app.ui.worker import combined_group
+
+    alone = one_person(0, [1.0, 2.0])
+
+    assert combined_group([alone]) is alone.group
+
+
+def test_two_people_pool_their_detections():
+    from app.ui.worker import combined_group
+
+    combined = combined_group([one_person(0, [1.0, 2.0]), one_person(1, [5.0, 6.0])])
+
+    assert len(combined.observations) == 4
+    assert sorted(o.source_timestamp for o in combined.observations) == [
+        1.0,
+        2.0,
+        5.0,
+        6.0,
+    ]
+
+
+def test_a_combined_group_claims_no_identity():
+    """It is a carrier for a timeline, not a person: a group of two people
+    has no centroid and no representative face."""
+    from app.ui.worker import combined_group
+
+    combined = combined_group([one_person(0, [1.0]), one_person(1, [2.0])])
+
+    assert combined.representative_embedding is None
+    assert combined.representative_observation is None
+
+
+def test_combining_needs_somebody():
+    from app.ui.worker import combined_group
+
+    with pytest.raises(ValueError, match="no people"):
+        combined_group([])
+
+
+def test_a_handover_between_two_people_becomes_one_appearance():
+    """One lead leaves and the other arrives a second later. On the pooled
+    timeline that is one continuous appearance; merging two separately
+    built interval lists would have cut it in two and padded both halves."""
+    from app.ui.worker import plan_export
+
+    leaving = one_person(0, [10.0, 11.0, 12.0])
+    arriving = one_person(1, [13.0, 14.0, 15.0])
+
+    intervals, _ = plan_export(
+        [leaving, arriving], video_duration=60.0, sample_interval=1.0
+    )
+
+    assert len(intervals) == 1
+    assert intervals[0].start_time < 10.0
+    assert intervals[0].end_time > 15.0
+
+
+def test_people_who_never_share_a_scene_keep_separate_appearances():
+    from app.ui.worker import plan_export
+
+    early = one_person(0, [1.0, 2.0])
+    late = one_person(1, [50.0, 51.0])
+
+    intervals, _ = plan_export([early, late], video_duration=60.0, sample_interval=1.0)
+
+    assert len(intervals) == 2
