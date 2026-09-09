@@ -234,3 +234,129 @@ def test_every_offered_encoder_can_actually_be_constructed():
 
     for name in available_encoders():
         Codec(name, "w")
+
+
+# ------------------------------------------------------- reusing a scan
+
+
+class FakePipelineResult:
+    """What `_scan_footage` hands back, without any footage behind it."""
+
+    def __init__(self, groups):
+        self.grouper = type(
+            "Grouper", (), {"groups": groups, "unassigned": [1, 2]}
+        )()
+        self.total_detections = 9
+        self.track_count = 4
+        self.frame_count = 120
+        self.last_timestamp = 119.0
+        self.embedding_time = 1.0
+        self.grouping_time = 0.5
+
+
+@pytest.fixture
+def footage(tmp_path):
+    """A file that is a video as far as everything here is concerned.
+
+    Nothing decodes it: the scan under test is monkeypatched out, and
+    VideoSource only validates and opens the path.
+    """
+    path = tmp_path / "episode.mp4"
+    path.write_bytes(b"pretend footage")
+    return path
+
+
+@pytest.fixture
+def scanned(monkeypatch):
+    """Counts how many times the footage is actually scanned."""
+    from app.ui import worker as worker_module
+
+    calls = []
+
+    def fake_scan_footage(source, settings, cancel, on_progress):
+        calls.append(settings)
+        crop = np.full((4, 4, 3), 3, dtype=np.uint8)
+        group = FaceIdentityGroup(group_id=1, observations=[observation(1.0)])
+        group.representative_embedding = np.ones(512, dtype=np.float32) / np.sqrt(512)
+        group.representative_observation = FaceObservation(
+            embedding=group.representative_embedding,
+            detection=FaceDetection(box=BoundingBox(0, 0, 4, 4), confidence=0.9),
+            face_crop=crop,
+            source_timestamp=1.0,
+            frame_index=1,
+        )
+        group.observations = [group.representative_observation]
+        return FakePipelineResult([group]), 120.0, 3
+
+    monkeypatch.setattr(worker_module, "_scan_footage", fake_scan_footage)
+    monkeypatch.setattr(worker_module, "fetch_models", lambda **kwargs: None)
+    return calls
+
+
+def test_a_second_scan_of_the_same_video_reuses_the_first(footage, scanned):
+    from app.ui.worker import scan
+
+    first = scan(footage)
+    first.close()
+    second = scan(footage)
+    second.close()
+
+    assert len(scanned) == 1
+    assert first.reused is False
+    assert second.reused is True
+    assert [p.detection_count for p in second.people] == [
+        p.detection_count for p in first.people
+    ]
+
+
+def test_a_reused_scan_reports_what_the_original_cost(footage, scanned):
+    from app.ui.worker import scan
+
+    scan(footage).close()
+    reused = scan(footage)
+    reused.close()
+
+    assert reused.original_seconds > 0
+    assert reused.frame_count == 120
+    assert reused.detection_count == 9
+    assert reused.min_detections == 3
+
+
+def test_different_settings_are_a_different_scan(footage, scanned):
+    from app.ui.worker import scan
+
+    scan(footage, ScanSettings(sample_interval=0.5)).close()
+    scan(footage, ScanSettings(sample_interval=1.0)).close()
+
+    assert len(scanned) == 2
+
+
+def test_a_rescan_can_be_demanded(footage, scanned):
+    from app.ui.worker import scan
+
+    scan(footage).close()
+    again = scan(footage, use_cache=False)
+    again.close()
+
+    assert len(scanned) == 2
+    assert again.reused is False
+
+
+def test_the_models_are_not_fetched_for_a_scan_that_will_be_reused(
+    footage, scanned, monkeypatch
+):
+    """A reused scan detects and embeds nothing, so a machine that has
+    never downloaded the models can still open a video it already knows."""
+    from app.ui import worker as worker_module
+
+    scan_module = worker_module.scan
+    scan_module(footage).close()
+
+    def refuse(**kwargs):
+        raise AssertionError("the models were fetched for a reused scan")
+
+    monkeypatch.setattr(worker_module, "fetch_models", refuse)
+    reused = scan_module(footage)
+    reused.close()
+
+    assert reused.reused is True

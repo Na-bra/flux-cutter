@@ -36,6 +36,9 @@ from app.faces.grouper import (
 )
 from app.main import run_identity_pipeline
 from app.models import MODELS, ensure_model, find_model
+from app.scans import CachedScan, cache_key
+from app.scans import load as load_scan
+from app.scans import save as save_scan
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.modes import DEFAULT_MODE
 from app.video.cutter import cut_segments
@@ -218,6 +221,12 @@ class ScanResult:
     min_detections: int = 0
     elapsed_seconds: float = 0.0
     source: VideoSource | None = None
+    # True when this came back from the scan cache rather than being
+    # computed. The window says so: an instant result that looks like a
+    # fresh scan invites the suspicion that it did not really look.
+    reused: bool = False
+    # How long the original scan took, when this was reused.
+    original_seconds: float = 0.0
 
     def close(self) -> None:
         """Releases the footage handle. Safe to call more than once."""
@@ -278,6 +287,7 @@ def scan(
     on_progress=None,
     cancel: threading.Event | None = None,
     on_download=None,
+    use_cache: bool = True,
 ) -> ScanResult:
     """Finds every distinct person in a video.
 
@@ -291,6 +301,8 @@ def scan(
             during a model download.
         on_download: Called as (description, fraction, done, total) while a
             model is being fetched on first run.
+        use_cache: Whether a kept scan of the same video under the same
+            settings may be reused, and this one kept (app/scans.py).
 
     Raises:
         Cancelled: If `cancel` was set while scanning or downloading.
@@ -299,31 +311,76 @@ def scan(
         VideoLoadError: If the video cannot be opened.
     """
     settings = settings or ScanSettings()
-
-    # Before the video is even opened: a first run should not decode two
-    # minutes of frames and only then discover it has no model to embed
-    # them with.
-    fetch_models(on_progress=on_download, cancel=cancel)
-
     video_path = Path(video_path)
     started = time.monotonic()
+
+    key = cache_key(
+        video_path,
+        sample_interval=settings.sample_interval,
+        confidence_threshold=settings.confidence_threshold,
+        padding_ratio=settings.padding_ratio,
+        similarity_threshold=settings.similarity_threshold,
+        margin_threshold=settings.margin_threshold,
+        consolidation_threshold=settings.consolidation_threshold,
+        min_confidence=settings.min_confidence,
+        min_face_size=settings.min_face_size,
+        min_group_eye_span=settings.min_group_eye_span,
+        mode=settings.mode,
+        forbid_cooccurring=settings.forbid_cooccurring,
+        cooccurrence_similarity_ceiling=settings.cooccurrence_similarity_ceiling,
+        min_detections=settings.min_detections,
+    )
+    kept = load_scan(key) if use_cache else None
+
+    # Consulted before the models are fetched, not after. A reused scan
+    # detects and embeds nothing, so on a machine that has never run one
+    # this is also the difference between opening a known video instantly
+    # and waiting on a 174 MB download to do no work with.
+    if kept is None:
+        fetch_models(on_progress=on_download, cancel=cancel)
 
     # Opened once, held for the life of the result. The descriptor is what
     # lets the export survive the user moving this file while they look
     # through the gallery (app/video/source.py).
     source = VideoSource(video_path)
 
-    try:
-        result, duration, resolved_min_detections = _scan_footage(
-            source, settings, cancel, on_progress
+    if kept is not None:
+        scan = kept
+        duration = scan.video_duration or scan.last_timestamp
+        resolved_min_detections = scan.min_detections
+        if on_progress is not None:
+            on_progress(1.0, duration or 0.0)
+    else:
+        try:
+            result, duration, resolved_min_detections = _scan_footage(
+                source, settings, cancel, on_progress
+            )
+        except BaseException:
+            source.close()
+            raise
+
+        scan = CachedScan(
+            groups=result.grouper.groups,
+            unassigned_count=len(result.grouper.unassigned),
+            total_detections=result.total_detections,
+            track_count=result.track_count,
+            frame_count=result.frame_count,
+            last_timestamp=result.last_timestamp,
+            embedding_time=result.embedding_time,
+            grouping_time=result.grouping_time,
+            video_duration=duration,
+            min_detections=resolved_min_detections,
+            created_at=time.time(),
+            scan_seconds=time.monotonic() - started,
         )
-    except BaseException:
-        source.close()
-        raise
+        # A cancelled scan raises out of _scan_footage above, so anything
+        # reaching here ran to the end of the footage and is complete.
+        if use_cache and scan.frame_count > 0:
+            save_scan(key, scan)
 
     gallery = build_identity_gallery(
-        result.grouper.groups,
-        unassigned_count=len(result.grouper.unassigned),
+        scan.groups,
+        unassigned_count=scan.unassigned_count,
         padding_ratio=settings.padding_ratio,
     )
 
@@ -344,12 +401,14 @@ def scan(
         video_duration=duration,
         sample_interval=settings.sample_interval,
         people=people,
-        frame_count=result.frame_count,
-        detection_count=result.total_detections,
+        frame_count=scan.frame_count,
+        detection_count=scan.total_detections,
         unassigned_count=gallery.unassigned_count,
         min_detections=resolved_min_detections,
         elapsed_seconds=time.monotonic() - started,
         source=source,
+        reused=kept is not None,
+        original_seconds=scan.scan_seconds,
     )
 
 

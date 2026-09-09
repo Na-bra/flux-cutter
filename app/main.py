@@ -19,6 +19,9 @@ from app.faces.grouper import (
 from app.faces.reference import ReferenceError, ReferenceFace, match_reference
 from app.faces.tracker import FaceTracker
 from app.modes import DEFAULT_MODE, get_mode
+from app.scans import CachedScan, cache_key
+from app.scans import load as load_scan
+from app.scans import save as save_scan
 from app.ui.gallery import (
     build_face_gallery,
     build_identity_gallery,
@@ -401,6 +404,125 @@ def run_identity_pipeline(
     )
 
 
+def scan_or_reuse(
+    container,
+    video_path: Path,
+    *,
+    sample_interval: float,
+    confidence_threshold: float,
+    padding_ratio: float,
+    similarity_threshold: float,
+    margin_threshold: float,
+    consolidation_threshold: float,
+    min_confidence: float,
+    min_face_size: int,
+    min_group_eye_span: float,
+    forbid_cooccurring: bool,
+    cooccurrence_similarity_ceiling: float,
+    mode: str,
+    min_detections: int | None,
+    use_cache: bool = True,
+) -> CachedScan:
+    """The scan every grouping command needs, run once and then kept.
+
+    All three commands did the same four things -- sample, resolve the
+    screen-time cutoff, run the pipeline, check something came back -- and
+    then threw the answer away. The documented workflow made that visible:
+    `group` to see the montage, then `export --select-index 0`, which
+    scanned the same footage a second time to reach the same identities.
+
+    A hit here is the same answer, not a similar one: the key covers the
+    file's identity and every setting that can change what comes out
+    (app/scans.py), so there is nothing to verify and nothing to go stale.
+    """
+    video_duration = get_video_info(container)["duration"]
+
+    key = cache_key(
+        video_path,
+        sample_interval=sample_interval,
+        confidence_threshold=confidence_threshold,
+        padding_ratio=padding_ratio,
+        similarity_threshold=similarity_threshold,
+        margin_threshold=margin_threshold,
+        consolidation_threshold=consolidation_threshold,
+        min_confidence=min_confidence,
+        min_face_size=min_face_size,
+        min_group_eye_span=min_group_eye_span,
+        mode=mode,
+        forbid_cooccurring=forbid_cooccurring,
+        cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
+        min_detections=min_detections,
+    )
+
+    if use_cache:
+        kept = load_scan(key)
+        if kept is not None:
+            age = time.time() - kept.created_at
+            print(
+                f"Reusing the scan of {video_path.name} from "
+                f"{_ago(age)} ({kept.scan_seconds:.0f}s of work skipped). "
+                "Pass --rescan to run it again."
+            )
+            return kept
+
+    print(f"Sampling frames at a {sample_interval}-second interval...")
+    resolved_min_detections = _resolve_min_detections(
+        min_detections, video_duration, sample_interval
+    )
+
+    started = time.monotonic()
+    result = run_identity_pipeline(
+        extract_frames(container, sample_interval=sample_interval),
+        confidence_threshold=confidence_threshold,
+        padding_ratio=padding_ratio,
+        similarity_threshold=similarity_threshold,
+        margin_threshold=margin_threshold,
+        consolidation_threshold=consolidation_threshold,
+        min_confidence=min_confidence,
+        min_face_size=min_face_size,
+        min_group_eye_span=min_group_eye_span,
+        forbid_cooccurring=forbid_cooccurring,
+        cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
+        mode=mode,
+        min_detections=resolved_min_detections,
+    )
+    scan_seconds = time.monotonic() - started
+
+    scan = CachedScan(
+        groups=result.grouper.groups,
+        unassigned_count=len(result.grouper.unassigned),
+        total_detections=result.total_detections,
+        track_count=result.track_count,
+        frame_count=result.frame_count,
+        last_timestamp=result.last_timestamp,
+        embedding_time=result.embedding_time,
+        grouping_time=result.grouping_time,
+        video_duration=video_duration,
+        min_detections=resolved_min_detections,
+        created_at=time.time(),
+        scan_seconds=scan_seconds,
+    )
+
+    # Only worth keeping if there is something in it. A scan that found no
+    # frames is a video that could not be read, and storing that would
+    # cache the failure rather than the work.
+    if scan.frame_count > 0:
+        save_scan(key, scan)
+
+    return scan
+
+
+def _ago(seconds: float) -> str:
+    """A rough age, for saying when a reused scan was made."""
+    if seconds < 90:
+        return "moments ago"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} minutes ago"
+    if seconds < 172800:
+        return f"{seconds / 3600:.0f} hours ago"
+    return f"{seconds / 86400:.0f} days ago"
+
+
 def run_face_grouping(
     container,
     output_dir: Path,
@@ -418,22 +540,18 @@ def run_face_grouping(
     mode: str,
     min_detections: int | None,
     select_index: int | None,
+    video_path: Path | None = None,
+    use_cache: bool = True,
 ):
     """Detect, embed, and group faces into per-identity clusters."""
-    print(f"Sampling frames at a {sample_interval}-second interval...")
-    frames = extract_frames(container, sample_interval=sample_interval)
-
-    video_duration = get_video_info(container)["duration"]
-    resolved_min_detections = _resolve_min_detections(
-        min_detections, video_duration, sample_interval
-    )
-
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving identity gallery output to: {output_dir.resolve()}")
 
     start_time = time.monotonic()
-    result = run_identity_pipeline(
-        frames,
+    result = scan_or_reuse(
+        container,
+        video_path if video_path is not None else Path("unknown"),
+        sample_interval=sample_interval,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
         similarity_threshold=similarity_threshold,
@@ -445,7 +563,8 @@ def run_face_grouping(
         forbid_cooccurring=forbid_cooccurring,
         cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
         mode=mode,
-        min_detections=resolved_min_detections,
+        min_detections=min_detections,
+        use_cache=use_cache and video_path is not None,
     )
 
     if result.frame_count == 0:
@@ -453,8 +572,8 @@ def run_face_grouping(
         return
 
     identity_gallery = build_identity_gallery(
-        result.grouper.groups,
-        unassigned_count=len(result.grouper.unassigned),
+        result.groups,
+        unassigned_count=result.unassigned_count,
         padding_ratio=padding_ratio,
     )
     montage_path = output_dir / "identity-gallery.jpg"
@@ -502,18 +621,15 @@ def run_appearance_timestamps(
     select_index: int | None = None,
     reference: ReferenceFace | None = None,
     reference_threshold: float | None = None,
+    video_path: Path | None = None,
+    use_cache: bool = True,
 ):
     """Group faces, then compute appearance intervals for one selected person."""
-    print(f"Sampling frames at a {sample_interval}-second interval...")
-    frames = extract_frames(container, sample_interval=sample_interval)
-    video_duration = get_video_info(container)["duration"]
-    resolved_min_detections = _resolve_min_detections(
-        min_detections, video_duration, sample_interval
-    )
-
     start_time = time.monotonic()
-    result = run_identity_pipeline(
-        frames,
+    result = scan_or_reuse(
+        container,
+        video_path if video_path is not None else Path("unknown"),
+        sample_interval=sample_interval,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
         similarity_threshold=similarity_threshold,
@@ -525,22 +641,25 @@ def run_appearance_timestamps(
         forbid_cooccurring=forbid_cooccurring,
         cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
         mode=mode,
-        min_detections=resolved_min_detections,
+        min_detections=min_detections,
+        use_cache=use_cache and video_path is not None,
     )
 
     if result.frame_count == 0:
         print("No frames extracted.")
         return
 
-    # Resolved only now: the fallback needs the last sampled timestamp, and
-    # with streaming that is not known until the frames have been consumed.
+    # The fallback needs the last sampled timestamp, which with streaming
+    # is not known until the frames have been consumed -- and is stored
+    # with the scan so a reused one answers it too.
+    video_duration = result.video_duration
     if video_duration is None:
         video_duration = result.last_timestamp
         print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
 
     identity_gallery = build_identity_gallery(
-        result.grouper.groups,
-        unassigned_count=len(result.grouper.unassigned),
+        result.groups,
+        unassigned_count=result.unassigned_count,
         padding_ratio=padding_ratio,
     )
 
@@ -610,18 +729,14 @@ def run_export(
     select_index: int | None = None,
     reference: ReferenceFace | None = None,
     reference_threshold: float | None = None,
+    use_cache: bool = True,
 ):
     """Groups faces, then cuts one person's appearances into a single reel."""
-    print(f"Sampling frames at a {sample_interval}-second interval...")
-    frames = extract_frames(container, sample_interval=sample_interval)
-    video_duration = get_video_info(container)["duration"]
-    resolved_min_detections = _resolve_min_detections(
-        min_detections, video_duration, sample_interval
-    )
-
     start_time = time.monotonic()
-    result = run_identity_pipeline(
-        frames,
+    result = scan_or_reuse(
+        container,
+        video_path,
+        sample_interval=sample_interval,
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
         similarity_threshold=similarity_threshold,
@@ -633,20 +748,22 @@ def run_export(
         forbid_cooccurring=forbid_cooccurring,
         cooccurrence_similarity_ceiling=cooccurrence_similarity_ceiling,
         mode=mode,
-        min_detections=resolved_min_detections,
+        min_detections=min_detections,
+        use_cache=use_cache,
     )
 
     if result.frame_count == 0:
         print("No frames extracted.")
         return
 
+    video_duration = result.video_duration
     if video_duration is None:
         video_duration = result.last_timestamp
         print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
 
     identity_gallery = build_identity_gallery(
-        result.grouper.groups,
-        unassigned_count=len(result.grouper.unassigned),
+        result.groups,
+        unassigned_count=result.unassigned_count,
         padding_ratio=padding_ratio,
     )
 

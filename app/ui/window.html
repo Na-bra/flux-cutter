@@ -396,7 +396,14 @@
     state.selected = null;
     $("exportBtn").disabled = true;
     $("statusTime").textContent = d.elapsed.toFixed(0) + "s";
-    status("<b>Scan complete.</b> " + d.people.length + " people in " + d.frames + " sampled frames.");
+    // A scan that comes back instantly reads as one that did not look, so
+    // say it was reused and what that saved.
+    status(
+      (d.reused
+        ? "<b>Reused an earlier scan.</b> " + Math.round(d.originalSeconds) + "s of work skipped \u2014 "
+        : "<b>Scan complete.</b> ") +
+      d.people.length + " people in " + d.frames + " sampled frames."
+    );
     $("galleryMeta").textContent = "sorted by screen time";
 
     if (!d.people.length) {

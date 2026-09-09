@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
@@ -7,6 +8,10 @@ if __package__ in (None, ""):
 
 from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
 from app.faces.reference import ReferenceError, load_reference_face
+from app.scans import clear as clear_scans
+from app.scans import entries as scan_entries
+from app.scans import scan_cache_dir
+from app.scans import total_bytes as scan_total_bytes
 from app.faces.grouper import (
     DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     DEFAULT_CONSOLIDATION_THRESHOLD,
@@ -282,6 +287,11 @@ def main():
         "least 3 seconds of screen time).",
     )
     group_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
+    group_parser.add_argument(
         "--select-index",
         type=int,
         default=None,
@@ -394,6 +404,11 @@ def main():
         "least 3 seconds of screen time).",
     )
     timestamps_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
+    timestamps_parser.add_argument(
         "--select-index",
         type=int,
         default=None,
@@ -464,6 +479,11 @@ def main():
         "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
     )
     export_parser.add_argument("--min-detections", type=int, default=None)
+    export_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
     export_parser.add_argument("--gap-tolerance", type=float, default=None)
     export_parser.add_argument("--appearance-padding", type=float, default=None)
     export_parser.add_argument(
@@ -501,6 +521,18 @@ def main():
     )
     export_parser.add_argument(
         "--no-audio", action="store_true", help="Drop the source audio."
+    )
+
+    # 'scans' command
+    scans_parser = subparsers.add_parser(
+        "scans", help="Inspect or delete the scans FluxCutter has kept."
+    )
+    scans_parser.add_argument(
+        "action",
+        nargs="?",
+        default="show",
+        choices=["show", "clear"],
+        help="'show' lists what is kept, 'clear' deletes all of it.",
     )
 
     # 'batch' command
@@ -556,6 +588,11 @@ def main():
         "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
     )
     batch_parser.add_argument("--min-detections", type=int, default=None)
+    batch_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
     batch_parser.add_argument("--gap-tolerance", type=float, default=None)
     batch_parser.add_argument("--appearance-padding", type=float, default=None)
     batch_parser.add_argument(
@@ -633,6 +670,23 @@ def main():
             found = find_model(spec)
             where = str(found.parent) if found else "not present - will download on first use"
             print(f"  {spec.description} ({spec.size_label})\n    {where}")
+        return
+
+    if args.command == "scans":
+        if args.action == "clear":
+            removed = clear_scans()
+            print(f"Removed {removed} kept scan(s) from {scan_cache_dir()}.")
+            return
+
+        kept = scan_entries()
+        print(f"Scan cache: {scan_cache_dir()}")
+        if not kept:
+            print("  nothing kept yet")
+            return
+        for entry in kept:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.modified))
+            print(f"  {when}  {entry.size_bytes / 1e6:7.1f} MB  {entry.path.name}")
+        print(f"  {len(kept)} scan(s), {scan_total_bytes() / 1e6:.1f} MB total")
         return
 
     if args.command == "ui":
@@ -719,6 +773,8 @@ def main():
                     mode=args.mode,
                     min_detections=args.min_detections,
                     select_index=args.select_index,
+                    video_path=args.video_path,
+                    use_cache=not args.rescan,
                 )
             elif args.command == "export":
                 run_export(
@@ -750,6 +806,7 @@ def main():
                     select_index=args.select_index,
                     reference=reference,
                     reference_threshold=args.reference_threshold,
+                    use_cache=not args.rescan,
                 )
             elif args.command == "timestamps":
                 run_appearance_timestamps(
@@ -772,6 +829,8 @@ def main():
                     select_index=args.select_index,
                     reference=reference,
                     reference_threshold=args.reference_threshold,
+                    video_path=args.video_path,
+                    use_cache=not args.rescan,
                 )
 
     except (VideoLoadError, SelectionError, CutterError, ReferenceError) as e:

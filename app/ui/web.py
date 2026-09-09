@@ -274,6 +274,11 @@ class Bridge:
             "unassigned": result.unassigned_count,
             "elapsed": result.elapsed_seconds,
             "videoName": result.video_path.name,
+            # An instant gallery looks like a scan that did not really
+            # look, so the window says when it reused one and what that
+            # saved rather than leaving the speed unexplained.
+            "reused": result.reused,
+            "originalSeconds": result.original_seconds,
         }
 
     # ----------------------------------------------------------- selection
