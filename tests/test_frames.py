@@ -3,7 +3,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app.video.frames import FrameExtractionError, extract_frames
+from app.video.frames import (
+    FrameExtractionError,
+    extract_frames,
+    skip_nonreference_frames,
+)
 from app.video.loader import load_video
 
 VIDEO_PATH = Path(__file__).resolve().parents[1] / "assets" / "test-videos" / "test.mp4"
@@ -204,3 +208,88 @@ def test_sampling_does_not_drift_over_a_long_timeline():
 
     assert len(got) == 600
     assert got[-1] == pytest.approx(599.0, abs=1 / 30)
+
+
+# --------------------------------------------- skipping non-reference frames
+
+
+class FakeCodecContext:
+    def __init__(self):
+        self.skip_frame = "DEFAULT"
+
+
+class SkippableContainer(FakeContainer):
+    """A fake whose stream carries a codec context, like a real one does."""
+
+    class _Stream:
+        type = "video"
+
+        def __init__(self):
+            self.codec_context = FakeCodecContext()
+
+    def __init__(self, times):
+        super().__init__(times)
+        self.streams = [self._Stream()]
+
+
+@pytest.mark.runs_without_assets
+def test_non_reference_frames_are_skipped_by_default():
+    container = SkippableContainer([i / 24 for i in range(48)])
+    stream = container.streams[0]
+
+    seen = []
+    for _ in extract_frames(container, sample_interval=1.0):
+        seen.append(stream.codec_context.skip_frame)
+
+    assert seen and all(value == "NONREF" for value in seen)
+
+
+@pytest.mark.runs_without_assets
+def test_the_decoder_is_put_back_the_way_it_was_found():
+    """The container belongs to the caller, who may want every frame next."""
+    container = SkippableContainer([i / 24 for i in range(48)])
+    stream = container.streams[0]
+
+    list(extract_frames(container, sample_interval=1.0))
+
+    assert stream.codec_context.skip_frame == "DEFAULT"
+
+
+@pytest.mark.runs_without_assets
+def test_exact_sampling_can_be_asked_for():
+    container = SkippableContainer([i / 24 for i in range(48)])
+    stream = container.streams[0]
+
+    seen = []
+    for _ in extract_frames(container, sample_interval=1.0, skip_nonreference=False):
+        seen.append(stream.codec_context.skip_frame)
+
+    assert seen and all(value == "DEFAULT" for value in seen)
+
+
+@pytest.mark.runs_without_assets
+def test_a_decoder_that_refuses_the_setting_is_not_a_failure():
+    """FakeContainer's stream has no codec context at all, which stands in
+    for any decoder that will not take the hint. Sampling must still run."""
+    times = [i / 24 for i in range(48)]
+
+    assert sampled_times(times, 1.0) == [0.0, 1.0]
+    assert skip_nonreference_frames(FakeContainer(times).streams[0]) is False
+
+
+def test_skipping_changes_nothing_on_all_intra_footage(video_container):
+    """test.mp4 is nearly all keyframes, so it has no frames to skip.
+
+    The sampled timestamps have to be identical either way -- this is the
+    case where the optimisation must be a no-op rather than a trade.
+    """
+    exact = [t for t, _ in extract_frames(video_container, sample_interval=1.0,
+                                          skip_nonreference=False)]
+
+    container = load_video(VIDEO_PATH)
+    try:
+        skipped = [t for t, _ in extract_frames(container, sample_interval=1.0)]
+    finally:
+        container.close()
+
+    assert skipped == exact

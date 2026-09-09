@@ -18,6 +18,8 @@ import json
 from pathlib import Path
 
 import numpy as np
+import time
+
 import pytest
 from PIL import Image
 
@@ -135,7 +137,7 @@ def test_selecting_a_face_previews_the_cut(bridge):
     answer = bridge.select_person(1, "reel.mp4")
 
     assert answer["accepted"] is True
-    assert answer["index"] == 1
+    assert answer["indexes"] == [1]
     assert answer["cuts"] >= 1
     assert ":" in answer["reel"]
     assert "cuts" in answer["summary"]
@@ -179,10 +181,10 @@ def test_an_untouched_filename_follows_the_selection(bridge):
     bridge._scan_result = make_scan_result()
 
     first = bridge.select_person(0, "reel.mp4")["filename"]
-    second = bridge.select_person(2, first)["filename"]
+    both = bridge.select_person(2, first)["filename"]
 
     assert first == "documentary-person-1.mp4"
-    assert second == "documentary-person-3.mp4"
+    assert both == "documentary-person-1+3.mp4"
 
 
 def test_a_hand_typed_filename_survives_changing_the_selection(bridge):
@@ -379,3 +381,208 @@ def test_the_frozen_build_reads_the_page_from_the_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(web.sys, "_MEIPASS", str(bundled), raising=False)
 
     assert web._page() == "<title>from the bundle</title>"
+
+
+# ------------------------------------------------------- several at once
+
+
+def test_a_second_card_joins_the_first_rather_than_replacing_it(bridge):
+    """"Every scene either lead is in" is one reel, and a thing people ask
+    for. Clicking used to displace the previous choice."""
+    bridge._scan_result = make_scan_result()
+
+    bridge.select_person(0, "reel.mp4")
+    answer = bridge.select_person(2, "reel.mp4")
+
+    assert answer["indexes"] == [0, 2]
+    assert answer["name"] == "People #1 and #3"
+    assert "People #1 and #3 selected" in answer["summary"]
+
+
+def test_clicking_a_chosen_card_again_removes_it(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "reel.mp4")
+    bridge.select_person(2, "reel.mp4")
+
+    answer = bridge.select_person(0, "reel.mp4")
+
+    assert answer["indexes"] == [2]
+
+
+def test_clearing_the_last_card_leaves_nothing_to_export(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(1, "reel.mp4")
+
+    answer = bridge.select_person(1, "reel.mp4")
+
+    assert answer["accepted"] is True
+    assert answer["indexes"] == []
+    assert bridge.start_export("/tmp", "reel.mp4", "libx264", "Standard") == {
+        "started": False,
+        "reason": "Choose a person first.",
+    }
+
+
+def test_the_selection_is_named_however_many_there_are(bridge):
+    bridge._scan_result = make_scan_result()
+
+    assert bridge.select_person(0, "")["name"] == "Person #1"
+    assert bridge.select_person(1, "")["name"] == "People #1 and #2"
+    assert bridge.select_person(2, "")["name"] == "People #1, #2 and #3"
+
+
+def test_a_reel_of_two_people_is_at_least_as_long_as_either_alone(bridge):
+    """The union of two appearance timelines cannot be shorter than one."""
+    bridge._scan_result = make_scan_result()
+
+    alone = bridge.select_person(0, "")
+    bridge.select_person(0, "")
+    other = bridge.select_person(2, "")
+    together = bridge.select_person(0, "")
+
+    assert together["indexes"] == [0, 2]
+    assert together["detections"] == alone["detections"] + other["detections"]
+    assert together["reel"] >= max(alone["reel"], other["reel"])
+
+
+# --------------------------------------------------------- the filmstrip
+
+
+def test_a_selection_carries_a_token_for_its_preview(bridge):
+    bridge._scan_result = make_scan_result()
+
+    first = bridge.select_person(0, "")
+    second = bridge.select_person(1, "")
+
+    assert second["token"] > first["token"]
+
+
+def test_a_late_filmstrip_for_an_old_selection_is_dropped(bridge, monkeypatch):
+    """Six seeks can land after the user has clicked again, and drawing
+    them would show frames from a reel that is no longer selected."""
+    emitted = []
+    monkeypatch.setattr(bridge, "_emit", lambda name, payload=None: emitted.append(name))
+    bridge._scan_result = make_scan_result()
+    bridge._selected = [bridge._scan_result.people[0]]
+
+    def clicked_again_while_seeking(result, chosen):
+        bridge._preview_token += 1
+        return [(1.0, Image.new("RGB", (4, 3)))]
+
+    monkeypatch.setattr("app.ui.web.preview_frames", clicked_again_while_seeking)
+    bridge._start_preview()
+
+    time.sleep(0.2)
+    assert "onPreview" not in emitted
+
+
+def test_a_current_filmstrip_is_drawn(bridge, monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        bridge, "_emit", lambda name, payload=None: sent.append((name, payload))
+    )
+    monkeypatch.setattr(
+        "app.ui.web.preview_frames",
+        lambda result, chosen: [(65.0, Image.new("RGB", (4, 3)))],
+    )
+    bridge._scan_result = make_scan_result()
+    bridge._selected = [bridge._scan_result.people[0]]
+
+    bridge._start_preview()
+
+    for _ in range(50):
+        if sent:
+            break
+        time.sleep(0.01)
+    name, payload = sent[0]
+    assert name == "onPreview"
+    assert payload["token"] == bridge._preview_token
+    assert payload["frames"][0]["at"] == "1:05"
+    assert payload["frames"][0]["image"].startswith("data:image/jpeg;base64,")
+
+
+def test_clearing_the_selection_asks_for_no_preview(bridge, monkeypatch):
+    asked = []
+    monkeypatch.setattr(
+        "app.ui.web.preview_frames", lambda result, chosen: asked.append(chosen) or []
+    )
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.select_person(0, "")
+
+    assert answer["indexes"] == []
+    assert "token" not in answer
+
+
+# ------------------------------------------------------------- corrections
+
+
+def test_merging_two_cards_redraws_the_gallery(bridge, monkeypatch):
+    bridge._scan_result = make_scan_result()
+    before = len(bridge._scan_result.people)
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+
+    answer = bridge.edit_people("merge")
+
+    assert answer["applied"] is True
+    assert len(answer["people"]) == before - 1
+    assert "Merged #1, #2" in answer["note"]
+    assert len(bridge._scan_result.people) == before - 1
+
+
+def test_an_edit_clears_the_selection(bridge):
+    """The cards are renumbered, so keeping the old indexes selected would
+    leave the rail describing whoever now happens to sit at that number."""
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+
+    bridge.edit_people("merge")
+
+    assert bridge._selected == []
+
+
+def test_discarding_a_card_removes_it(bridge):
+    bridge._scan_result = make_scan_result()
+    before = len(bridge._scan_result.people)
+    bridge.select_person(1, "")
+
+    answer = bridge.edit_people("discard")
+
+    assert answer["applied"] is True
+    assert len(answer["people"]) == before - 1
+    assert "Discarded #2" in answer["note"]
+
+
+def test_an_edit_needs_a_selection(bridge):
+    bridge._scan_result = make_scan_result()
+
+    assert bridge.edit_people("merge") == {
+        "applied": False,
+        "reason": "Choose a person first.",
+    }
+
+
+def test_an_impossible_edit_says_why_and_changes_nothing(bridge):
+    bridge._scan_result = make_scan_result()
+    before = len(bridge._scan_result.people)
+    bridge.select_person(0, "")
+
+    answer = bridge.edit_people("merge")
+
+    assert answer["applied"] is False
+    assert "two people" in answer["reason"]
+    assert len(bridge._scan_result.people) == before
+
+
+def test_the_gallery_refuses_edits_while_a_job_runs(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+    bridge._worker = AliveWorker()
+
+    answer = bridge.edit_people("merge")
+
+    assert answer["applied"] is False

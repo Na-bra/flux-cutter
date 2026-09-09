@@ -243,6 +243,24 @@ class FaceIdentityGroup:
     observations: list[FaceObservation] = field(default_factory=list)
     representative_embedding: np.ndarray | None = None
     representative_observation: FaceObservation | None = None
+    # How many observations each track contributed, in the order they were
+    # concatenated into `observations`. Recorded because the boundaries
+    # cannot be recovered afterwards, and a track is the only unit here
+    # that is provably one person -- so it is the only honest thing to
+    # split a mistakenly merged group along. Empty when a group was built
+    # by hand rather than by clustering.
+    unit_sizes: list[int] = field(default_factory=list)
+
+    @property
+    def tracks(self) -> list[list[FaceObservation]]:
+        """The group's observations, back in their original tracks."""
+        if not self.unit_sizes:
+            return [list(self.observations)] if self.observations else []
+        tracks, start = [], 0
+        for size in self.unit_sizes:
+            tracks.append(self.observations[start : start + size])
+            start += size
+        return tracks
 
     @property
     def size(self) -> int:
@@ -736,8 +754,13 @@ class IdentityGrouper:
             if member_units is None:
                 continue
 
-            observations = [obs for unit_index in sorted(member_units) for obs in self._units[unit_index]]
-            group = FaceIdentityGroup(group_id=0, observations=observations)
+            ordered = sorted(member_units)
+            observations = [obs for unit_index in ordered for obs in self._units[unit_index]]
+            group = FaceIdentityGroup(
+                group_id=0,
+                observations=observations,
+                unit_sizes=[len(self._units[unit_index]) for unit_index in ordered],
+            )
             self._recompute_group(group)
             groups.append(group)
 
@@ -860,7 +883,16 @@ class IdentityGrouper:
             if member_groups is None:
                 continue
             observations = [obs for i in member_groups for obs in groups[i].observations]
-            group = FaceIdentityGroup(group_id=0, observations=observations)
+            # Track boundaries survive consolidation: the observations are
+            # concatenated group by group, so the tracks concatenate in the
+            # same order. Losing them here would leave exactly the groups
+            # most likely to need splitting -- the consolidated ones -- as
+            # the ones that could not be.
+            group = FaceIdentityGroup(
+                group_id=0,
+                observations=observations,
+                unit_sizes=[size for i in member_groups for size in groups[i].unit_sizes],
+            )
             self._recompute_group(group)
             merged.append(group)
 

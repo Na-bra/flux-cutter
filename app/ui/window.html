@@ -185,6 +185,20 @@
     border-radius: 5px; color: var(--muted); font-size: .76rem; background: var(--surface);
   }
 
+  .fixups { margin-left: auto; display: flex; gap: 5px; }
+  .fixups button { height: 24px; padding: 0 9px; font-size: .74rem; }
+
+  /* The split picker: one shot per track, because a track is the only
+     unit a person's card can honestly be divided along. */
+  .split { margin-top: 12px; border-top: 1px solid var(--rule); padding-top: 11px; }
+  .split-head { margin: 0 0 9px; font-size: .78rem; color: var(--faint); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .split-head b { color: var(--ink); }
+  .split-head button { height: 24px; padding: 0 9px; font-size: .74rem; margin-left: auto; }
+  .split-head button + button { margin-left: 0; }
+  .tracks .card { aspect-ratio: auto; }
+  .tracks img { width: 100%; display: block; border-radius: 3px; }
+  .tracks .at { font-family: var(--mono); font-size: .66rem; color: var(--faint); padding: 3px 4px; display: block; }
+
   /* -------------------------------------------------------- export rail */
 
   .rail { background: var(--surface); border-left: 1px solid var(--rule); padding: 16px 14px; display: flex; flex-direction: column; gap: 13px; overflow-y: auto; min-height: 0; }
@@ -200,6 +214,17 @@
   .picked dl { margin: 8px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: .76rem; }
   .picked dt { font-family: var(--mono); font-size: .68rem; color: var(--faint); }
   .picked dd { margin: 0; font-variant-numeric: tabular-nums; text-align: right; }
+  /* What is actually in the reel. The numbers above say how much; this
+     says whether it is the right person. */
+  .strip { margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .strip figure { margin: 0; position: relative; border-radius: 3px; overflow: hidden; background: var(--sunk); aspect-ratio: 16 / 9; }
+  .strip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .strip figcaption {
+    position: absolute; bottom: 0; right: 0; padding: 1px 3px;
+    font-family: var(--mono); font-size: .58rem; color: #fff;
+    background: rgba(0,0,0,.62); border-top-left-radius: 3px;
+  }
+  .strip .waiting { grid-column: 1 / -1; font-size: .72rem; color: var(--faint); }
 
   .pair { display: grid; grid-template-columns: 1.35fr 1fr; gap: 9px; }
 
@@ -249,8 +274,22 @@
       <div class="gallery-head">
         <h2 id="galleryTitle">Who's in this video</h2>
         <span class="meta" id="galleryMeta"></span>
+        <span class="fixups" id="fixups" hidden>
+          <button class="ghost" id="mergeBtn">Merge</button>
+          <button class="ghost" id="splitBtn">Split…</button>
+          <button class="ghost" id="discardBtn">Not a person</button>
+        </span>
       </div>
       <div class="grid" id="grid" role="group" aria-label="People found"></div>
+      <div class="split" id="split" hidden>
+        <p class="split-head">
+          <b>Which of these is somebody else?</b>
+          Pick the shots that are not the same person, then split them off.
+          <button class="ghost" id="splitDo">Split off</button>
+          <button class="ghost" id="splitCancel">Cancel</button>
+        </p>
+        <div class="grid tracks" id="tracks"></div>
+      </div>
       <p class="unassigned" id="unassigned" hidden></p>
     </div>
 
@@ -264,6 +303,7 @@
           <dt>reel length</dt><dd id="pickedLen">—</dd>
           <dt>detections</dt><dd id="pickedDet">—</dd>
         </dl>
+        <div class="strip" id="strip" hidden></div>
       </div>
 
       <div class="field">
@@ -300,7 +340,7 @@
   const $ = (id) => document.getElementById(id);
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", people: [], selected: null, busy: null };
+  let state = { video: "", people: [], selected: [], busy: null, previewToken: 0 };
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -375,7 +415,7 @@
     state.busy = null;
     $("actionBtn").textContent = "Scan for people";
     $("actionBtn").disabled = false;
-    $("exportBtn").disabled = state.selected === null;
+    $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
   }
 
@@ -392,30 +432,96 @@
   window.onScanned = (d) => {
     idle();
     setBar(1);
-    state.people = d.people;
-    state.selected = null;
-    $("exportBtn").disabled = true;
     $("statusTime").textContent = d.elapsed.toFixed(0) + "s";
-    status("<b>Scan complete.</b> " + d.people.length + " people in " + d.frames + " sampled frames.");
+    // A scan that comes back instantly reads as one that did not look, so
+    // say it was reused and what that saved.
+    status(
+      (d.reused
+        ? "<b>Reused an earlier scan.</b> " + Math.round(d.originalSeconds) + "s of work skipped \u2014 "
+        : "<b>Scan complete.</b> ") +
+      d.people.length + " people in " + d.frames + " sampled frames."
+    );
     $("galleryMeta").textContent = "sorted by screen time";
 
-    if (!d.people.length) {
-      $("grid").innerHTML = "<p>No one found. Try a finer sampling interval.</p>";
-    } else {
-      $("grid").innerHTML = d.people.map((p, i) => `
-        <button class="card" aria-pressed="false" data-i="${p.index}">
-          <img class="thumb" src="${p.thumbnail}" alt="Person ${i+1}">
-          <span class="info">
-            <span class="who">Person ${i+1} <span class="rank">#${i+1}</span></span>
-            <span class="stat">${p.detections} det</span>
-          </span>
-        </button>`).join("");
-    }
+    drawPeople(d);
 
     const u = $("unassigned");
     u.hidden = false;
     u.innerHTML = "<b>" + d.unassigned + " detections unassigned</b> — below the screen-time cutoff, or rejected as non-faces. Nothing is discarded.";
   };
+
+  function drawPeople(d) {
+    state.people = d.people;
+    state.selected = [];
+    $("exportBtn").disabled = true;
+    $("picked").hidden = true;
+    $("strip").hidden = true;
+    $("split").hidden = true;
+    $("fixups").hidden = !d.people.length;
+    updateFixups();
+
+    if (!d.people.length) {
+      $("grid").innerHTML = "<p>No one found. Try a finer sampling interval.</p>";
+      return;
+    }
+    $("grid").innerHTML = d.people.map((p, i) => `
+      <button class="card" aria-pressed="false" data-i="${p.index}">
+        <img class="thumb" src="${p.thumbnail}" alt="Person ${i+1}">
+        <span class="info">
+          <span class="who">Person ${i+1} <span class="rank">#${i+1}</span></span>
+          <span class="stat">${p.detections} det</span>
+        </span>
+      </button>`).join("");
+  }
+
+  // Which corrections the current selection allows. Merge needs two
+  // people, split needs exactly one, discarding needs at least one.
+  function updateFixups() {
+    const n = state.selected.length;
+    $("mergeBtn").disabled = n < 2;
+    $("splitBtn").disabled = n !== 1;
+    $("discardBtn").disabled = n < 1 || n >= state.people.length;
+  }
+
+  async function applyEdit(operation, tracks) {
+    const r = await pywebview.api.edit_people(operation, tracks || []);
+    if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
+    drawPeople(r);
+    status("<b>" + r.note + "</b> " + r.people.length + " people now.");
+  }
+
+  $("mergeBtn").addEventListener("click", () => applyEdit("merge"));
+  $("discardBtn").addEventListener("click", () => applyEdit("discard"));
+
+  $("splitBtn").addEventListener("click", async () => {
+    const r = await pywebview.api.tracks_of(state.selected[0]);
+    if (!r.tracks.length) {
+      status("<b>Nothing to split.</b> This person was seen in one unbroken run.");
+      return;
+    }
+    $("tracks").innerHTML = r.tracks.map(t => `
+      <button class="card" aria-pressed="false" data-t="${t.track}">
+        <img src="${t.image}" alt="A shot at ${t.at}">
+        <span class="at">${t.at}</span>
+      </button>`).join("");
+    $("split").hidden = false;
+  });
+
+  $("splitCancel").addEventListener("click", () => { $("split").hidden = true; });
+
+  $("tracks").addEventListener("click", (e) => {
+    const card = e.target.closest(".card");
+    if (!card) return;
+    card.setAttribute("aria-pressed", card.getAttribute("aria-pressed") !== "true");
+  });
+
+  $("splitDo").addEventListener("click", () => {
+    const picked = [...document.querySelectorAll("#tracks .card[aria-pressed='true']")]
+      .map(c => Number(c.dataset.t));
+    if (!picked.length) { status("<b>Pick the shots that are somebody else.</b>"); return; }
+    $("split").hidden = true;
+    applyEdit("split", picked);
+  });
 
   $("grid").addEventListener("click", async (e) => {
     const card = e.target.closest(".card");
@@ -423,16 +529,54 @@
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
     if (!r.accepted) return;
 
-    document.querySelectorAll(".card").forEach(c => c.setAttribute("aria-pressed", c === card));
-    state.selected = r.index;
+    // Clicking is a toggle: a second card joins the first rather than
+    // replacing it, so "every scene either lead is in" is one reel.
+    state.selected = r.indexes;
+    updateFixups();
+    document.querySelectorAll("#grid .card").forEach(c =>
+      c.setAttribute("aria-pressed", r.indexes.includes(Number(c.dataset.i)))
+    );
+
+    if (!r.indexes.length) {
+      $("picked").hidden = true;
+      $("strip").hidden = true;
+      $("foot").textContent = "Choose a person to export.";
+      $("exportBtn").disabled = true;
+      return;
+    }
+
     $("picked").hidden = false;
-    $("pickedName").textContent = "Person " + (r.index + 1);
+    $("pickedName").textContent = r.name;
     $("pickedTime").textContent = r.onScreen;
     $("pickedCuts").textContent = r.cuts;
     $("pickedLen").textContent = r.reel;
     $("pickedDet").textContent = r.detections;
     if (r.filename) $("fname").value = r.filename;
-    $("foot").textContent = "Cuts " + r.cuts + " segments and joins them into one file.";
+    $("foot").textContent =
+      "Cuts " + r.cuts + " segments and joins them into one file." +
+      (r.indexes.length > 1 ? " Any scene with any of them." : "");
     $("exportBtn").disabled = false;
+
+    state.previewToken = r.token;
+    const strip = $("strip");
+    strip.hidden = false;
+    strip.innerHTML = '<p class="waiting">Reading the reel…</p>';
   });
+
+  // Frames from the reel itself, so the numbers above are not the only
+  // thing standing between a click and a multi-minute encode.
+  window.onPreview = (d) => {
+    if (d.token !== state.previewToken) return;
+    const strip = $("strip");
+    if (!d.frames.length) {
+      strip.hidden = true;
+      return;
+    }
+    strip.hidden = false;
+    strip.innerHTML = d.frames.map(f => `
+      <figure>
+        <img src="${f.image}" alt="A frame from the reel at ${f.at}">
+        <figcaption>${f.at}</figcaption>
+      </figure>`).join("");
+  };
 </script>

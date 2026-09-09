@@ -1,11 +1,17 @@
 import argparse
 import sys
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
+from app.faces.reference import ReferenceError, load_reference_face
+from app.scans import clear as clear_scans
+from app.scans import entries as scan_entries
+from app.scans import scan_cache_dir
+from app.scans import total_bytes as scan_total_bytes
 from app.faces.grouper import (
     DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     DEFAULT_CONSOLIDATION_THRESHOLD,
@@ -15,13 +21,16 @@ from app.faces.grouper import (
     DEFAULT_MIN_FACE_SIZE,
     DEFAULT_SIMILARITY_THRESHOLD,
 )
+from app.video.cutter import CutterError
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
     DEFAULT_EXPORT_PADDING_SECONDS,
     DEFAULT_MIN_SEGMENT_SECONDS,
 )
 from app.main import (
+    SelectionError,
     run_appearance_timestamps,
+    run_batch,
     run_export,
     run_face_detection,
     run_face_gallery,
@@ -278,6 +287,11 @@ def main():
         "least 3 seconds of screen time).",
     )
     group_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
+    group_parser.add_argument(
         "--select-index",
         type=int,
         default=None,
@@ -390,10 +404,31 @@ def main():
         "least 3 seconds of screen time).",
     )
     timestamps_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
+    timestamps_parser.add_argument(
         "--select-index",
         type=int,
-        required=True,
-        help="Person card index (as shown by the 'group' command) to compute appearance intervals for.",
+        nargs="+",
+        default=None,
+        help="Person card index (as shown by the 'group' command) to compute "
+        "appearance intervals for. Pass several to combine them. Either "
+        "this or --reference.",
+    )
+    timestamps_parser.add_argument(
+        "--reference",
+        type=Path,
+        default=None,
+        help="Photo of the person, instead of picking a card by index.",
+    )
+    timestamps_parser.add_argument(
+        "--reference-threshold",
+        type=float,
+        default=None,
+        help="Similarity a reference match must clear. Defaults to the mode's "
+        "own grouping threshold.",
     )
 
     # 'export' command
@@ -410,8 +445,25 @@ def main():
     export_parser.add_argument(
         "--select-index",
         type=int,
-        required=True,
-        help="Person card index (as shown by the 'group' command) to export.",
+        nargs="+",
+        default=None,
+        help="Person card index (as shown by the 'group' command) to export. "
+        "Pass several to cut every scene any of them is in. Either this "
+        "or --reference.",
+    )
+    export_parser.add_argument(
+        "--reference",
+        type=Path,
+        default=None,
+        help="Photo of the person to export, instead of picking a card by "
+        "index. The scan's identities are matched against the face in it.",
+    )
+    export_parser.add_argument(
+        "--reference-threshold",
+        type=float,
+        default=None,
+        help="Similarity a reference match must clear. Defaults to the mode's "
+        "own grouping threshold.",
     )
     export_parser.add_argument(
         "--interval", type=float, default=0.5,
@@ -431,6 +483,11 @@ def main():
         "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
     )
     export_parser.add_argument("--min-detections", type=int, default=None)
+    export_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
     export_parser.add_argument("--gap-tolerance", type=float, default=None)
     export_parser.add_argument("--appearance-padding", type=float, default=None)
     export_parser.add_argument(
@@ -470,6 +527,94 @@ def main():
         "--no-audio", action="store_true", help="Drop the source audio."
     )
 
+    # 'scans' command
+    scans_parser = subparsers.add_parser(
+        "scans", help="Inspect or delete the scans FluxCutter has kept."
+    )
+    scans_parser.add_argument(
+        "action",
+        nargs="?",
+        default="show",
+        choices=["show", "clear"],
+        help="'show' lists what is kept, 'clear' deletes all of it.",
+    )
+
+    # 'batch' command
+    batch_parser = subparsers.add_parser(
+        "batch",
+        help="Cut one person's reel out of every video in a folder, from a photo.",
+    )
+    batch_parser.add_argument(
+        "video_paths",
+        type=Path,
+        nargs="+",
+        help="Videos, folders of videos, or a mix of both.",
+    )
+    batch_parser.add_argument(
+        "--reference",
+        type=Path,
+        required=True,
+        help="Photo of the person to cut out of every video.",
+    )
+    batch_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("output/batch"),
+        help="Where the reels are written, one per video.",
+    )
+    batch_parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Search folders for videos at any depth, not just the top level.",
+    )
+    batch_parser.add_argument(
+        "--reference-threshold",
+        type=float,
+        default=None,
+        help="Similarity a reference match must clear. Defaults to the mode's "
+        "own grouping threshold.",
+    )
+    batch_parser.add_argument(
+        "--interval", type=float, default=0.5,
+        help="Interval in seconds between sampled frames.",
+    )
+    batch_parser.add_argument("--confidence-threshold", type=float, default=None)
+    batch_parser.add_argument("--padding", type=float, default=0.08)
+    batch_parser.add_argument("--similarity-threshold", type=float, default=None)
+    batch_parser.add_argument("--margin-threshold", type=float, default=DEFAULT_MARGIN_THRESHOLD)
+    batch_parser.add_argument("--consolidation-threshold", type=float, default=None)
+    batch_parser.add_argument("--min-confidence", type=float, default=None)
+    batch_parser.add_argument("--min-face-size", type=int, default=None)
+    batch_parser.add_argument("--min-group-eye-span", type=float, default=None)
+    batch_parser.add_argument("--mode", choices=mode_ids(), default=None)
+    batch_parser.add_argument("--allow-cooccurring-identities", action="store_true")
+    batch_parser.add_argument(
+        "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
+    )
+    batch_parser.add_argument("--min-detections", type=int, default=None)
+    batch_parser.add_argument(
+        "--rescan",
+        action="store_true",
+        help="Scan the footage again instead of reusing a kept scan.",
+    )
+    batch_parser.add_argument("--gap-tolerance", type=float, default=None)
+    batch_parser.add_argument("--appearance-padding", type=float, default=None)
+    batch_parser.add_argument(
+        "--bridge-gap", type=float, default=DEFAULT_BRIDGE_GAP_SECONDS
+    )
+    batch_parser.add_argument(
+        "--min-segment", type=float, default=DEFAULT_MIN_SEGMENT_SECONDS
+    )
+    batch_parser.add_argument(
+        "--export-padding", type=float, default=DEFAULT_EXPORT_PADDING_SECONDS
+    )
+    batch_parser.add_argument("--encoder", default="libx264")
+    batch_parser.add_argument("--audio-encoder", default="aac")
+    batch_parser.add_argument("--quality", type=int, default=20)
+    batch_parser.add_argument(
+        "--no-audio", action="store_true", help="Drop the source audio."
+    )
+
     args = parser.parse_args()
 
     # Commands that group faces inherit their thresholds from the chosen
@@ -477,6 +622,38 @@ def main():
     # mode and are left alone.
     if hasattr(args, "similarity_threshold"):
         resolve_mode_settings(args)
+
+    # Both ways of naming a person are checked before anything long starts.
+    # "Choose a person" is a parse-time complaint, and discovering it after
+    # a seven-minute scan -- which is where it surfaced until this ran here
+    # -- is the same mistake as validating the photo late.
+    if args.command in ("export", "timestamps"):
+        if args.select_index is None and args.reference is None:
+            parser.error(
+                "choose a person to export: --select-index N (from the "
+                "'group' command) or --reference photo.jpg"
+            )
+        if args.select_index is not None and args.reference is not None:
+            parser.error(
+                "--select-index and --reference both name a person; pass one"
+            )
+
+    # Read the photograph before anything long starts. Detecting and
+    # embedding one face takes a second or two, and a photo with nobody in
+    # it is far better discovered now than after a scan has spent seven
+    # minutes earning the right to fail.
+    reference = None
+    if getattr(args, "reference", None) is not None:
+        try:
+            reference = load_reference_face(args.reference, mode=args.mode)
+        except ReferenceError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            sys.exit(1)
+        if reference.face_count > 1:
+            print(
+                f"{args.reference.name} holds {reference.face_count} faces; "
+                "matching on the largest."
+            )
 
     if args.command == "models":
         if args.action == "clear":
@@ -499,12 +676,63 @@ def main():
             print(f"  {spec.description} ({spec.size_label})\n    {where}")
         return
 
+    if args.command == "scans":
+        if args.action == "clear":
+            removed = clear_scans()
+            print(f"Removed {removed} kept scan(s) from {scan_cache_dir()}.")
+            return
+
+        kept = scan_entries()
+        print(f"Scan cache: {scan_cache_dir()}")
+        if not kept:
+            print("  nothing kept yet")
+            return
+        for entry in kept:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.modified))
+            print(f"  {when}  {entry.size_bytes / 1e6:7.1f} MB  {entry.path.name}")
+        print(f"  {len(kept)} scan(s), {scan_total_bytes() / 1e6:.1f} MB total")
+        return
+
     if args.command == "ui":
         # Imported here rather than at module scope so the other commands
         # keep working on a machine with no Tk bindings installed.
         from app.ui.web import launch
 
         launch(args.video_path)
+        return
+
+    if args.command == "batch":
+        run_batch(
+            args.video_paths,
+            reference=reference,
+            output_dir=args.output_dir,
+            recursive=args.recursive,
+            reference_threshold=args.reference_threshold,
+            export_settings=dict(
+                sample_interval=args.interval,
+                confidence_threshold=args.confidence_threshold,
+                padding_ratio=args.padding,
+                similarity_threshold=args.similarity_threshold,
+                margin_threshold=args.margin_threshold,
+                consolidation_threshold=args.consolidation_threshold,
+                min_confidence=args.min_confidence,
+                min_face_size=args.min_face_size,
+                min_group_eye_span=args.min_group_eye_span,
+                forbid_cooccurring=not args.allow_cooccurring_identities,
+                cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
+                mode=args.mode,
+                min_detections=args.min_detections,
+                gap_tolerance_seconds=args.gap_tolerance,
+                appearance_padding_seconds=args.appearance_padding,
+                bridge_gap_seconds=args.bridge_gap,
+                min_segment_seconds=args.min_segment,
+                export_padding_seconds=args.export_padding,
+                video_encoder=args.encoder,
+                audio_encoder=args.audio_encoder,
+                quality=args.quality,
+                include_audio=not args.no_audio,
+            ),
+        )
         return
 
     try:
@@ -549,6 +777,8 @@ def main():
                     mode=args.mode,
                     min_detections=args.min_detections,
                     select_index=args.select_index,
+                    video_path=args.video_path,
+                    use_cache=not args.rescan,
                 )
             elif args.command == "export":
                 run_export(
@@ -578,6 +808,9 @@ def main():
                     quality=args.quality,
                     include_audio=not args.no_audio,
                     select_index=args.select_index,
+                    reference=reference,
+                    reference_threshold=args.reference_threshold,
+                    use_cache=not args.rescan,
                 )
             elif args.command == "timestamps":
                 run_appearance_timestamps(
@@ -598,9 +831,13 @@ def main():
                     gap_tolerance_seconds=args.gap_tolerance,
                     appearance_padding_seconds=args.appearance_padding,
                     select_index=args.select_index,
+                    reference=reference,
+                    reference_threshold=args.reference_threshold,
+                    video_path=args.video_path,
+                    use_cache=not args.rescan,
                 )
 
-    except VideoLoadError as e:
+    except (VideoLoadError, SelectionError, CutterError, ReferenceError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 

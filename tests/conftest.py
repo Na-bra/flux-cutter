@@ -32,6 +32,7 @@ NEEDS_ASSETS = {
     "test_detector",
     "test_embedder",
     "test_frames",
+    "test_reference",
     "test_video",
 }
 
@@ -67,3 +68,16 @@ def pytest_collection_modifyitems(config, items):
             continue
         if item.module.__name__.rsplit(".", 1)[-1] in NEEDS_ASSETS:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def isolated_scan_cache(tmp_path_factory, monkeypatch):
+    """No test writes to the user's own kept scans.
+
+    Autouse rather than opt-in: the cache is consulted deep inside `scan`
+    and the grouping commands, so a test that never mentions it can still
+    reach it. Left to opt in, the first test that did would silently write
+    into the developer's real cache directory -- and, worse, could read a
+    scan from it and pass without doing the work it meant to test.
+    """
+    monkeypatch.setenv("FLUXCUTTER_SCAN_DIR", str(tmp_path_factory.mktemp("scans")))
