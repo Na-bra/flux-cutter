@@ -2199,3 +2199,72 @@ exists.
 `app/faces/visualize_detector.py` was left alone: it is in `.gitignore`
 and was never part of the repository, so it is a local scratch script
 rather than duplicate code shipped with the project.
+
+## 27. Audio drifting behind the picture (`app/video/cutter.py`)
+
+Reported from a real reel: the audio was slower than the video. Measured
+on the file it came from -- 102 cuts of the 22-minute footage -- the audio
+ran **3.288 seconds** longer than the video by the end.
+
+### Both streams are cut together, which is not the same as equally
+
+One decode loop reads video and audio interleaved and filters both against
+the same segment start and end. The trouble is that each stream is cut to
+whole frames *of its own kind*, and those are not the same length: 41.7ms
+of video against 21.3ms of AAC audio at 48kHz. A cut therefore keeps
+slightly more or less of one than the other, depending only on where its
+boundaries happen to fall between frames.
+
+Per cut that is inaudible. What made it audible is that the counters run
+continuously across segments -- they are what makes the reel one timeline
+rather than 102 that each restart at zero -- so every cut's error was added
+to a running total instead of being corrected.
+
+It is a random walk rather than a bias, which is why it hid for so long.
+Cutting the same 120 seconds three ways, before the fix:
+
+    4 segments x 30s    +6.4ms per cut
+    20 segments x 6s    -3.0ms per cut
+    40 segments x 3s    +9.2ms per cut
+
+Short reels come out fine. A two-cut reel measured 13ms out, which nobody
+would notice. The error only becomes visible once there are a hundred of
+them pulling in the same direction for long enough.
+
+### Anchoring the audio to the video's clock
+
+At the end of every segment, the number of audio samples that *should*
+have been written is computed from the total video frames written so far,
+and the audio is brought up to it.
+
+Cumulatively, which is the part that matters. A target computed per
+segment would round 102 times and accumulate its own error; a target
+computed from the running video count means a segment that comes up short
+is simply made up by the next one. The residual is bounded by one encoder
+frame and cannot grow.
+
+Whole encoder frames are emitted and the remainder is left for the next
+segment, because AAC wants 1024 samples and a short frame mid-stream is
+padded by the encoder -- which would add samples and reintroduce the drift
+it is there to prevent.
+
+Two smaller things fall out of the same change. Audio left buffered at a
+cut is now dropped rather than carried across the join, where it belonged
+to time the reel does not contain and came from a different part of the
+source. And a segment whose audio runs out before its picture is padded
+with silence, which is what keeps a video-only tail level.
+
+### After
+
+    4 segments x 30s    -0.017s total
+    20 segments x 6s    -0.017s total
+    40 segments x 3s    -0.017s total
+
+Constant, not per cut: the same 17ms whether the reel has four cuts or
+forty, which is the property that was missing. On the 102-cut reel that
+started this, +3.288s became **-0.018s** -- under one AAC frame.
+
+Checked that the fix is not silence: 31210 audio frames, none silent, mean
+RMS steady across every minute of the reel. Levelling two timelines by
+padding one of them would have passed a duration check and failed the only
+test that matters.

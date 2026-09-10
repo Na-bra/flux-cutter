@@ -128,15 +128,30 @@ class _Counters:
 
 
 class _AudioState:
-    """Resampling and re-framing for the reel's audio.
+    """Resampling and re-framing for the reel's audio, kept level with the picture.
 
     AAC encodes fixed-size frames (1024 samples), while decoded frames come
-    in whatever size the source used, so they have to be rebuffered. One
-    state object spans every segment rather than one per segment, which is
-    also what keeps the audio continuous across the joins.
+    in whatever size the source used, so they have to be rebuffered.
+
+    The harder job is staying in sync. Each stream is cut to whole frames of
+    its own kind, and those are not the same length -- 41.7ms of video
+    against 21.3ms of audio at 48kHz -- so a cut keeps slightly more or less
+    of one than the other. On its own that is inaudible. What made it
+    audible was letting the difference run: the counters continue across
+    segments, so every cut's error was added to a total rather than
+    corrected, and a 102-cut reel finished with its audio 3.3 seconds behind
+    the picture. Per cut it is a random walk, not a bias, which is why short
+    reels looked fine and long ones did not.
+
+    So the audio is anchored to the video's own clock. At the end of every
+    segment the number of samples that *should* have been written is
+    computed from the total video frames written so far -- cumulatively, not
+    per segment, which is the part that matters: a segment that comes up
+    short is made up by the next one instead of being carried forever. The
+    running error stays under one AAC frame and never grows.
     """
 
-    def __init__(self, out_audio):
+    def __init__(self, out_audio, rate: int, frame_rate: Fraction):
         self._encoder = out_audio
         self._resampler = av.AudioResampler(
             format=out_audio.format, layout=out_audio.layout, rate=out_audio.rate
@@ -144,27 +159,73 @@ class _AudioState:
         self._fifo = av.AudioFifo()
         self._frame_size = out_audio.codec_context.frame_size or 1024
         self._time_base = Fraction(1, out_audio.rate)
+        self._rate = rate
+        self._frame_rate = frame_rate
 
-    def write(self, frame, output, counters) -> None:
+    def write(self, frame) -> None:
+        """Buffers one decoded frame. Nothing is encoded until the segment ends.
+
+        Held rather than encoded on arrival because how much of it belongs
+        in the reel is not known until the segment's video has been counted,
+        and an encoded frame cannot be taken back.
+        """
         for resampled in self._resampler.resample(frame):
             resampled.pts = None
             self._fifo.write(resampled)
-            self._drain(output, counters)
 
-    def _drain(self, output, counters, partial: bool = False) -> None:
-        while True:
-            chunk = self._fifo.read(self._frame_size, partial=partial)
+    def _emit(self, chunk, output, counters) -> None:
+        chunk.pts = counters.audio
+        chunk.time_base = self._time_base
+        counters.audio += chunk.samples
+        for packet in self._encoder.encode(chunk):
+            output.mux(packet)
+
+    def _silence(self, samples: int):
+        frame = av.AudioFrame(
+            format=self._encoder.format,
+            layout=self._encoder.layout,
+            samples=samples,
+        )
+        for plane in frame.planes:
+            plane.update(bytes(plane.buffer_size))
+        frame.rate = self._rate
+        return frame
+
+    def align(self, output, counters) -> None:
+        """Levels the audio with the picture at the end of a segment.
+
+        Emits whole encoder frames only. The remainder is under one frame
+        and is settled by the next segment, because the target is derived
+        from the running video count rather than from this segment alone.
+        """
+        wanted = int(round(counters.video * self._rate / float(self._frame_rate)))
+        short = wanted - counters.audio
+
+        while short >= self._frame_size:
+            chunk = self._fifo.read(self._frame_size)
             if chunk is None:
-                return
-            chunk.pts = counters.audio
-            chunk.time_base = self._time_base
-            counters.audio += chunk.samples
-            for packet in self._encoder.encode(chunk):
-                output.mux(packet)
+                break
+            self._emit(chunk, output, counters)
+            short -= self._frame_size
+
+        # Whatever is left in the buffer belongs to time this cut did not
+        # keep, and the next segment's audio comes from elsewhere in the
+        # source -- so it is dropped rather than bled across the join.
+        leftover = self._fifo.samples
+        if leftover:
+            self._fifo.read(leftover, partial=True)
+
+        # The source ran out of audio before the picture did: a video-only
+        # tail, or a stream that ends early. Silence keeps the two level.
+        while short >= self._frame_size:
+            self._emit(self._silence(self._frame_size), output, counters)
+            short -= self._frame_size
 
     def flush(self, output, counters) -> None:
-        """Encodes whatever is left, including a final short frame."""
-        self._drain(output, counters, partial=True)
+        """Encodes the last part-frame, once no more segments are coming."""
+        chunk = self._fifo.read(self._frame_size, partial=True)
+        if chunk is not None:
+            self._emit(chunk, output, counters)
 
 
 def cut_segments(
@@ -245,9 +306,13 @@ def cut_segments(
             output_path, source_video, source_audio, video_encoder, audio_encoder, quality
         )
 
-        audio_state = _AudioState(out_audio) if out_audio is not None else None
         counters = _Counters()
         frame_rate = source_video.average_rate or Fraction(30, 1)
+        audio_state = (
+            _AudioState(out_audio, source_audio.rate, frame_rate)
+            if out_audio is not None
+            else None
+        )
         elapsed = 0.0
 
         try:
@@ -266,6 +331,11 @@ def cut_segments(
                 )
                 elapsed += written
                 exported_seconds += written
+
+                # Levelled at every join rather than at the end, so an
+                # error cannot outlive the segment that produced it.
+                if audio_state is not None:
+                    audio_state.align(output, counters)
 
                 if on_segment is not None:
                     on_segment(index, len(segments), segment)
@@ -359,7 +429,7 @@ def _write_segment(
             for packet in out_video.encode(converted):
                 output.mux(packet)
         elif out_audio is not None and isinstance(frame, av.AudioFrame):
-            audio_state.write(frame, output, counters)
+            audio_state.write(frame)
 
     # What was actually written, which is a frame or so short of the request
     # whenever the segment's end falls between frames.

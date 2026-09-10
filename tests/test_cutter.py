@@ -152,3 +152,86 @@ def test_a_source_whose_footage_is_gone_reports_it(tmp_path):
 
     with pytest.raises(CutterError, match="no longer at"):
         cut_segments(source, spans((1.0, 2.0)), tmp_path / "out.mp4")
+
+
+def audio_and_video_seconds(path: Path) -> tuple[float, float]:
+    """The two timelines a player has to keep together, in seconds.
+
+    Counted rather than read off the container's own duration fields: those
+    are what the muxer claims, and the question here is what was actually
+    written.
+    """
+    import av
+
+    container = av.open(str(path))
+    try:
+        video_stream = container.streams.video[0]
+        audio_stream = container.streams.audio[0]
+        frames = samples = 0
+        for frame in container.decode(video_stream, audio_stream):
+            if isinstance(frame, av.VideoFrame):
+                frames += 1
+            else:
+                samples += frame.samples
+        return (
+            frames / float(video_stream.average_rate),
+            samples / audio_stream.rate,
+        )
+    finally:
+        container.close()
+
+
+def test_the_audio_stays_level_with_the_picture_across_many_cuts(tmp_path):
+    """Every cut keeps whole frames of each kind, and those are not the same
+    length -- 33ms of video against 21ms of audio here. So a cut keeps
+    slightly more or less of one than the other, which is inaudible until
+    the difference is allowed to run: the counters continue across segments,
+    so each cut's error used to be added to a total rather than corrected.
+    A 102-cut reel of the 22-minute footage finished 3.3 seconds out.
+
+    The remaining difference must be under one encoder frame and, more
+    importantly, must not grow with the number of cuts.
+    """
+    output = tmp_path / "many.mp4"
+
+    cut_segments(VIDEO, spans(*[(i * 2.0, i * 2.0 + 1.0) for i in range(10)]), output)
+
+    video_seconds, audio_seconds = audio_and_video_seconds(output)
+    assert abs(audio_seconds - video_seconds) < 0.025
+
+
+def test_the_drift_does_not_grow_with_the_number_of_cuts(tmp_path):
+    """The property that actually matters. One long cut and ten short ones
+    over the same footage must end up equally in sync -- if the error
+    accumulated, the ten-cut version would be roughly ten times worse."""
+    few = tmp_path / "few.mp4"
+    many = tmp_path / "many.mp4"
+
+    cut_segments(VIDEO, spans((0.0, 10.0)), few)
+    cut_segments(VIDEO, spans(*[(i, i + 1.0) for i in range(10)]), many)
+
+    few_video, few_audio = audio_and_video_seconds(few)
+    many_video, many_audio = audio_and_video_seconds(many)
+
+    assert abs(many_audio - many_video) < abs(few_audio - few_video) + 0.025
+
+
+def test_audio_is_not_quietly_replaced_by_silence(tmp_path):
+    """Levelling the two timelines could be 'achieved' by padding, so this
+    checks the reel still carries the sound it was cut from."""
+    import av
+    import numpy as np
+
+    output = tmp_path / "loud.mp4"
+    cut_segments(VIDEO, spans((0.0, 3.0), (5.0, 8.0)), output)
+
+    container = av.open(str(output))
+    try:
+        loudest = 0.0
+        for frame in container.decode(container.streams.audio[0]):
+            data = frame.to_ndarray().astype("float32")
+            loudest = max(loudest, float(np.abs(data).max()))
+    finally:
+        container.close()
+
+    assert loudest > 0.001
