@@ -29,6 +29,8 @@ from app.ui.worker import Person, ScanResult, quality_for
 
 pytest.importorskip("webview")
 
+import webview  # noqa: E402
+
 from app.ui import web  # noqa: E402
 
 
@@ -76,6 +78,7 @@ class FakeWindow:
 
     def __init__(self, dialog=None, confirm=True):
         self.calls = []
+        self.dialogs = []
         self._dialog = dialog
         self._confirm = confirm
 
@@ -83,6 +86,7 @@ class FakeWindow:
         self.calls.append(script)
 
     def create_file_dialog(self, *args, **kwargs):
+        self.dialogs.append(args[0] if args else None)
         return self._dialog
 
     def create_confirmation_dialog(self, title, message):
@@ -713,3 +717,35 @@ def test_a_name_that_could_not_be_a_filename_is_refused(bridge):
 
     assert answer["applied"] is False
     assert "cannot contain" in answer["reason"]
+
+
+# ------------------------------------------------------------- the dialogs
+
+
+def test_the_file_dialogs_use_the_current_pywebview_api(bridge):
+    """pywebview 6 deprecated the OPEN_DIALOG and FOLDER_DIALOG integers in
+    favour of the FileDialog enum, warning on every use and promising to
+    remove them. The enum's members carry the same values, so this pins the
+    call rather than the number it happens to equal."""
+    window = FakeWindow(dialog=["/videos/episode.mp4"])
+    bridge.window = window
+
+    bridge.choose_video()
+    bridge.choose_folder()
+
+    assert window.dialogs == [webview.FileDialog.OPEN, webview.FileDialog.FOLDER]
+    for asked in window.dialogs:
+        assert isinstance(asked, webview.FileDialog)
+
+
+def test_choosing_a_video_reports_the_path(bridge):
+    bridge.window = FakeWindow(dialog=["/videos/episode.mp4"])
+
+    assert bridge.choose_video() == {"path": "/videos/episode.mp4"}
+
+
+def test_cancelling_a_dialog_chooses_nothing(bridge):
+    bridge.window = FakeWindow(dialog=None)
+
+    assert bridge.choose_video() == {"path": None}
+    assert bridge.choose_folder() == {"path": None}

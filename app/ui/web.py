@@ -226,7 +226,7 @@ class Bridge:
 
     def choose_video(self) -> dict:
         chosen = self.window.create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             allow_multiple=False,
             file_types=("Video files (*.mp4;*.mov)", "All files (*.*)"),
         )
@@ -235,7 +235,7 @@ class Bridge:
         return {"path": str(chosen[0])}
 
     def choose_folder(self) -> dict:
-        chosen = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        chosen = self.window.create_file_dialog(webview.FileDialog.FOLDER)
         if not chosen:
             return {"path": None}
         return {"path": str(chosen[0])}
@@ -611,7 +611,7 @@ class Bridge:
             return False
 
         chosen = self.window.create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             allow_multiple=False,
             file_types=("Video files (*.mp4;*.mov)", "All files (*.*)"),
         )
