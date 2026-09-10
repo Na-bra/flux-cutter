@@ -63,7 +63,6 @@ flux-cutter/
 │       └── export.py        # intervals -> cut segments -> one reel
 ├── modes.py             # live action / animation, chosen by the user
 ├── scans.py             # keeping a scan, so a video is not scanned twice
-├── settings.py          # the remembered choice
 ├── assets/
 │   ├── models/
 │   │   ├── face_detection_yunet_2026may.onnx
@@ -424,6 +423,33 @@ commit minutes of encoding on faith. The rail now shows six frames from the
 reel itself, spread across its length. It takes 0.30s on a 22-minute
 episode.
 
+### 15. Naming the people
+
+Cards start as "Person #2", which is a position rather than a person — and
+the position moves every time the gallery is corrected. Select a card,
+press **Name…**, and it keeps that name instead:
+
+- The card shows it, and so does the rail.
+- It names the exported file: `episode-jamie-lee.mp4` rather than
+  `episode-person-2.mp4`.
+- It survives merging, splitting and discarding. Merging keeps the name of
+  whichever card contributed most, so folding a stray half of an actor into
+  the named one keeps the name. Splitting leaves it with whoever stays
+  behind, because a split says "those shots are somebody else".
+- It is stored with the kept scan, so it is still there when the video is
+  reopened.
+
+On the command line a name selects a person, case-insensitively:
+
+```bash
+python -m app export episode.mp4 --select-name "Jamie Lee" --output reel.mp4
+```
+
+That is more durable than `--select-index 0`, which refers to a position
+that any correction can change. Names are limited to 60 characters and
+cannot contain the characters a path cannot carry, since they become part
+of a filename.
+
 ## The desktop window
 
 Everything above is also available as one screen, which is the shorter route if you just want a reel out of a video:
@@ -433,7 +459,7 @@ python -m app ui                                  # or: python -m app.ui
 python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
 ```
 
-Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid merge, split or discard cards the grouping got wrong. Reference photos and batch runs are command-line only for now. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
+Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid name people or merge, split and discard cards the grouping got wrong. Reference photos and batch runs are command-line only for now. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
 
 **Folder** and **File name** are separate fields because they change on different rhythms. A folder is chosen once for a session's worth of reels (**Choose...** opens a directory picker, and a folder that does not exist yet is created on export). The file name follows whichever face is selected — `test_3-person-2.mp4` — but only while it is still the name the app suggested; type your own and it survives clicking through the whole gallery. A missing `.mp4` extension is added for you.
 
@@ -600,7 +626,7 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-389 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections, appearance timelines, export segmentation, reference-photo matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+404 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, reference-photo matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
 
 The tests need no display. `app/ui/worker.py` deliberately imports no toolkit at all, and `app/ui/web.py` keeps every decision on the Python side, so the window's behaviour — which filename to suggest, when to refuse a click, what to do about footage that moved — is tested without opening anything.
 
@@ -634,6 +660,7 @@ The next logical prototype milestones are:
 - ~~merge, split and discard person cards, so a grouping mistake can be corrected without re-tuning thresholds~~
 - ~~cut a reel of several people at once~~
 - ~~see frames from the reel before committing to an encode~~
-- **next:** identities are still "Person #2". Naming them would follow the selection into the filename, persist with the kept scan, and give the batch command something better than an index to report
+- ~~name the people, so a card is a person rather than a position~~
+- **next:** `batch` still reports each video by filename and cuts one reel per episode. A season-wide report — who appears where, and for how long — is the thing the kept scans now make cheap, since every episode's identities are already on disk
 
 This roadmap may evolve as the prototype proves which stages need refinement.

@@ -2119,3 +2119,83 @@ something else:
     split #1 on 2 tracks -> 38 people
     discard the smallest -> 37 people
     reopen the video     -> 37 people, reused
+
+## 25. Naming the people (`rename_group`)
+
+A card said "Person #2", which is a position rather than a person -- and
+the position moves. Every correction in section 24 renumbers the gallery
+largest-first, so the index a user memorised at breakfast means somebody
+else by lunchtime. That is also why `--select-index` was the only durable
+way to name a person on the command line and was not durable at all.
+
+The name lives on the group, not on the card. Everything follows from
+that: it travels through the scan cache, through a merge, through a split,
+and through the renumbering that follows a discard.
+
+### What happens to a name when the group it is on stops existing
+
+- **Merge** keeps the name of whichever card contributed most detections.
+  Folding the stray half of an actor into the named one is the correction
+  this feature exists for, so losing the name there would punish it.
+- **Split** leaves the name with whoever stays behind. A split says "those
+  shots are somebody else", so the person keeping the name is the one the
+  user did not point at.
+- **Discard** takes it with the card.
+
+### A name is a label, but it becomes a filename
+
+`episode-jamie-lee.mp4` says what is in a file in a way
+`episode-person-2.mp4` never did. So the characters a path cannot carry
+are refused when the name is set rather than mangled when the file is
+written, and names are capped at 60 characters.
+
+With nobody named, both the filename and the window's own text keep their
+old compact forms -- `person-1+3`, "People #1 and #2" -- rather than
+becoming `person-1+person-3` and "Person #1 and Person #2". A name is only
+worth spelling out where there is one.
+
+### The third instance of one bug
+
+Renaming deliberately skips the reordering the other edits go through: a
+card must not move out from under the cursor that just named it. That also
+meant it skipped the guarantee added in section 24 that every edited group
+has a cover picture -- and a group without one is dropped by the gallery.
+So renaming somebody in a scan whose groups lacked covers silently emptied
+the gallery.
+
+That is the same defect as before, in a third place, which is the signal
+that it wanted to be one function rather than a line repeated at each
+site. `_with_covers` is now applied by every edit including the one that
+only changes a name.
+
+### Verified on the episode
+
+    38 people, all "Person #N"
+    name #1 "Jamie Lee"      -> label follows
+    merge #1 + #4            -> "Jamie Lee", 702 detections
+    discard #2               -> still named
+    reopen the video         -> reused, still "Jamie Lee"
+
+    python -m app timestamps ... --select-name "jamie lee"
+      -> Jamie Lee, 702 detections, 155 appearance intervals
+
+Matching is case-insensitive, and a name nobody has lists the ones that
+exist rather than failing blankly.
+
+## 26. Removing `app/settings.py`
+
+It remembered per-mode threshold overrides, and nothing read it. The one
+thing it used to decide -- which mode a run used -- was taken away from it
+deliberately in `eac7e4d`, because a mode chosen once in the window
+silently became the default for every later command-line run. After that
+it had no consumer at all: 115 lines of module and 87 of tests, exercised
+only by each other.
+
+The regression test that mattered stays. `test_modes.py` writes a settings
+file and asserts the mode is **not** read back from it, which is the
+behaviour `eac7e4d` established, and it holds whether or not the module
+exists.
+
+`app/faces/visualize_detector.py` was left alone: it is in `.gitignore`
+and was never part of the repository, so it is a local scratch script
+rather than duplicate code shipped with the project.
