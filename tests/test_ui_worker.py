@@ -598,3 +598,92 @@ def test_frames_come_from_inside_the_cuts_not_their_edges(monkeypatch):
 
     assert len(asked) == 1
     assert segments[0].start_time < asked[0] < segments[0].end_time
+
+
+# ------------------------------------------------- choosing tracks to show
+
+
+def track_person(index, tracks):
+    """A person whose group was built from several tracks."""
+    observations = [observation(t) for track in tracks for t in track]
+    group = FaceIdentityGroup(
+        group_id=index + 1,
+        observations=observations,
+        unit_sizes=[len(track) for track in tracks],
+    )
+    return Person(
+        index=index,
+        thumbnail=None,
+        detection_count=len(observations),
+        first_seen=observations[0].source_timestamp,
+        last_seen=observations[-1].source_timestamp,
+        group=group,
+    )
+
+
+def asked_timestamps(monkeypatch, person, **kwargs):
+    from app.ui import worker as worker_module
+
+    asked = []
+    monkeypatch.setattr(
+        worker_module,
+        "_frames_at",
+        lambda result, timestamps, width: asked.extend(timestamps) or [],
+    )
+    worker_module.track_previews(
+        a_result([person], source=FakeSource()), person, **kwargs
+    )
+    return asked
+
+
+def test_the_longest_tracks_are_offered_first(monkeypatch):
+    """A mistakenly merged card is two substantial runs of somebody, not a
+    scattering of single frames -- and a one-frame track is not something
+    anyone can judge from a thumbnail."""
+    person = track_person(
+        0, [[1.0], [10.0, 11.0, 12.0, 13.0], [20.0], [30.0, 31.0, 32.0]]
+    )
+
+    asked = asked_timestamps(monkeypatch, person, limit=2)
+
+    # The two longest are the 4-frame and 3-frame tracks.
+    assert len(asked) == 2
+    assert 10.0 <= asked[0] <= 13.0
+    assert 30.0 <= asked[1] <= 32.0
+
+
+def test_the_shots_offered_are_in_time_order(monkeypatch):
+    """Whichever were picked as the longest, they are shown as a timeline."""
+    person = track_person(
+        0, [[50.0, 51.0, 52.0], [1.0, 2.0, 3.0, 4.0], [25.0, 26.0]]
+    )
+
+    asked = asked_timestamps(monkeypatch, person)
+
+    assert asked == sorted(asked)
+
+
+def test_a_shot_comes_from_the_middle_of_its_track(monkeypatch):
+    """The ends of a track are where a face is entering or leaving."""
+    person = track_person(0, [[10.0, 11.0, 12.0, 13.0, 14.0], [40.0, 41.0]])
+
+    asked = asked_timestamps(monkeypatch, person, limit=1)
+
+    assert asked == [12.0]
+
+
+def test_a_person_seen_in_one_run_has_nothing_to_choose_between(monkeypatch):
+    from app.ui.worker import track_previews
+
+    person = track_person(0, [[1.0, 2.0, 3.0]])
+
+    assert track_previews(a_result([person], source=FakeSource()), person) == []
+
+
+def test_the_picker_is_capped_so_it_stays_readable(monkeypatch):
+    """A person on a 22-minute episode can have hundreds of tracks."""
+    person = track_person(0, [[float(i)] for i in range(0, 400, 2)])
+
+    asked = asked_timestamps(monkeypatch, person)
+
+    assert len(asked) == 24

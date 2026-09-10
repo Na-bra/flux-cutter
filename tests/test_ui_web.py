@@ -25,7 +25,13 @@ from PIL import Image
 
 from app.faces.detector import BoundingBox, FaceDetection
 from app.faces.grouper import FaceIdentityGroup, FaceObservation
-from app.ui.worker import Person, ScanResult, quality_for
+from app.ui.worker import (
+    ExportSettings,
+    Person,
+    ScanResult,
+    ScanSettings,
+    quality_for,
+)
 
 pytest.importorskip("webview")
 
@@ -749,3 +755,227 @@ def test_cancelling_a_dialog_chooses_nothing(bridge):
 
     assert bridge.choose_video() == {"path": None}
     assert bridge.choose_folder() == {"path": None}
+
+
+# ------------------------------------------- the paths only the window walks
+#
+# Every method below was reachable from the page and executed by no test.
+# That is exactly how `start_export` came to pass `encoder=` to a dataclass
+# whose field is `video_encoder` and raise TypeError on every export for
+# three releases: the tests that named it all stopped at a guard above the
+# line that mattered. These drive the bodies.
+
+
+def test_pressing_scan_builds_settings_the_worker_accepts(bridge, tmp_path, monkeypatch):
+    """The window's other headline button, and its body had never run."""
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"pretend footage")
+
+    answer = bridge.start_scan(str(video), "live", 0.25)
+
+    assert answer == {"started": True}
+    target, (path, settings) = started[0]
+    assert target == bridge._scan_worker
+    assert path == video
+    assert settings.sample_interval == 0.25
+    assert settings.mode == "live"
+    # Kept, because an edit is written back to the cache entry these key.
+    assert bridge._scan_settings is settings
+
+
+def test_a_scan_remembers_the_mode_it_was_given(bridge, tmp_path, monkeypatch):
+    monkeypatch.setattr(bridge, "_start", lambda *args: None)
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x")
+
+    bridge.start_scan(str(video), "animation", 1.0)
+
+    assert bridge._mode == "animation"
+
+
+def test_a_mode_the_app_does_not_have_is_ignored(bridge, tmp_path, monkeypatch):
+    """The page sends it, so it is not trusted."""
+    monkeypatch.setattr(bridge, "_start", lambda *args: None)
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x")
+
+    bridge.start_scan(str(video), "interpretive-dance", 1.0)
+
+    assert bridge._mode == web.DEFAULT_MODE
+
+
+def test_the_scan_worker_reports_the_gallery(bridge, monkeypatch):
+    window = FakeWindow()
+    bridge.window = window
+    result = make_scan_result()
+    monkeypatch.setattr("app.ui.web.scan", lambda *args, **kwargs: result)
+
+    bridge._scan_worker(Path("/videos/episode.mp4"), ScanSettings())
+
+    assert window.emitted("onScanned") is not None
+    assert bridge._scan_result is result
+    assert bridge._selected == []
+
+
+def test_a_cancelled_scan_says_so_rather_than_failing(bridge, monkeypatch):
+    window = FakeWindow()
+    bridge.window = window
+
+    def cancelled(*args, **kwargs):
+        raise web.Cancelled()
+
+    monkeypatch.setattr("app.ui.web.scan", cancelled)
+
+    bridge._scan_worker(Path("/videos/episode.mp4"), ScanSettings())
+
+    assert window.emitted("onScanCancelled") is not None
+    assert window.emitted("onFailed") is None
+
+
+def test_a_broken_scan_reports_why(bridge, monkeypatch):
+    window = FakeWindow()
+    bridge.window = window
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the model would not load")
+
+    monkeypatch.setattr("app.ui.web.scan", broken)
+
+    bridge._scan_worker(Path("/videos/episode.mp4"), ScanSettings())
+
+    assert window.emitted("onFailed") is not None
+    assert "the model would not load" in window.calls[-1]
+
+
+def test_the_export_worker_makes_the_folder_and_reports_the_file(
+    bridge, tmp_path, monkeypatch
+):
+    window = FakeWindow()
+    bridge.window = window
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    monkeypatch.setattr("app.ui.web.export", lambda *args, **kwargs: None)
+    destination = tmp_path / "reels" / "out.mp4"
+
+    bridge._export_worker(destination, ExportSettings())
+
+    assert destination.parent.is_dir()
+    assert window.emitted("onExported") is not None
+
+
+def test_a_cancelled_export_says_so(bridge, tmp_path, monkeypatch):
+    window = FakeWindow()
+    bridge.window = window
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    def cancelled(*args, **kwargs):
+        raise web.Cancelled()
+
+    monkeypatch.setattr("app.ui.web.export", cancelled)
+
+    bridge._export_worker(tmp_path / "out.mp4", ExportSettings())
+
+    assert window.emitted("onExportCancelled") is not None
+    assert window.emitted("onExported") is None
+
+
+def test_a_broken_export_reports_why(bridge, tmp_path, monkeypatch):
+    window = FakeWindow()
+    bridge.window = window
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the encoder is not available")
+
+    monkeypatch.setattr("app.ui.web.export", broken)
+
+    bridge._export_worker(tmp_path / "out.mp4", ExportSettings())
+
+    assert window.emitted("onFailed") is not None
+    assert "the encoder is not available" in window.calls[-1]
+
+
+def test_the_split_picker_describes_the_tracks_it_offers(bridge, monkeypatch):
+    from PIL import Image as PILImage
+
+    bridge._scan_result = make_scan_result()
+    monkeypatch.setattr(
+        "app.ui.web.track_previews",
+        lambda result, person: [
+            (0, 12.0, PILImage.new("RGB", (4, 3))),
+            (3, 65.0, PILImage.new("RGB", (4, 3))),
+        ],
+    )
+
+    answer = bridge.tracks_of(1)
+
+    assert answer["index"] == 1
+    assert [t["track"] for t in answer["tracks"]] == [0, 3]
+    assert [t["at"] for t in answer["tracks"]] == ["0:12", "1:05"]
+    assert answer["tracks"][0]["image"].startswith("data:image/jpeg;base64,")
+
+
+def test_the_split_picker_offers_nothing_for_a_card_that_is_not_there(bridge):
+    bridge._scan_result = make_scan_result()
+
+    assert bridge.tracks_of(99) == {"tracks": []}
+
+
+def test_the_split_picker_is_quiet_while_a_job_runs(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge._worker = AliveWorker()
+
+    assert bridge.tracks_of(0) == {"tracks": []}
+
+
+class ClosingSource:
+    """Stands in for the held footage descriptor, and says when it is let go."""
+
+    def __init__(self):
+        self.closed = 0
+        self.path = Path("/videos/documentary.mp4")
+        self.size = 1
+
+    def close(self):
+        self.closed += 1
+
+    def is_available(self):
+        return True
+
+
+def test_closing_the_window_stops_work_and_releases_the_footage(bridge):
+    """Bound to the window's closed event, so it runs on the way out and
+    has to let go of the descriptor the scan is holding."""
+    source = ClosingSource()
+    bridge._scan_result = make_scan_result(source=source)
+
+    assert bridge.shutdown() == {"ok": True}
+    assert bridge._cancel.is_set()
+    assert source.closed == 1
+
+
+def test_closing_a_window_that_never_scanned_is_fine(bridge):
+    assert bridge.shutdown() == {"ok": True}
+
+
+def test_cancelling_asks_the_running_job_to_stop(bridge):
+    """The action button becomes Cancel during a scan or an export, and
+    this is all it does -- the worker notices at its next checkpoint."""
+    assert bridge.cancel() == {"cancelling": True}
+    assert bridge._cancel.is_set()
+
+
+def test_starting_a_job_clears_a_cancellation_from_the_last_one(bridge, tmp_path):
+    """Otherwise a scan cancelled at noon would stop the next one dead."""
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x")
+    bridge.cancel()
+
+    bridge.start_scan(str(video), "live", 1.0)
+    bridge._worker.join(timeout=5)
+
+    assert not bridge._cancel.is_set()
