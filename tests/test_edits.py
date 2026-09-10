@@ -8,6 +8,7 @@ from app.faces.edits import (
     EditError,
     discard_groups,
     merge_groups,
+    rename_group,
     split_group,
 )
 from app.faces.grouper import FaceIdentityGroup, FaceObservation
@@ -228,5 +229,104 @@ def test_an_edit_never_loses_a_card_that_was_not_touched():
 
     assert len(kept) == 2
     for card in kept:
+        assert card.representative_observation is not None
+        assert card.representative_embedding is not None
+
+
+# ------------------------------------------------------------------- names
+
+
+def test_naming_a_card_leaves_the_gallery_in_the_same_order(gallery):
+    """Renaming changes no membership, so the card must not move out from
+    under the cursor that just named it."""
+    named = rename_group(gallery, 1, "Jamie")
+
+    assert [g.size for g in named] == [g.size for g in gallery]
+    assert named[1].name == "Jamie"
+    assert named[0].name is None
+
+
+def test_a_name_is_tidied_before_it_is_kept(gallery):
+    assert rename_group(gallery, 0, "  Jamie   Lee ")[0].name == "Jamie Lee"
+
+
+def test_an_empty_name_clears_it(gallery):
+    named = rename_group(gallery, 0, "Jamie")
+
+    assert rename_group(named, 0, "   ")[0].name is None
+
+
+def test_a_name_that_could_not_be_a_filename_is_refused(gallery):
+    with pytest.raises(EditError, match="cannot contain"):
+        rename_group(gallery, 0, "Jamie/Lee")
+
+
+def test_a_very_long_name_is_refused(gallery):
+    with pytest.raises(EditError, match="60 characters"):
+        rename_group(gallery, 0, "x" * 61)
+
+
+def test_renaming_somebody_who_is_not_there(gallery):
+    with pytest.raises(EditError, match="no person #9"):
+        rename_group(gallery, 8, "Jamie")
+
+
+def test_merging_keeps_the_name_of_whoever_contributed_most(gallery):
+    """Merging the stray half of an actor into the named one is the whole
+    point, so losing the name would punish the correction."""
+    named = rename_group(gallery, 0, "Jamie")
+
+    merged = merge_groups(named, [0, 2])
+
+    assert merged[0].name == "Jamie"
+
+
+def test_merging_takes_a_name_from_wherever_there_is_one(gallery):
+    named = rename_group(gallery, 2, "Jamie")
+
+    merged = merge_groups(named, [0, 2])
+
+    assert merged[0].name == "Jamie"
+
+
+def test_the_name_stays_with_who_is_left_behind_after_a_split(gallery):
+    """Splitting says "those shots are somebody else", so the person
+    keeping the name is the one the user did not point at."""
+    named = rename_group(gallery, 0, "Jamie")
+
+    split = split_group(named, 0, [1])
+
+    stayed = next(g for g in split if len(g.observations) == 3 and g.name)
+    peeled = next(
+        g for g in split if [o.source_timestamp for o in g.observations] == [10.0, 11.0]
+    )
+    assert stayed.name == "Jamie"
+    assert peeled.name is None
+
+
+def test_a_name_survives_the_renumbering_that_follows_a_discard(gallery):
+    """This is why a name belongs to the person and not to the card's
+    position: the position changes on every correction."""
+    named = rename_group(gallery, 2, "Jamie")
+
+    kept = discard_groups(named, [0])
+
+    assert [g.name for g in kept] == [None, "Jamie"]
+    assert kept[1].group_id == 2
+
+
+def test_naming_cannot_lose_a_card_either():
+    """Renaming skips the reordering the other edits go through, so the
+    guarantee that no edit drops a card has to be applied there too."""
+    bare = FaceIdentityGroup(
+        group_id=1, observations=[observation(1), observation(2)], unit_sizes=[2]
+    )
+    other = FaceIdentityGroup(group_id=2, observations=[observation(9)], unit_sizes=[1])
+
+    named = rename_group([bare, other], 0, "Jamie")
+
+    assert len(named) == 2
+    assert named[0].name == "Jamie"
+    for card in named:
         assert card.representative_observation is not None
         assert card.representative_embedding is not None

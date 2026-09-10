@@ -80,20 +80,29 @@ def _ordered(groups: list[FaceIdentityGroup]) -> list[FaceIdentityGroup]:
             min(o.source_timestamp for o in group.observations),
         ),
     )
-    numbered = [
-        replace(group, group_id=position)
-        for position, group in enumerate(ordered, start=1)
-    ]
-    # A group with no cover picture is dropped by the gallery, so an edit
-    # that left one that way would make a card the user did not touch
-    # disappear. Untouched groups from a scan always have one; this is
-    # here so that "an edit loses somebody" cannot happen at all.
+    return _with_covers(
+        [
+            replace(group, group_id=position)
+            for position, group in enumerate(ordered, start=1)
+        ]
+    )
+
+
+def _with_covers(groups: list[FaceIdentityGroup]) -> list[FaceIdentityGroup]:
+    """Guarantees every group has a cover picture and a centroid.
+
+    A group with neither is dropped by the gallery, so an edit that left
+    one that way would make a card the user did not touch disappear.
+    Untouched groups from a scan always have them; this is here so that
+    "an edit loses somebody" cannot happen at all -- and it applies to
+    every edit, including the one that only changes a name.
+    """
     return [
         group
         if group.representative_observation is not None
         and group.representative_embedding is not None
         else _recompute(group)
-        for group in numbered
+        for group in groups
     ]
 
 
@@ -128,6 +137,17 @@ def merge_groups(
         # Concatenated in the same order as the observations, so the merged
         # card can still be split back apart along the tracks it came from.
         unit_sizes=[size for group in chosen for size in group.unit_sizes],
+        # The name of whichever card contributed most, so merging the
+        # stray half of an actor into the named one keeps the name. Losing
+        # it here would punish the correction this feature exists for.
+        name=next(
+            (
+                group.name
+                for group in sorted(chosen, key=lambda g: -len(g.observations))
+                if group.name
+            ),
+            None,
+        ),
     )
     kept = [group for position, group in enumerate(groups) if position not in set(wanted)]
     return _ordered(kept + [_recompute(combined)])
@@ -172,6 +192,9 @@ def split_group(
     moved = [track for i, track in enumerate(available) if i in set(wanted)]
     stayed = [track for i, track in enumerate(available) if i not in set(wanted)]
 
+    # The name stays with what is left behind. Splitting says "those
+    # shots are somebody else", so the person keeping the name is the one
+    # the user did not point at.
     peeled = FaceIdentityGroup(
         group_id=0,
         observations=[o for track in moved for o in track],
@@ -181,6 +204,7 @@ def split_group(
         group_id=0,
         observations=[o for track in stayed for o in track],
         unit_sizes=[len(track) for track in stayed],
+        name=group.name,
     )
     kept = [g for i, g in enumerate(groups) if i != position]
     return _ordered(kept + [_recompute(peeled), _recompute(remainder)])
@@ -204,4 +228,53 @@ def discard_groups(
 
     return _ordered(
         [group for position, group in enumerate(groups) if position not in set(wanted)]
+    )
+
+
+# A name is a label, not a filename, but it becomes part of one, so the
+# characters a path cannot carry are refused rather than silently mangled.
+FORBIDDEN_IN_NAMES = set('/\\:*?"<>|')
+MAX_NAME_LENGTH = 60
+
+
+def clean_name(name: str) -> str | None:
+    """The name as it will be stored, or None for "no name".
+
+    Raises:
+        EditError: If the name cannot be used.
+    """
+    cleaned = " ".join(str(name).split())
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_NAME_LENGTH:
+        raise EditError(f"Names are limited to {MAX_NAME_LENGTH} characters.")
+    bad = sorted(set(cleaned) & FORBIDDEN_IN_NAMES)
+    if bad:
+        raise EditError(
+            "A name becomes part of a filename, so it cannot contain "
+            + " ".join(bad)
+        )
+    return cleaned
+
+
+def rename_group(
+    groups: list[FaceIdentityGroup], index: int, name: str
+) -> list[FaceIdentityGroup]:
+    """Names one card, or clears its name when given nothing.
+
+    Unlike the other edits this changes no membership, so the gallery keeps
+    its order: renaming somebody must not move their card out from under
+    the cursor that just named them.
+
+    Raises:
+        EditError: If the card is not in this scan, or the name cannot be
+            used.
+    """
+    (position,) = _check(groups, [index])
+    cleaned = clean_name(name)
+    return _with_covers(
+        [
+            replace(group, name=cleaned) if i == position else group
+            for i, group in enumerate(groups)
+        ]
     )

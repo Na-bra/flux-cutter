@@ -631,3 +631,85 @@ def test_the_chosen_quality_level_reaches_the_encoder(bridge, monkeypatch):
     assert libx264_quality == quality_for("libx264", "Maximum")
     assert videotoolbox_quality == quality_for("h264_videotoolbox", "Maximum")
     assert libx264_quality != videotoolbox_quality
+
+
+# ------------------------------------------------------------------ naming
+
+
+def test_naming_a_card_keeps_it_selected(bridge):
+    """Renaming changes no membership, so being deselected by naming
+    somebody would mean re-picking them to export."""
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(1, "")
+
+    answer = bridge.edit_people("rename", [], "Jamie")
+
+    assert answer["applied"] is True
+    assert [p.index for p in bridge._selected] == [1]
+    assert answer["note"] == "#2 is now Jamie."
+
+
+def test_a_name_reaches_the_page(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.edit_people("rename", [], "Jamie Lee")
+
+    assert answer["people"][0]["name"] == "Jamie Lee"
+    assert answer["people"][0]["label"] == "Jamie Lee"
+    assert answer["people"][1]["label"] == "Person #2"
+
+
+def test_a_named_person_names_the_file(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.edit_people("rename", [], "Jamie Lee")
+
+    answer = bridge.select_person(0, "")
+    answer = bridge.select_person(0, "reel.mp4")
+
+    assert answer["filename"] == "documentary-jamie-lee.mp4"
+
+
+def test_an_unnamed_selection_keeps_the_compact_filename(bridge):
+    bridge._scan_result = make_scan_result()
+
+    bridge.select_person(0, "reel.mp4")
+    answer = bridge.select_person(2, "reel.mp4")
+
+    assert answer["filename"] == "documentary-person-1+3.mp4"
+
+
+def test_a_mixed_selection_names_who_it_can(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.edit_people("rename", [], "Jamie")
+    bridge.select_person(0, "")
+
+    bridge.select_person(0, "reel.mp4")
+    answer = bridge.select_person(2, "reel.mp4")
+
+    assert answer["filename"] == "documentary-jamie+person-3.mp4"
+    assert answer["name"] == "Jamie and Person #3"
+
+
+def test_clearing_a_name_puts_the_number_back(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.edit_people("rename", [], "Jamie")
+
+    answer = bridge.edit_people("rename", [], "  ")
+
+    assert answer["people"][0]["name"] is None
+    assert answer["people"][0]["label"] == "Person #1"
+    assert answer["note"] == "Cleared the name on #1."
+
+
+def test_a_name_that_could_not_be_a_filename_is_refused(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.edit_people("rename", [], "Jamie/Lee")
+
+    assert answer["applied"] is False
+    assert "cannot contain" in answer["reason"]

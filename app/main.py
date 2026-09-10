@@ -185,15 +185,33 @@ def _resolve_min_detections(
     return resolved
 
 
-def _selection_name(indexes: list[int]) -> str:
-    """How a chosen person, or several, is named in a report."""
-    numbers = [index + 1 for index in indexes]
-    if len(numbers) == 1:
-        return f"Person #{numbers[0]}"
-    if len(numbers) == 2:
-        return f"People #{numbers[0]} and #{numbers[1]}"
-    listed = ", ".join(f"#{number}" for number in numbers[:-1])
-    return f"People {listed} and #{numbers[-1]}"
+def _selection_name(indexes: list[int], groups=None) -> str:
+    """How a chosen person, or several, is named in a report.
+
+    A named identity is reported by name. With nobody named this stays the
+    compact "People #1 and #2" rather than repeating the word for each.
+    """
+    named = [
+        (groups[index].name if groups and groups[index].name else None)
+        for index in indexes
+    ]
+    if any(named):
+        labels = [
+            name or f"Person #{index + 1}" for name, index in zip(named, indexes)
+        ]
+    else:
+        numbers = [f"#{index + 1}" for index in indexes]
+        if len(numbers) == 1:
+            return f"Person {numbers[0]}"
+        if len(numbers) == 2:
+            return f"People {numbers[0]} and {numbers[1]}"
+        return f"People {', '.join(numbers[:-1])} and {numbers[-1]}"
+
+    if len(labels) == 1:
+        return labels[0]
+    if len(labels) == 2:
+        return f"{labels[0]} and {labels[1]}"
+    return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
 
 def combined_group(groups: list[FaceIdentityGroup]) -> FaceIdentityGroup:
@@ -237,6 +255,7 @@ def _resolve_selection(
     reference: ReferenceFace | None,
     reference_threshold: float | None = None,
     mode: str = DEFAULT_MODE,
+    select_name: str | None = None,
 ) -> list[int]:
     """Which person card the run is about, however the user said it.
 
@@ -271,8 +290,27 @@ def _resolve_selection(
         )
         return [match.index]
 
+    if select_name:
+        wanted = [
+            position
+            for position, group in enumerate(identity_gallery.groups)
+            if group.name and group.name.casefold() == select_name.casefold()
+        ]
+        if not wanted:
+            known = sorted(
+                group.name for group in identity_gallery.groups if group.name
+            )
+            raise SelectionError(
+                f"Nobody in this scan is called {select_name!r}. "
+                + (f"Named so far: {', '.join(known)}." if known else
+                   "Nobody has been named yet -- name them in the window.")
+            )
+        return wanted
+
     if select_index is None:
-        raise SelectionError("Choose a person with --select-index or --reference.")
+        raise SelectionError(
+            "Choose a person with --select-index, --select-name or --reference."
+        )
 
     wanted = [select_index] if isinstance(select_index, int) else list(select_index)
     if not wanted:
@@ -668,6 +706,7 @@ def run_appearance_timestamps(
     reference_threshold: float | None = None,
     video_path: Path | None = None,
     use_cache: bool = True,
+    select_name: str | None = None,
 ):
     """Group faces, then compute appearance intervals for one selected person."""
     start_time = time.monotonic()
@@ -713,12 +752,13 @@ def run_appearance_timestamps(
         return
 
     chosen = _resolve_selection(
-        identity_gallery, select_index, reference, reference_threshold, mode
+        identity_gallery, select_index, reference, reference_threshold, mode,
+        select_name,
     )
     selected_group = combined_group(
         [identity_gallery.groups[index] for index in chosen]
     )
-    selection_name = _selection_name(chosen)
+    selection_name = _selection_name(chosen, identity_gallery.groups)
 
     timeline_start = time.monotonic()
     intervals = build_appearance_intervals(
@@ -778,6 +818,7 @@ def run_export(
     reference: ReferenceFace | None = None,
     reference_threshold: float | None = None,
     use_cache: bool = True,
+    select_name: str | None = None,
 ):
     """Groups faces, then cuts one person's appearances into a single reel."""
     start_time = time.monotonic()
@@ -820,12 +861,13 @@ def run_export(
         return
 
     chosen = _resolve_selection(
-        identity_gallery, select_index, reference, reference_threshold, mode
+        identity_gallery, select_index, reference, reference_threshold, mode,
+        select_name,
     )
     selected_group = combined_group(
         [identity_gallery.groups[index] for index in chosen]
     )
-    selection_name = _selection_name(chosen)
+    selection_name = _selection_name(chosen, identity_gallery.groups)
     intervals = build_appearance_intervals(
         selected_group,
         video_duration=video_duration,

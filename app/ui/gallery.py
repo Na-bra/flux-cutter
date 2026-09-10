@@ -327,6 +327,9 @@ class PersonCard:
     best_confidence: float
     first_seen_timestamp: float
     last_seen_timestamp: float
+    # What this person is called, when somebody has said. None means the
+    # card is still known by its position.
+    name: str | None = None
 
 
 @dataclass
@@ -373,6 +376,7 @@ def build_identity_gallery(
                 best_confidence=max(observation.detection.confidence for observation in group.observations),
                 first_seen_timestamp=min(timestamps),
                 last_seen_timestamp=max(timestamps),
+                name=group.name,
             )
         )
         selected_groups.append(group)

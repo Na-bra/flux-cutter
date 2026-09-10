@@ -250,6 +250,12 @@ class FaceIdentityGroup:
     # split a mistakenly merged group along. Empty when a group was built
     # by hand rather than by clustering.
     unit_sizes: list[int] = field(default_factory=list)
+    # What a person called this identity, when they have. Clustering never
+    # sets it -- it has no idea who anybody is -- but it travels with the
+    # group through merges, splits and the scan cache, because a name
+    # belongs to the person rather than to the card's position in a
+    # gallery that renumbers itself after every correction.
+    name: str | None = None
 
     @property
     def tracks(self) -> list[list[FaceObservation]]:

@@ -258,6 +258,7 @@ def save(key: str, scan: CachedScan) -> Path:
                 # boundaries are not recoverable from the observations
                 # once they have been concatenated.
                 "unit_sizes": [int(size) for size in group.unit_sizes],
+                "name": group.name,
                 "observations": observations,
             }
         )
@@ -348,6 +349,7 @@ def load(key: str) -> CachedScan | None:
                     group_id=entry["group_id"],
                     observations=observations,
                     unit_sizes=list(entry.get("unit_sizes", [])),
+                    name=entry.get("name"),
                 )
                 centroid_key = f"centroid_{position}"
                 if centroid_key in stored:

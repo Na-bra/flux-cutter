@@ -418,6 +418,12 @@ def main():
         "this or --reference.",
     )
     timestamps_parser.add_argument(
+        "--select-name",
+        default=None,
+        help="Name of the person to use, as given to them in the window. "
+        "A name survives the corrections that renumber the cards.",
+    )
+    timestamps_parser.add_argument(
         "--reference",
         type=Path,
         default=None,
@@ -450,6 +456,12 @@ def main():
         help="Person card index (as shown by the 'group' command) to export. "
         "Pass several to cut every scene any of them is in. Either this "
         "or --reference.",
+    )
+    export_parser.add_argument(
+        "--select-name",
+        default=None,
+        help="Name of the person to use, as given to them in the window. "
+        "A name survives the corrections that renumber the cards.",
     )
     export_parser.add_argument(
         "--reference",
@@ -628,14 +640,20 @@ def main():
     # a seven-minute scan -- which is where it surfaced until this ran here
     # -- is the same mistake as validating the photo late.
     if args.command in ("export", "timestamps"):
-        if args.select_index is None and args.reference is None:
+        ways = [
+            args.select_index is not None,
+            args.reference is not None,
+            bool(args.select_name),
+        ]
+        if not any(ways):
             parser.error(
                 "choose a person to export: --select-index N (from the "
-                "'group' command) or --reference photo.jpg"
+                "'group' command), --select-name NAME, or --reference photo.jpg"
             )
-        if args.select_index is not None and args.reference is not None:
+        if sum(ways) > 1:
             parser.error(
-                "--select-index and --reference both name a person; pass one"
+                "--select-index, --select-name and --reference each name a "
+                "person; pass one"
             )
 
     # Read the photograph before anything long starts. Detecting and
@@ -811,6 +829,7 @@ def main():
                     reference=reference,
                     reference_threshold=args.reference_threshold,
                     use_cache=not args.rescan,
+                    select_name=args.select_name,
                 )
             elif args.command == "timestamps":
                 run_appearance_timestamps(
@@ -835,6 +854,7 @@ def main():
                     reference_threshold=args.reference_threshold,
                     video_path=args.video_path,
                     use_cache=not args.rescan,
+                    select_name=args.select_name,
                 )
 
     except (VideoLoadError, SelectionError, CutterError, ReferenceError) as e:
