@@ -2268,3 +2268,50 @@ Checked that the fix is not silence: 31210 audio frames, none silent, mean
 RMS steady across every minute of the reel. Levelling two timelines by
 padding one of them would have passed a duration check and failed the only
 test that matters.
+
+### Checking the fix against what a viewer notices
+
+Matching durations is not the same as matching content: audio can be the
+right length and still be the wrong audio. The duration measurements above
+would not have caught a reel whose sound was uniformly half a second early.
+
+So the fix is checked against footage generated for the purpose, with a
+white frame and a 50ms tone burst on every whole second -- sound and
+picture marked at the same instants. Cut it up, and the distance between
+each flash and its click says whether they are still together.
+
+    source, 60 markers      drift -0.003ms per marker  (-0.2ms overall)
+    20-cut reel, 20 markers drift -0.074ms per marker  (-1.5ms overall)
+
+Content does not slide. The constant ~30ms offset is the measurement, not
+the reel: a burst is timed from the audio frame containing it, so it reads
+up to one frame early.
+
+This is asserted as a *spread* rather than a fitted slope. Each offset is
+quantised to one audio frame, so across eight cuts a single step of that
+size fits a slope of 2.6ms per cut out of nothing at all -- a slope
+threshold would be measuring the sampling rather than the sync. Sliding
+timelines fan the offsets out; quantisation does not.
+
+The generated footage needs no sample video, so unlike the cutter's other
+tests these run in CI, where the assets are absent. That matters more than
+it sounds: this is the bug class that shipped, and it is now checked in
+the environment that gates releases rather than only on a developer's
+machine.
+
+### Still there: audio carried past a cut
+
+The same harness found a smaller thing the fix does not address. Fifteen of
+twenty cuts carried a fragment of audio from *after* the cut point -- a
+single frame, up to 21ms, of the moment the reel is supposed to have cut
+away.
+
+The cause is the same asymmetry: a decoded audio frame that begins before
+the segment's end is written whole, and can extend past it. The video has
+no equivalent, because it is cut at frame boundaries that are the
+timeline's own units.
+
+It is bounded at one audio frame per cut and does not accumulate, so it is
+a texture problem rather than a sync one -- most likely audible, if at all,
+as a click at a join. Fixing it means trimming the final audio frame at the
+exact sample the cut falls on rather than keeping or dropping it whole.
