@@ -454,8 +454,12 @@ def test_people_who_never_share_a_scene_keep_separate_appearances():
 
 
 class FakeSource:
-    def __init__(self):
+    """A source whose shared reader must never be touched by a preview."""
+
+    def __init__(self, path=Path("/videos/gone.mp4"), size=123):
         self.opened = 0
+        self.path = path
+        self.size = size
 
     def open(self):
         self.opened += 1
@@ -489,10 +493,48 @@ def test_a_preview_that_cannot_be_drawn_is_not_an_error():
     from app.ui.worker import preview_frames
 
     person = one_person(0, [1.0, 2.0, 3.0])
+
+    assert preview_frames(a_result([person], source=FakeSource()), [person]) == []
+
+
+def test_the_preview_never_uses_the_shared_reader():
+    """A VideoSource hands out readers by duplicating one descriptor, and
+    duplicated descriptors share a file offset -- so a preview drawn while
+    an export is running made both fail with "invalid data". The preview
+    opens its own file and leaves the descriptor to the export, which is
+    the one that must have it."""
+    from app.ui.worker import preview_frames
+
+    person = one_person(0, [1.0, 2.0, 3.0])
     source = FakeSource()
 
-    assert preview_frames(a_result([person], source=source), [person]) == []
-    assert source.opened == 1
+    preview_frames(a_result([person], source=source), [person])
+
+    assert source.opened == 0
+
+
+def test_a_preview_will_not_read_a_different_file_at_the_old_path(tmp_path):
+    """Reading by path means the path could now hold something else, and
+    frames from footage the reel is not made of would be worse than none."""
+    from app.ui.worker import _preview_container
+
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x" * 100)
+    person = one_person(0, [1.0, 2.0])
+    source = FakeSource(path=video, size=100)
+
+    source.size = 999  # the file at that path is not the one that was scanned
+
+    assert _preview_container(a_result([person], source=source)) is None
+
+
+def test_a_preview_of_footage_that_has_gone_is_simply_not_drawn(tmp_path):
+    from app.ui.worker import _preview_container
+
+    person = one_person(0, [1.0, 2.0])
+    source = FakeSource(path=tmp_path / "never-existed.mp4", size=5)
+
+    assert _preview_container(a_result([person], source=source)) is None
 
 
 def test_the_filmstrip_is_spread_across_the_whole_reel(monkeypatch):

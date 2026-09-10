@@ -17,6 +17,8 @@ Two rules this module exists to enforce:
 import os
 import threading
 import time
+
+import av
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -35,7 +37,13 @@ from app.faces.grouper import (
     auto_min_detections,
 )
 from app.main import run_identity_pipeline
-from app.faces.edits import EditError, discard_groups, merge_groups, split_group
+from app.faces.edits import (
+    EditError,
+    discard_groups,
+    merge_groups,
+    rename_group,
+    split_group,
+)
 from app.models import MODELS, ensure_model, find_model
 from app.scans import CachedScan, cache_key
 from app.scans import load as load_scan
@@ -51,7 +59,7 @@ from app.video.export import (
     merge_for_export,
 )
 from app.video.frames import extract_frames
-from app.video.loader import get_video_info
+from app.video.loader import get_video_info, use_threaded_decoding
 from app.video.timeline import build_appearance_intervals
 
 
@@ -199,6 +207,12 @@ class Person:
     first_seen: float
     last_seen: float
     group: FaceIdentityGroup
+    name: str | None = None
+
+    @property
+    def label(self) -> str:
+        """What to call this person: their name, or their position."""
+        return self.name or f"Person #{self.index + 1}"
 
 
 @dataclass(frozen=True)
@@ -418,6 +432,7 @@ def _people_from(gallery) -> list["Person"]:
             first_seen=card.first_seen_timestamp,
             last_seen=card.last_seen_timestamp,
             group=group,
+            name=card.name,
         )
         for index, (card, group) in enumerate(zip(gallery.cards, gallery.groups))
     ]
@@ -429,6 +444,7 @@ def apply_edit(
     operation: str,
     indexes: list[int],
     tracks: list[int] | None = None,
+    name: str | None = None,
 ) -> "ScanResult":
     """Corrects the identities, and keeps the correction.
 
@@ -457,6 +473,9 @@ def apply_edit(
         edited = split_group(groups, index, tracks or [])
     elif operation == "discard":
         edited = discard_groups(groups, indexes)
+    elif operation == "rename":
+        (index,) = indexes
+        edited = rename_group(groups, index, name or "")
     else:
         raise EditError(f"Unknown edit: {operation!r}")
 
@@ -691,17 +710,55 @@ def preview_frames(
     ]
 
     try:
-        return _frames_at(scan_result.source, wanted, width)
+        return _frames_at(scan_result, wanted, width)
     except Exception:
         # Any decode failure at all: a moved file, a truncated video, a
         # codec that will not seek. The preview is a convenience.
         return []
 
 
-def _frames_at(source, timestamps: list[float], width: int):
+def _preview_container(scan_result: "ScanResult"):
+    """Opens the footage for a preview, without disturbing an export.
+
+    Deliberately by path rather than through `scan_result.source`. A
+    VideoSource hands out readers by duplicating one descriptor, and
+    duplicated descriptors share a file offset -- so two readers seek each
+    other sideways and both fail with "invalid data". Everything else in
+    this app reads the footage one reader at a time; a preview drawn while
+    an export is running is the first thing that does not.
+
+    So the preview reads its own open file and leaves the shared
+    descriptor to the export, which must have it: the descriptor is what
+    lets an export survive the video being moved mid-session, and reading
+    by path cannot promise that. The size is checked first for the same
+    reason `relocate` checks it -- a different file at the old path would
+    show frames from footage the reel is not made of.
+
+    Returns None when the path cannot stand in, and the preview is simply
+    not drawn.
+    """
+    source = scan_result.source
+    if source is None:
+        return None
+    path = source.path
+    try:
+        if not path.is_file() or path.stat().st_size != source.size:
+            return None
+    except OSError:
+        return None
+
+    container = av.open(str(path))
+    use_threaded_decoding(container)
+    return container
+
+
+def _frames_at(scan_result: "ScanResult", timestamps: list[float], width: int):
     """Decodes one frame at each timestamp, by seeking to each in turn."""
     frames = []
-    with source.open() as container:
+    container = _preview_container(scan_result)
+    if container is None:
+        return []
+    with container:
         stream = next(
             (s for s in container.streams if s.type == "video"), None
         )
@@ -774,7 +831,7 @@ def track_previews(
 
     try:
         frames = _frames_at(
-            scan_result.source,
+            scan_result,
             [observation.source_timestamp for observation in wanted],
             width,
         )

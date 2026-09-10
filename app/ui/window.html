@@ -277,6 +277,7 @@
         <span class="fixups" id="fixups" hidden>
           <button class="ghost" id="mergeBtn">Merge</button>
           <button class="ghost" id="splitBtn">Split…</button>
+          <button class="ghost" id="renameBtn">Name…</button>
           <button class="ghost" id="discardBtn">Not a person</button>
         </span>
       </div>
@@ -468,7 +469,7 @@
       <button class="card" aria-pressed="false" data-i="${p.index}">
         <img class="thumb" src="${p.thumbnail}" alt="Person ${i+1}">
         <span class="info">
-          <span class="who">Person ${i+1} <span class="rank">#${i+1}</span></span>
+          <span class="who">${p.name ? esc(p.name) : "Person " + (i+1)} <span class="rank">#${i+1}</span></span>
           <span class="stat">${p.detections} det</span>
         </span>
       </button>`).join("");
@@ -480,6 +481,7 @@
     const n = state.selected.length;
     $("mergeBtn").disabled = n < 2;
     $("splitBtn").disabled = n !== 1;
+    $("renameBtn").disabled = n !== 1;
     $("discardBtn").disabled = n < 1 || n >= state.people.length;
   }
 
@@ -489,6 +491,31 @@
     drawPeople(r);
     status("<b>" + r.note + "</b> " + r.people.length + " people now.");
   }
+
+  // A name belongs to the person, not to the card's position: the gallery
+  // renumbers itself after every correction, and "Person #2" moves.
+  $("renameBtn").addEventListener("click", async () => {
+    const person = state.people.find(p => p.index === state.selected[0]);
+    const typed = window.prompt(
+      "What is this person called? Leave it empty to clear the name.",
+      person && person.name ? person.name : ""
+    );
+    if (typed === null) return;
+    const r = await pywebview.api.edit_people("rename", [], typed);
+    if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
+    const keep = state.selected.slice();
+    drawPeople(r);
+    // Renaming changes no membership, so the selection is put back.
+    state.selected = keep;
+    updateFixups();
+    document.querySelectorAll("#grid .card").forEach(c =>
+      c.setAttribute("aria-pressed", keep.includes(Number(c.dataset.i)))
+    );
+    status("<b>" + r.note + "</b>");
+  });
+
+  const esc = (text) => text.replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   $("mergeBtn").addEventListener("click", () => applyEdit("merge"));
   $("discardBtn").addEventListener("click", () => applyEdit("discard"));

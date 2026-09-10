@@ -110,13 +110,32 @@ def _clock(seconds: float) -> str:
     return f"{minutes}:{remainder:02d}"
 
 
-def _edit_note(operation: str, indexes: list[int]) -> str:
+def _filename_part(name: str | None) -> str:
+    """A person's name as it can appear in a filename.
+
+    Spaces become hyphens and the case is lowered, so a name typed as
+    "Jamie Lee" is a file called `episode-jamie-lee.mp4`. Characters a
+    path cannot carry never reach here -- they are refused when the name
+    is set (app/faces/edits.py) rather than quietly dropped now.
+    """
+    if not name:
+        return ""
+    return "-".join(name.split()).lower()
+
+
+def _edit_note(operation: str, indexes: list[int], name: str = "") -> str:
     """What the window says after an edit, in the user's own terms."""
     named = ", ".join(f"#{index + 1}" for index in indexes)
     if operation == "merge":
         return f"Merged {named} into one person."
     if operation == "split":
         return f"Split #{indexes[0] + 1} apart."
+    if operation == "rename":
+        return (
+            f"#{indexes[0] + 1} is now {name}."
+            if name.strip()
+            else f"Cleared the name on #{indexes[0] + 1}."
+        )
     return f"Discarded {named}."
 
 
@@ -207,7 +226,7 @@ class Bridge:
 
     def choose_video(self) -> dict:
         chosen = self.window.create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             allow_multiple=False,
             file_types=("Video files (*.mp4;*.mov)", "All files (*.*)"),
         )
@@ -216,7 +235,7 @@ class Bridge:
         return {"path": str(chosen[0])}
 
     def choose_folder(self) -> dict:
-        chosen = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        chosen = self.window.create_file_dialog(webview.FileDialog.FOLDER)
         if not chosen:
             return {"path": None}
         return {"path": str(chosen[0])}
@@ -289,6 +308,8 @@ class Bridge:
             "people": [
                 {
                     "index": person.index,
+                    "name": person.name,
+                    "label": person.label,
                     "thumbnail": _data_uri(person.thumbnail),
                     "detections": person.detection_count,
                     "firstSeen": person.first_seen,
@@ -415,14 +436,26 @@ class Bridge:
         threading.Thread(target=build, daemon=True).start()
 
     def _selection_name(self) -> str:
-        """How the chosen people are named in the window's own text."""
-        numbers = [chosen.index + 1 for chosen in self._selected]
-        if len(numbers) == 1:
-            return f"Person #{numbers[0]}"
-        if len(numbers) == 2:
-            return f"People #{numbers[0]} and #{numbers[1]}"
-        listed = ", ".join(f"#{number}" for number in numbers[:-1])
-        return f"People {listed} and #{numbers[-1]}"
+        """How the chosen people are named in the window's own text.
+
+        With nobody named this stays the compact "People #1 and #2" rather
+        than repeating the word for each: numbers are what the cards show,
+        and a name is only worth spelling out where there is one.
+        """
+        if not any(chosen.name for chosen in self._selected):
+            numbers = [f"#{chosen.index + 1}" for chosen in self._selected]
+            if len(numbers) == 1:
+                return f"Person {numbers[0]}"
+            if len(numbers) == 2:
+                return f"People {numbers[0]} and {numbers[1]}"
+            return f"People {', '.join(numbers[:-1])} and {numbers[-1]}"
+
+        labels = [chosen.label for chosen in self._selected]
+        if len(labels) == 1:
+            return labels[0]
+        if len(labels) == 2:
+            return f"{labels[0]} and {labels[1]}"
+        return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
     def _suggest_filename(self, people: list[Person], current: str) -> str | None:
         """Names the file after the video and the person, if that is free.
@@ -438,8 +471,20 @@ class Bridge:
         """
         assert self._scan_result is not None
         stem = self._scan_result.video_path.stem or "reel"
-        numbers = "+".join(str(chosen.index + 1) for chosen in people)
-        suggestion = f"{stem}-person-{numbers}.mp4"
+        # A named person names the file: `episode-jamie.mp4` says what is
+        # in it in a way `episode-person-2.mp4` never did, and the number
+        # it replaces is the one that changes every time the gallery is
+        # corrected. With nobody named the old compact form is kept --
+        # `person-1+3` rather than `person-1+person-3`.
+        if any(chosen.name for chosen in people):
+            parts = [
+                _filename_part(chosen.name) or f"person-{chosen.index + 1}"
+                for chosen in people
+            ]
+            suggestion = f"{stem}-{'+'.join(parts)}.mp4"
+        else:
+            numbers = "+".join(str(chosen.index + 1) for chosen in people)
+            suggestion = f"{stem}-person-{numbers}.mp4"
 
         hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
         self._suggested_filename = suggestion
@@ -458,7 +503,7 @@ class Bridge:
         )
         return ScanSettings(sample_interval=interval, mode=self._mode)
 
-    def edit_people(self, operation: str, tracks=None) -> dict:
+    def edit_people(self, operation: str, tracks=None, name: str = "") -> dict:
         """Merges, splits or discards the chosen cards.
 
         Grouping gets most of a video right and still splits one actor
@@ -478,6 +523,7 @@ class Bridge:
                 operation,
                 indexes,
                 [int(track) for track in (tracks or [])],
+                name,
             )
         except EditError as error:
             return {"applied": False, "reason": str(error)}
@@ -486,9 +532,16 @@ class Bridge:
         # the old one is dropped rather than closed -- closing it would
         # take the descriptor out from under the export that follows.
         self._scan_result = updated
-        self._selected = []
+        if operation == "rename":
+            # Membership did not change and the gallery kept its order, so
+            # the cards stay selected: being deselected by naming somebody
+            # would mean re-picking them to export.
+            chosen = set(indexes) | {p.index for p in self._selected}
+            self._selected = [p for p in updated.people if p.index in chosen]
+        else:
+            self._selected = []
         self._preview_token += 1
-        return {"applied": True, **self._scan_payload(updated), "note": _edit_note(operation, indexes)}
+        return {"applied": True, **self._scan_payload(updated), "note": _edit_note(operation, indexes, name)}
 
     def tracks_of(self, index: int) -> dict:
         """The tracks in one card, as pictures, for choosing a split point."""
@@ -526,7 +579,7 @@ class Bridge:
             return {"started": False, "reason": None}
 
         settings = ExportSettings(
-            encoder=encoder,
+            video_encoder=encoder,
             quality=quality_for(encoder, quality),
         )
         self._start(self._export_worker, output_path(folder, filename), settings)
@@ -558,7 +611,7 @@ class Bridge:
             return False
 
         chosen = self.window.create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             allow_multiple=False,
             file_types=("Video files (*.mp4;*.mov)", "All files (*.*)"),
         )

@@ -25,9 +25,11 @@ from PIL import Image
 
 from app.faces.detector import BoundingBox, FaceDetection
 from app.faces.grouper import FaceIdentityGroup, FaceObservation
-from app.ui.worker import Person, ScanResult
+from app.ui.worker import Person, ScanResult, quality_for
 
 pytest.importorskip("webview")
+
+import webview  # noqa: E402
 
 from app.ui import web  # noqa: E402
 
@@ -76,6 +78,7 @@ class FakeWindow:
 
     def __init__(self, dialog=None, confirm=True):
         self.calls = []
+        self.dialogs = []
         self._dialog = dialog
         self._confirm = confirm
 
@@ -83,6 +86,7 @@ class FakeWindow:
         self.calls.append(script)
 
     def create_file_dialog(self, *args, **kwargs):
+        self.dialogs.append(args[0] if args else None)
         return self._dialog
 
     def create_confirmation_dialog(self, title, message):
@@ -586,3 +590,162 @@ def test_the_gallery_refuses_edits_while_a_job_runs(bridge):
     answer = bridge.edit_people("merge")
 
     assert answer["applied"] is False
+
+
+# ------------------------------------------------------- starting an export
+
+
+def test_pressing_export_builds_settings_the_worker_accepts(bridge, monkeypatch):
+    """The window's headline action, and it was broken from the day the web
+    view replaced Tk: the bridge passed `encoder=` to a dataclass whose
+    field is `video_encoder`, so every export raised TypeError before it
+    started. Every test that touched start_export stopped at an earlier
+    guard -- no video, no person, no footage -- so nothing ever reached the
+    line that mattered.
+    """
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.start_export("/tmp/reels", "out.mp4", "libx264", "Standard")
+
+    assert answer == {"started": True}
+    path, settings = started[0]
+    assert path == Path("/tmp/reels/out.mp4")
+    assert settings.video_encoder == "libx264"
+    assert isinstance(settings.quality, int)
+
+
+def test_the_chosen_quality_level_reaches_the_encoder(bridge, monkeypatch):
+    """The two encoders' scales run in opposite directions, so a level that
+    did not translate would silently encode at the wrong quality."""
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    bridge.start_export("/tmp", "a.mp4", "libx264", "Maximum")
+    bridge.start_export("/tmp", "b.mp4", "h264_videotoolbox", "Maximum")
+
+    libx264_quality = started[0][1].quality
+    videotoolbox_quality = started[1][1].quality
+    assert libx264_quality == quality_for("libx264", "Maximum")
+    assert videotoolbox_quality == quality_for("h264_videotoolbox", "Maximum")
+    assert libx264_quality != videotoolbox_quality
+
+
+# ------------------------------------------------------------------ naming
+
+
+def test_naming_a_card_keeps_it_selected(bridge):
+    """Renaming changes no membership, so being deselected by naming
+    somebody would mean re-picking them to export."""
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(1, "")
+
+    answer = bridge.edit_people("rename", [], "Jamie")
+
+    assert answer["applied"] is True
+    assert [p.index for p in bridge._selected] == [1]
+    assert answer["note"] == "#2 is now Jamie."
+
+
+def test_a_name_reaches_the_page(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.edit_people("rename", [], "Jamie Lee")
+
+    assert answer["people"][0]["name"] == "Jamie Lee"
+    assert answer["people"][0]["label"] == "Jamie Lee"
+    assert answer["people"][1]["label"] == "Person #2"
+
+
+def test_a_named_person_names_the_file(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.edit_people("rename", [], "Jamie Lee")
+
+    answer = bridge.select_person(0, "")
+    answer = bridge.select_person(0, "reel.mp4")
+
+    assert answer["filename"] == "documentary-jamie-lee.mp4"
+
+
+def test_an_unnamed_selection_keeps_the_compact_filename(bridge):
+    bridge._scan_result = make_scan_result()
+
+    bridge.select_person(0, "reel.mp4")
+    answer = bridge.select_person(2, "reel.mp4")
+
+    assert answer["filename"] == "documentary-person-1+3.mp4"
+
+
+def test_a_mixed_selection_names_who_it_can(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.edit_people("rename", [], "Jamie")
+    bridge.select_person(0, "")
+
+    bridge.select_person(0, "reel.mp4")
+    answer = bridge.select_person(2, "reel.mp4")
+
+    assert answer["filename"] == "documentary-jamie+person-3.mp4"
+    assert answer["name"] == "Jamie and Person #3"
+
+
+def test_clearing_a_name_puts_the_number_back(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+    bridge.edit_people("rename", [], "Jamie")
+
+    answer = bridge.edit_people("rename", [], "  ")
+
+    assert answer["people"][0]["name"] is None
+    assert answer["people"][0]["label"] == "Person #1"
+    assert answer["note"] == "Cleared the name on #1."
+
+
+def test_a_name_that_could_not_be_a_filename_is_refused(bridge):
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    answer = bridge.edit_people("rename", [], "Jamie/Lee")
+
+    assert answer["applied"] is False
+    assert "cannot contain" in answer["reason"]
+
+
+# ------------------------------------------------------------- the dialogs
+
+
+def test_the_file_dialogs_use_the_current_pywebview_api(bridge):
+    """pywebview 6 deprecated the OPEN_DIALOG and FOLDER_DIALOG integers in
+    favour of the FileDialog enum, warning on every use and promising to
+    remove them. The enum's members carry the same values, so this pins the
+    call rather than the number it happens to equal."""
+    window = FakeWindow(dialog=["/videos/episode.mp4"])
+    bridge.window = window
+
+    bridge.choose_video()
+    bridge.choose_folder()
+
+    assert window.dialogs == [webview.FileDialog.OPEN, webview.FileDialog.FOLDER]
+    for asked in window.dialogs:
+        assert isinstance(asked, webview.FileDialog)
+
+
+def test_choosing_a_video_reports_the_path(bridge):
+    bridge.window = FakeWindow(dialog=["/videos/episode.mp4"])
+
+    assert bridge.choose_video() == {"path": "/videos/episode.mp4"}
+
+
+def test_cancelling_a_dialog_chooses_nothing(bridge):
+    bridge.window = FakeWindow(dialog=None)
+
+    assert bridge.choose_video() == {"path": None}
+    assert bridge.choose_folder() == {"path": None}
