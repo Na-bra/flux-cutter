@@ -2313,5 +2313,20 @@ timeline's own units.
 
 It is bounded at one audio frame per cut and does not accumulate, so it is
 a texture problem rather than a sync one -- most likely audible, if at all,
-as a click at a join. Fixing it means trimming the final audio frame at the
-exact sample the cut falls on rather than keeping or dropping it whole.
+as a click at a join.
+
+Fixed by giving each segment an entitlement: the window from the first
+audio frame kept to the cut itself says how many samples it may keep, and
+emitting no more than that leaves the overshoot in the part that is
+dropped. Whole encoder frames are still the unit, so the last one emitted
+ends at or before the cut and the frame carrying the overshoot is never
+written.
+
+    before   15 of 20 cuts carried a fragment
+    after     0 of 20
+
+Drift and duration alignment are unchanged by it (-0.074ms per marker,
+-0.005s overall), and on the real 22-minute footage the reel comes out
+sample-for-sample identical -- there the picture's budget was already the
+binding constraint, so the entitlement removes the wrong audio without
+taking any of the right audio with it.

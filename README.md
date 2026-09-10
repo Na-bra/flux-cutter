@@ -626,7 +626,7 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-435 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, reference-photo matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+436 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, reference-photo matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
 
 The tests need no display. `app/ui/worker.py` deliberately imports no toolkit at all, and `app/ui/web.py` keeps every decision on the Python side, so the window's behaviour — which filename to suggest, when to refuse a click, what to do about footage that moved — is tested without opening anything.
 

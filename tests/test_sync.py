@@ -204,3 +204,19 @@ def test_the_slide_does_not_grow_with_the_number_of_cuts(marked, tmp_path):
         return offsets.max() - offsets.min()
 
     assert spread(many) < spread(few) + 0.05
+
+
+def test_no_audio_is_carried_across_a_cut(marked, tmp_path):
+    """A decoded audio frame that begins before the cut used to be written
+    whole, so up to 21ms of the moment the reel had cut away arrived at the
+    join as a fragment of the wrong sound. Fifteen of twenty cuts carried
+    one. Video has no equivalent: it is cut on frame boundaries, which are
+    the timeline's own units."""
+    output = tmp_path / "cut.mp4"
+    segments = [AppearanceInterval(k * 3 + 0.5, k * 3 + 2.0) for k in range(8)]
+
+    cut_segments(marked, segments, output)
+
+    _, _, fragments = read_marks(output)
+
+    assert fragments == 0

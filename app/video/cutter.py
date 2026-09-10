@@ -161,6 +161,17 @@ class _AudioState:
         self._time_base = Fraction(1, out_audio.rate)
         self._rate = rate
         self._frame_rate = frame_rate
+        # The cut this segment's audio belongs to, and the timestamp of the
+        # first frame kept for it. Together they say how many samples the
+        # segment is entitled to, which is what stops audio from after the
+        # cut being carried across it.
+        self._segment_end: float | None = None
+        self._origin: float | None = None
+
+    def begin(self, end: float) -> None:
+        """Notes which cut the frames that follow belong to."""
+        self._segment_end = end
+        self._origin = None
 
     def write(self, frame) -> None:
         """Buffers one decoded frame. Nothing is encoded until the segment ends.
@@ -169,9 +180,28 @@ class _AudioState:
         in the reel is not known until the segment's video has been counted,
         and an encoded frame cannot be taken back.
         """
+        if self._origin is None and frame.time is not None:
+            self._origin = frame.time
         for resampled in self._resampler.resample(frame):
             resampled.pts = None
             self._fifo.write(resampled)
+
+    def _entitlement(self) -> int | None:
+        """How many samples this segment may keep, or None if unknowable.
+
+        A decoded audio frame that begins before the cut is buffered whole,
+        so it can reach past it -- up to 21ms of the moment the reel is
+        meant to have cut away, which arrived at a join as a fragment of
+        the wrong sound. Video has no equivalent: it is cut on frame
+        boundaries, which are the timeline's own units.
+
+        The window from the first frame kept to the cut itself says what
+        the segment is entitled to, and emitting no more than that leaves
+        the overshoot in the part that is dropped.
+        """
+        if self._segment_end is None or self._origin is None:
+            return None
+        return max(0, int(round((self._segment_end - self._origin) * self._rate)))
 
     def _emit(self, chunk, output, counters) -> None:
         chunk.pts = counters.audio
@@ -201,11 +231,18 @@ class _AudioState:
         wanted = int(round(counters.video * self._rate / float(self._frame_rate)))
         short = wanted - counters.audio
 
+        # Never past the cut, however much the picture asks for.
+        entitled = self._entitlement()
+        emitted = 0
+
         while short >= self._frame_size:
+            if entitled is not None and emitted + self._frame_size > entitled:
+                break
             chunk = self._fifo.read(self._frame_size)
             if chunk is None:
                 break
             self._emit(chunk, output, counters)
+            emitted += self._frame_size
             short -= self._frame_size
 
         # Whatever is left in the buffer belongs to time this cut did not
@@ -382,6 +419,8 @@ def _write_segment(
 
     streams = [source_video] + ([source_audio] if source_audio is not None else [])
     last_video_time = start
+    if audio_state is not None:
+        audio_state.begin(end)
 
     # Decoding video and audio together yields them interleaved, and audio
     # runs ahead of video. Breaking the loop on the first frame to pass
