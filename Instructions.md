@@ -2326,7 +2326,73 @@ written.
     after     0 of 20
 
 Drift and duration alignment are unchanged by it (-0.074ms per marker,
--0.005s overall), and on the real 22-minute footage the reel comes out
-sample-for-sample identical -- there the picture's budget was already the
-binding constraint, so the entitlement removes the wrong audio without
-taking any of the right audio with it.
+-0.005s overall), and on the real 22-minute footage the reel came out with
+the same number of samples as before.
+
+**That last observation was misread, and the conclusion drawn from it was
+wrong.** The totals matched because the shortfall the entitlement created
+was being filled with manufactured silence -- see "Silence at every join"
+below. The entitlement did take right audio with it, and put zeros in its
+place.
+
+### Silence at every join -- found by review, and the real fix
+
+A code review of the two fixes above, run because they went straight to
+main without a pull request, found that both of them manufactured silence.
+Measured on 100 appearance-shaped cuts of the 22-minute footage, counting
+every block of zeros the cutter wrote:
+
+    v1.9.1  drift fix only       31 of 100 joins   661ms of dead air
+    v1.9.2  drift + leak fix     98 of 100 joins  2091ms of dead air
+
+About 21ms at nearly every cut, heard as a dropout. v1.9.2 was published.
+
+**Why nothing caught it.** Silence is exactly the right length. Every check
+written for the drift -- durations, marker offsets, the spread of those
+offsets -- measures timing, and manufactured silence keeps timing perfect.
+The one test meant to rule it out asserted that the loudest moment in the
+whole reel was louder than 0.001, which a reel of 98 dropouts passes
+comfortably. The "no silent frames" check run by hand looked for decoded
+frames that were exactly zero, and AAC frames overlap, so a zeroed block
+between two loud ones never decodes to exactly zero.
+
+**Why it happened.** Both fixes cut the audio in its own frames and then
+patched the difference. The picture a segment keeps is on screen from the
+first video frame kept to the moment the last one ends -- up to a frame
+past `end`. The audio was taken from a different window: audio frames
+straddling the start were dropped whole, and the tail stopped at `end`.
+The cumulative levelling then found the audio short of the picture at
+almost every join, and the loop meant for "the source ran out of sound"
+filled it. The entitlement added for the leak capped the tail at `end`,
+which widened the gap and tripled the silence.
+
+**The fix is to stop cutting audio in audio frames at all.** Each segment's
+audio is buffered around the cut -- frames straddling the start are kept,
+and reading continues a frame past `end` -- and then exactly the picture's
+span is taken out by sample offset: from the first video frame kept, for as
+many samples as the video frames kept last. Both streams then describe the
+same stretch of the source to the sample. The length is still counted from
+the running video total, so rounding cannot accumulate, and what is taken
+goes into one buffer spanning the whole reel that is encoded in whole
+frames; a part-frame left over is just the start of the next frame, which
+moves nothing, because the output is one contiguous run of samples.
+
+Silence is now written only where the source genuinely has no sound: a
+video-only segment, or a stream whose audio starts late or ends early.
+
+    100 cuts, real footage   silence written 0 times
+    drift                    +0.015s overall, constant (AAC priming/padding)
+    fragments across a cut   0 of 20 (the leak stays fixed)
+
+The leak stays fixed without the entitlement because the span ends where
+the last picture ends. Audio between `end` and that moment is the sound of
+the frame still on screen, not of the moment cut away.
+
+**Two tests that fail on the code that shipped.** One counts the samples of
+silence the cutter writes while cutting footage whose tone never stops, at
+cut points that fall mid-frame the way real appearance intervals do; the
+published cutter wrote 6144. The other decodes the reel and checks that no
+21ms block is quieter than half the median; the published cutter had a join
+at RMS 0.003 against a median of 0.353. Both were run against the v1.9.2
+cutter before being accepted, because a test that cannot fail on the bug it
+names is the reason this shipped.

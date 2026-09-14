@@ -128,27 +128,39 @@ class _Counters:
 
 
 class _AudioState:
-    """Resampling and re-framing for the reel's audio, kept level with the picture.
+    """The reel's audio, cut to exactly the span of the picture it goes with.
 
     AAC encodes fixed-size frames (1024 samples), while decoded frames come
-    in whatever size the source used, so they have to be rebuffered.
+    in whatever size the source used, so they have to be rebuffered. That
+    is the easy half.
 
-    The harder job is staying in sync. Each stream is cut to whole frames of
-    its own kind, and those are not the same length -- 41.7ms of video
-    against 21.3ms of audio at 48kHz -- so a cut keeps slightly more or less
-    of one than the other. On its own that is inaudible. What made it
-    audible was letting the difference run: the counters continue across
-    segments, so every cut's error was added to a total rather than
-    corrected, and a 102-cut reel finished with its audio 3.3 seconds behind
-    the picture. Per cut it is a random walk, not a bias, which is why short
-    reels looked fine and long ones did not.
+    The hard half is that video and audio are not cut in the same units.
+    The picture a segment keeps is a run of whole video frames, and it is
+    on screen from the first of them to the moment the last one ends. Audio
+    frames are shorter -- 21.3ms against 41.7ms at 24fps -- and begin and
+    end in different places. Two earlier attempts cut the audio in its own
+    units and then patched the difference, and both went wrong audibly:
 
-    So the audio is anchored to the video's own clock. At the end of every
-    segment the number of samples that *should* have been written is
-    computed from the total video frames written so far -- cumulatively, not
-    per segment, which is the part that matters: a segment that comes up
-    short is made up by the next one instead of being carried forever. The
-    running error stays under one AAC frame and never grows.
+    - Letting each cut keep whole audio frames and levelling the totals
+      afterwards kept the timelines in sync but filled every shortfall with
+      manufactured silence -- on the 22-minute footage, 21ms of dead air at
+      98 of 100 joins.
+    - Before that, letting the difference run put a 102-cut reel 3.3
+      seconds out.
+
+    So a segment's audio is not cut in audio frames at all. It is buffered
+    around the cut, and then exactly the picture's span is taken out of it
+    by sample offset: from the first video frame kept, for as many samples
+    as the video frames kept last. Both streams then describe the same
+    stretch of the source, to the sample, and silence is only ever written
+    where the source genuinely has no sound.
+
+    The length is counted from the running video total rather than per
+    segment, so rounding to whole samples cannot accumulate either. What
+    is taken goes into one buffer that spans the whole reel and is encoded
+    in whole frames; a part-frame left over is simply the start of the
+    next frame. That does not move anything -- the output is one contiguous
+    run of samples, and framing it into 1024s is invisible to the timing.
     """
 
     def __init__(self, out_audio, rate: int, frame_rate: Fraction):
@@ -156,59 +168,40 @@ class _AudioState:
         self._resampler = av.AudioResampler(
             format=out_audio.format, layout=out_audio.layout, rate=out_audio.rate
         )
-        self._fifo = av.AudioFifo()
         self._frame_size = out_audio.codec_context.frame_size or 1024
         self._time_base = Fraction(1, out_audio.rate)
         self._rate = rate
         self._frame_rate = frame_rate
-        # The cut this segment's audio belongs to, and the timestamp of the
-        # first frame kept for it. Together they say how many samples the
-        # segment is entitled to, which is what stops audio from after the
-        # cut being carried across it.
-        self._segment_end: float | None = None
+        # One for the whole reel, holding what is due to be encoded.
+        self._output = av.AudioFifo()
+        # Samples handed to that buffer so far: the running total the next
+        # segment's length is measured against.
+        self._pushed = 0
+        # One per segment, holding everything decoded around the cut, and
+        # the source time its first sample came from.
+        self._staging: av.AudioFifo | None = None
         self._origin: float | None = None
+        # Samples of silence written because the source had no sound there.
+        # Kept so a test can tell genuine gaps from manufactured ones.
+        self.silence_samples = 0
 
-    def begin(self, end: float) -> None:
-        """Notes which cut the frames that follow belong to."""
-        self._segment_end = end
+    def begin(self) -> None:
+        """Starts buffering a new segment's audio."""
+        self._staging = av.AudioFifo()
         self._origin = None
 
     def write(self, frame) -> None:
-        """Buffers one decoded frame. Nothing is encoded until the segment ends.
+        """Buffers one decoded frame from around the cut.
 
-        Held rather than encoded on arrival because how much of it belongs
-        in the reel is not known until the segment's video has been counted,
-        and an encoded frame cannot be taken back.
+        Nothing is encoded yet: which of these samples belong to the reel
+        depends on which video frames the segment keeps, and that is only
+        known once it has been read.
         """
         if self._origin is None and frame.time is not None:
             self._origin = frame.time
         for resampled in self._resampler.resample(frame):
             resampled.pts = None
-            self._fifo.write(resampled)
-
-    def _entitlement(self) -> int | None:
-        """How many samples this segment may keep, or None if unknowable.
-
-        A decoded audio frame that begins before the cut is buffered whole,
-        so it can reach past it -- up to 21ms of the moment the reel is
-        meant to have cut away, which arrived at a join as a fragment of
-        the wrong sound. Video has no equivalent: it is cut on frame
-        boundaries, which are the timeline's own units.
-
-        The window from the first frame kept to the cut itself says what
-        the segment is entitled to, and emitting no more than that leaves
-        the overshoot in the part that is dropped.
-        """
-        if self._segment_end is None or self._origin is None:
-            return None
-        return max(0, int(round((self._segment_end - self._origin) * self._rate)))
-
-    def _emit(self, chunk, output, counters) -> None:
-        chunk.pts = counters.audio
-        chunk.time_base = self._time_base
-        counters.audio += chunk.samples
-        for packet in self._encoder.encode(chunk):
-            output.mux(packet)
+            self._staging.write(resampled)
 
     def _silence(self, samples: int):
         frame = av.AudioFrame(
@@ -219,48 +212,68 @@ class _AudioState:
         for plane in frame.planes:
             plane.update(bytes(plane.buffer_size))
         frame.rate = self._rate
+        frame.pts = None
+        self.silence_samples += samples
         return frame
 
-    def align(self, output, counters) -> None:
-        """Levels the audio with the picture at the end of a segment.
+    def _push(self, frame) -> None:
+        self._output.write(frame)
+        self._pushed += frame.samples
 
-        Emits whole encoder frames only. The remainder is under one frame
-        and is settled by the next segment, because the target is derived
-        from the running video count rather than from this segment alone.
+    def finish(self, first_video_time: float | None, output, counters) -> None:
+        """Takes the picture's span out of the segment's audio and encodes it.
+
+        Args:
+            first_video_time: Source time of the first video frame this
+                segment kept, or None if it kept none.
         """
+        staging, origin = self._staging, self._origin
+        self._staging = None
+
         wanted = int(round(counters.video * self._rate / float(self._frame_rate)))
-        short = wanted - counters.audio
+        need = wanted - self._pushed
 
-        # Never past the cut, however much the picture asks for.
-        entitled = self._entitlement()
-        emitted = 0
+        if need > 0:
+            if first_video_time is None or origin is None or staging is None:
+                # A segment with picture and no sound at all.
+                self._push(self._silence(need))
+            else:
+                offset = int(round((first_video_time - origin) * self._rate))
+                if offset > 0:
+                    # Audio decoded ahead of the first frame kept.
+                    staging.read(offset, partial=True)
+                elif offset < 0:
+                    # The source's sound starts after its picture does.
+                    gap = min(-offset, need)
+                    self._push(self._silence(gap))
+                    need -= gap
+                if need > 0:
+                    taken = staging.read(need, partial=True)
+                    got = 0
+                    if taken is not None:
+                        taken.pts = None
+                        self._push(taken)
+                        got = taken.samples
+                    if got < need:
+                        # The source's sound ends before its picture does.
+                        self._push(self._silence(need - got))
 
-        while short >= self._frame_size:
-            if entitled is not None and emitted + self._frame_size > entitled:
-                break
-            chunk = self._fifo.read(self._frame_size)
-            if chunk is None:
-                break
-            self._emit(chunk, output, counters)
-            emitted += self._frame_size
-            short -= self._frame_size
+        self._drain(output, counters)
 
-        # Whatever is left in the buffer belongs to time this cut did not
-        # keep, and the next segment's audio comes from elsewhere in the
-        # source -- so it is dropped rather than bled across the join.
-        leftover = self._fifo.samples
-        if leftover:
-            self._fifo.read(leftover, partial=True)
+    def _drain(self, output, counters) -> None:
+        while self._output.samples >= self._frame_size:
+            self._emit(self._output.read(self._frame_size), output, counters)
 
-        # The source ran out of audio before the picture did: a video-only
-        # tail, or a stream that ends early. Silence keeps the two level.
-        while short >= self._frame_size:
-            self._emit(self._silence(self._frame_size), output, counters)
-            short -= self._frame_size
+    def _emit(self, chunk, output, counters) -> None:
+        chunk.pts = counters.audio
+        chunk.time_base = self._time_base
+        counters.audio += chunk.samples
+        for packet in self._encoder.encode(chunk):
+            output.mux(packet)
 
     def flush(self, output, counters) -> None:
         """Encodes the last part-frame, once no more segments are coming."""
-        chunk = self._fifo.read(self._frame_size, partial=True)
+        chunk = self._output.read(self._output.samples, partial=True) if self._output.samples else None
         if chunk is not None:
             self._emit(chunk, output, counters)
 
@@ -369,10 +382,6 @@ def cut_segments(
                 elapsed += written
                 exported_seconds += written
 
-                # Levelled at every join rather than at the end, so an
-                # error cannot outlive the segment that produced it.
-                if audio_state is not None:
-                    audio_state.align(output, counters)
 
                 if on_segment is not None:
                     on_segment(index, len(segments), segment)
@@ -419,8 +428,15 @@ def _write_segment(
 
     streams = [source_video] + ([source_audio] if source_audio is not None else [])
     last_video_time = start
+    first_video_time = None
     if audio_state is not None:
-        audio_state.begin(end)
+        audio_state.begin()
+
+    # The picture a segment keeps is on screen until its last frame ends,
+    # which can be up to one frame past `end`. Audio is read that far so the
+    # span can be taken exactly, rather than stopping at `end` and coming
+    # up short of the picture.
+    audio_stop = end + 1.0 / float(frame_rate)
 
     # Decoding video and audio together yields them interleaved, and audio
     # runs ahead of video. Breaking the loop on the first frame to pass
@@ -436,7 +452,8 @@ def _write_segment(
             continue
 
         is_video = isinstance(frame, av.VideoFrame)
-        if frame.time >= end:
+        stop = end if is_video else audio_stop
+        if frame.time >= stop:
             if is_video:
                 video_done = True
             else:
@@ -445,14 +462,20 @@ def _write_segment(
                 break
             continue
 
-        if frame.time < start:
+        if is_video and frame.time < start:
             # Decoded only to get here; this is the part of the keyframe
             # gap that the viewer must not see.
+            continue
+        if not is_video and frame.time + frame.samples / float(frame.rate) <= start:
+            # Audio that ends before the cut. A frame straddling the start
+            # is kept, because part of it belongs to the first picture.
             continue
         if (is_video and video_done) or (not is_video and audio_done):
             continue
 
         if is_video:
+            if first_video_time is None:
+                first_video_time = frame.time
             last_video_time = frame.time
             # The source here is yuv444p, which many players cannot decode;
             # converting explicitly rather than relying on the encoder makes
@@ -469,6 +492,9 @@ def _write_segment(
                 output.mux(packet)
         elif out_audio is not None and isinstance(frame, av.AudioFrame):
             audio_state.write(frame)
+
+    if audio_state is not None:
+        audio_state.finish(first_video_time, output, counters)
 
     # What was actually written, which is a frame or so short of the request
     # whenever the segment's end falls between frames.

@@ -220,3 +220,120 @@ def test_no_audio_is_carried_across_a_cut(marked, tmp_path):
     _, _, fragments = read_marks(output)
 
     assert fragments == 0
+
+
+# ------------------------------------------------------- nothing is made up
+
+
+def write_tone_video(path: Path, seconds: int) -> None:
+    """Footage whose sound never stops: a steady tone under every frame.
+
+    Any dropout in a reel cut from it is manufactured, because there is no
+    quiet moment in the source for it to have come from.
+    """
+    container = av.open(str(path), mode="w")
+    video = container.add_stream("libx264", rate=FPS)
+    video.width, video.height, video.pix_fmt = 160, 90, "yuv420p"
+    video.options = {"crf": "23", "g": "12"}
+    audio = container.add_stream("aac", rate=RATE)
+    audio.layout = "mono"
+
+    for n in range(seconds * FPS):
+        frame = av.VideoFrame.from_ndarray(
+            np.full((90, 160, 3), (n * 7) % 256, dtype=np.uint8), format="rgb24"
+        )
+        frame.pts = n
+        frame.time_base = Fraction(1, FPS)
+        for packet in video.encode(frame):
+            container.mux(packet)
+
+    total = seconds * RATE
+    tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(total) / RATE)
+    for offset in range(0, total, 1024):
+        block = tone[offset : offset + 1024]
+        if len(block) < 1024:
+            block = np.pad(block, (0, 1024 - len(block)))
+        frame = av.AudioFrame.from_ndarray(
+            (block * 32767).astype(np.int16).reshape(1, -1), format="s16", layout="mono"
+        )
+        frame.rate = RATE
+        frame.pts = offset
+        frame.time_base = Fraction(1, RATE)
+        for packet in audio.encode(frame):
+            container.mux(packet)
+
+    for packet in video.encode():
+        container.mux(packet)
+    for packet in audio.encode():
+        container.mux(packet)
+    container.close()
+
+
+@pytest.fixture(scope="module")
+def tone(tmp_path_factory):
+    path = tmp_path_factory.mktemp("tone") / "tone.mp4"
+    write_tone_video(path, seconds=40)
+    return path
+
+
+# Cuts that end mid-frame, the way real appearance intervals do. Joins that
+# happen to fall on frame boundaries hide the fault this guards against.
+IRREGULAR = [
+    AppearanceInterval(1.013, 3.271),
+    AppearanceInterval(4.502, 6.918),
+    AppearanceInterval(8.130, 9.407),
+    AppearanceInterval(11.66, 14.02),
+    AppearanceInterval(15.31, 17.95),
+    AppearanceInterval(19.07, 20.33),
+    AppearanceInterval(22.84, 25.61),
+    AppearanceInterval(27.19, 29.03),
+    AppearanceInterval(30.55, 33.88),
+    AppearanceInterval(35.02, 37.49),
+]
+
+
+def test_no_silence_is_manufactured_at_the_joins(tone, tmp_path, monkeypatch):
+    """Levelling the sound with the picture once meant cutting audio in its
+    own frames and filling the shortfall with zeros -- 21ms of dead air at
+    98 of 100 joins on the 22-minute footage, heard as a dropout at every
+    cut. Every duration and sync check passed, because silence is exactly
+    the right length. This counts what was written instead."""
+    from app.video import cutter
+
+    made_up = []
+    original = cutter._AudioState._silence
+
+    def counting(self, samples):
+        made_up.append(samples)
+        return original(self, samples)
+
+    monkeypatch.setattr(cutter._AudioState, "_silence", counting)
+
+    cut_segments(tone, IRREGULAR, tmp_path / "cut.mp4")
+
+    assert sum(made_up) == 0
+
+
+def test_the_sound_does_not_dip_at_any_join(tone, tmp_path):
+    """The same fault, measured the way it is heard. The source tone never
+    falls quiet, so no stretch of the reel may either."""
+    output = tmp_path / "cut.mp4"
+    cut_segments(tone, IRREGULAR, output)
+
+    container = av.open(str(output))
+    try:
+        samples = np.concatenate(
+            [
+                frame.to_ndarray().astype(np.float32).reshape(-1)
+                for frame in container.decode(container.streams.audio[0])
+            ]
+        )
+    finally:
+        container.close()
+
+    blocks = samples[: len(samples) // 1024 * 1024].reshape(-1, 1024)
+    loudness = np.sqrt((blocks**2).mean(axis=1))
+    # The codec's own ramp at the very start and end of the file is not a join.
+    interior = loudness[3:-3]
+
+    assert interior.min() > 0.5 * np.median(interior)
