@@ -135,31 +135,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          # The message lives on the tag's own object, not on the commit it
+          # points at, so a shallow checkout would not have it to read.
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
+      - name: Write the notes from the tag's message
+        # Every draft used to arrive carrying the install text and nothing
+        # about what changed, which left the notes to be written by hand
+        # afterwards -- a step that is easy to forget and was nearly
+        # forgotten for 1.9.0. An annotated tag already says what changed;
+        # this puts that at the top. A tag with no message still produces
+        # exactly the notes every release before this one shipped.
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python packaging/release_notes.py --tag "$TAG" > release-notes.md
+          echo "--- notes this release will carry ---"
+          cat release-notes.md
+
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*.zip
           draft: true
-          # Neither build is signed, so anyone downloading them needs to be
-          # told what their computer will say. Saying it here is cheaper than
-          # answering it later.
-          body: |
-            Unsigned builds. Both platforms will warn on first launch.
-
-            **macOS** — the app is quarantined on download and Gatekeeper
-            will call it damaged. It is not. Either:
-
-                xattr -dr com.apple.quarantine /path/to/FluxCutter.app
-
-            or open System Settings → Privacy & Security → **Open Anyway**.
-            (Right-click → Open no longer works; Apple removed it in Sequoia.)
-
-            **Windows** — SmartScreen shows "Windows protected your PC".
-            Click **More info** → **Run anyway**.
-
-            The face models (~174 MB) download on first use, with a progress
-            bar, and are verified against a pinned checksum.
+          body_path: release-notes.md
