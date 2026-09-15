@@ -365,9 +365,14 @@ the footage twice.
 There is no staleness check, because there is nothing to check: the key
 covers the video's identity (path, size, modification time) **and** every
 setting that can change what a scan produces, so a hit means the same scan
-would have given the same answer. The app's own version is part of it, so a
-release invalidates kept scans rather than serving an answer the current
-code would not give.
+would have given the same answer. A scan-format number is part of it too,
+so a release that changes detection or grouping invalidates kept scans
+rather than serving an answer the current code would not give — while a
+release that changes cutting or the window leaves them, and the names and
+corrections stored with them, alone.
+
+Scans kept by 1.9.0 through 1.9.3 are re-filed automatically the first
+time each video is opened, so upgrading loses nothing.
 
 ```bash
 python -m app scans          # what is kept, and how much space it uses

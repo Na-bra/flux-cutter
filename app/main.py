@@ -20,8 +20,8 @@ from app.faces.grouper import (
 from app.faces.reference import ReferenceError, ReferenceFace, match_reference
 from app.faces.tracker import FaceTracker
 from app.modes import DEFAULT_MODE, get_mode
-from app.scans import CachedScan, cache_key
-from app.scans import load as load_scan
+from app.scans import CachedScan
+from app.scans import find as find_scan
 from app.scans import save as save_scan
 from app.ui.gallery import (
     build_face_gallery,
@@ -520,7 +520,7 @@ def scan_or_reuse(
     """
     video_duration = get_video_info(container)["duration"]
 
-    key = cache_key(
+    key, kept = find_scan(
         video_path,
         sample_interval=sample_interval,
         confidence_threshold=confidence_threshold,
@@ -538,7 +538,6 @@ def scan_or_reuse(
     )
 
     if use_cache:
-        kept = load_scan(key)
         if kept is not None:
             age = time.time() - kept.created_at
             print(

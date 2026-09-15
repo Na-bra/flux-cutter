@@ -1954,11 +1954,13 @@ one gets a TypeError rather than a key that quietly differs from the other
 caller's -- which is exactly what would stop the window and the command
 line sharing an entry for the same work.
 
-The app's own version is part of the key. Grouping thresholds here have
-been retuned against real footage more than once (15, 17), and a scan from
-before such a change is not merely old, it is wrong. A release therefore
-invalidates every entry: it costs a rescan and buys never silently serving
-an answer the current code would not give.
+A **scan-format number** is part of the key, and it moves only when
+detection, embedding, tracking or grouping would give a different answer.
+Thresholds here have been retuned against real footage more than once (15,
+17), and a scan from before such a change is not merely old, it is wrong.
+
+This was the app's own version until 1.9.4, which was too blunt by far --
+see section 28.
 
 The video is identified by size and modification time rather than by
 hashing its contents. Hashing an 815 MB file to avoid re-reading it is a
@@ -2396,3 +2398,56 @@ published cutter wrote 6144. The other decodes the reel and checks that no
 at RMS 0.003 against a median of 0.353. Both were run against the v1.9.2
 cutter before being accepted, because a test that cannot fail on the bug it
 names is the reason this shipped.
+
+## 28. Keying a kept scan on what the answer depends on
+
+Keying a kept scan on `app.__version__` was one line and looked
+conservative. It meant every release discarded every kept scan.
+
+1.9.1, 1.9.2 and 1.9.3 changed only how audio is cut. Nothing about
+cutting audio changes who is in a video, yet each of those releases made
+every kept scan unreadable -- a rescan of 55.3s per episode, and, far
+worse, the loss of every name, merge, split and discard stored in it,
+because corrections live inside the entry they correct.
+
+That is not a cache miss. A cache miss costs time; this cost work that a
+person did by hand and cannot be recomputed.
+
+### The distinction the key was missing
+
+`SCAN_FORMAT` replaces the app version. It moves when the identity
+pipeline would answer differently and at no other time, so a release that
+touches cutting, the window, or the command line leaves kept scans alone.
+
+The protection the old key provided is kept intact: a test asserts that
+raising `SCAN_FORMAT` still invalidates. What is gone is the coupling
+between that and the version number on the box.
+
+The one thing this cannot check for itself is a release that changes
+grouping and forgets to raise the number. That is a human step, so it is
+written down where the constant is defined rather than left to memory.
+
+### Rescuing what the old scheme filed
+
+Entries written by 1.7.0 through 1.9.3 are still on disk under keys built
+from those versions. `find` tries the current key, and on a miss tries
+each of those, re-filing anything it finds under the current key and
+removing the stale copy.
+
+The file layout never changed, which is what makes this possible --
+`CACHE_VERSION` stays at 1 deliberately, since bumping it would have made
+exactly the entries being rescued unreadable.
+
+Migration moves a file. It does not rescan, and it runs once per video.
+
+### Verified on the real footage
+
+    scanned as 1.9.2          38 people, 53.2s
+      named #1 "Jamie Lee"
+      merged #2 + #3          37 people
+    upgraded to 1.9.4         37 people, 0.4s, reused
+      still named             Jamie Lee
+      cache entries           1 before, 1 after -- re-filed, not duplicated
+
+The merge survives as well as the name: 37 people rather than the 38 a
+fresh scan finds.

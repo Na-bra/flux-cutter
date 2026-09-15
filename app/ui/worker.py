@@ -45,8 +45,8 @@ from app.faces.edits import (
     split_group,
 )
 from app.models import MODELS, ensure_model, find_model
-from app.scans import CachedScan, cache_key
-from app.scans import load as load_scan
+from app.scans import CachedScan
+from app.scans import find as find_scan
 from app.scans import save as save_scan
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.modes import DEFAULT_MODE
@@ -329,7 +329,7 @@ def scan(
     video_path = Path(video_path)
     started = time.monotonic()
 
-    key = cache_key(
+    key, found = find_scan(
         video_path,
         sample_interval=settings.sample_interval,
         confidence_threshold=settings.confidence_threshold,
@@ -345,7 +345,7 @@ def scan(
         cooccurrence_similarity_ceiling=settings.cooccurrence_similarity_ceiling,
         min_detections=settings.min_detections,
     )
-    kept = load_scan(key) if use_cache else None
+    kept = found if use_cache else None
 
     # Consulted before the models are fetched, not after. A reused scan
     # detects and embeds nothing, so on a machine that has never run one
@@ -506,7 +506,7 @@ def _keep_edited(scan_result: "ScanResult", settings: ScanSettings, gallery) -> 
     Best effort: an edit the user can see must not fail because the cache
     could not be written. It would simply have to be made again.
     """
-    key = cache_key(
+    key, existing = find_scan(
         scan_result.video_path,
         sample_interval=settings.sample_interval,
         confidence_threshold=settings.confidence_threshold,
@@ -522,7 +522,6 @@ def _keep_edited(scan_result: "ScanResult", settings: ScanSettings, gallery) -> 
         cooccurrence_similarity_ceiling=settings.cooccurrence_similarity_ceiling,
         min_detections=settings.min_detections,
     )
-    existing = load_scan(key)
     if existing is None:
         return
     try:

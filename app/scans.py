@@ -44,7 +44,30 @@ from app.models import cache_dir
 
 # Bumped when the stored layout changes in a way an older reader would
 # misread. Entries written by another version are ignored, not repaired.
+# Unchanged by the move to SCAN_FORMAT below: the file's layout is the
+# same, only the name it is filed under changed -- which is what lets an
+# entry written by 1.9.x still be read and re-keyed rather than rebuilt.
 CACHE_VERSION = 1
+
+# Bumped when the pipeline would give a *different answer* -- a change to
+# detection, embedding, tracking or grouping, or to any default those use.
+# It is not the app's version, and that distinction is the whole point of
+# it: 1.9.1, 1.9.2 and 1.9.3 changed only how audio is cut, yet keying on
+# the app version made each of them discard every kept scan, and with it
+# every name, merge, split and discard a person had made. Nothing about
+# cutting audio can change who is in a video.
+#
+# Raise this deliberately when the identity pipeline changes. Leaving it
+# alone through a release that alters grouping is the one mistake it
+# cannot catch for you, so the release that does that says so in its
+# commit message.
+SCAN_FORMAT = 1
+
+# App versions whose entries were keyed on the version itself, newest
+# first. A scan kept by one of these is found and re-keyed rather than
+# rebuilt -- see `load`. Nothing is added here again: releases after 1.9.3
+# key on SCAN_FORMAT, which does not move unless the answer would.
+LEGACY_APP_VERSIONS = ("1.9.3", "1.9.2", "1.9.1", "1.9.0", "1.8.0", "1.7.0")
 
 # Scans are large and worth keeping, but not without limit. Oldest first,
 # by modification time, until the total is back under this.
@@ -82,6 +105,7 @@ def cache_key(
     cooccurrence_similarity_ceiling: float,
     min_detections: int | None,
     skip_nonreference: bool = True,
+    _stamp: str | None = None,
 ) -> str:
     """Identifies one scan of one video under one set of settings.
 
@@ -94,6 +118,10 @@ def cache_key(
     hashing its contents: hashing an 815 MB file to avoid re-reading it is
     a poor trade, and an edit that preserved both would have to be
     deliberate.
+
+    `_stamp` replaces the scan-format marker and exists only so `load` can
+    rebuild the key an older release would have written. No caller outside
+    this module passes it.
     """
     path = Path(video_path).resolve()
     try:
@@ -106,7 +134,9 @@ def cache_key(
 
     parts = identity + [
         f"v{CACHE_VERSION}",
-        app.__version__,
+        # What the answer depends on, not what the app happens to be
+        # called this week.
+        _stamp if _stamp is not None else f"scan{SCAN_FORMAT}",
         f"{sample_interval!r}",
         f"{confidence_threshold!r}",
         f"{padding_ratio!r}",
@@ -123,6 +153,41 @@ def cache_key(
         f"{skip_nonreference!r}",
     ]
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def find(video_path: Path, **settings) -> tuple[str, "CachedScan | None"]:
+    """The key to file this scan under, and whatever is already kept for it.
+
+    Callers ask for both at once because the second question depends on
+    more than the first. A scan kept by an older release was filed under a
+    key built from that release's version, so a miss on the current key is
+    not proof there is nothing: the older names are tried, and anything
+    found is re-filed under the current key and the stale copy removed.
+
+    That migration runs once per video. It moves a file; it does not
+    rescan, and the names and corrections inside come across with it.
+    """
+    key = cache_key(video_path, **settings)
+
+    kept = load(key)
+    if kept is not None:
+        return key, kept
+
+    for version in LEGACY_APP_VERSIONS:
+        stale = cache_key(video_path, _stamp=version, **settings)
+        older = load(stale)
+        if older is None:
+            continue
+        try:
+            save(key, older)
+            (scan_cache_dir() / f"{stale}.npz").unlink(missing_ok=True)
+        except OSError:
+            # Re-filing is a convenience; the scan itself is already in
+            # hand, and failing to tidy up must not lose it.
+            pass
+        return key, older
+
+    return key, None
 
 
 @dataclass

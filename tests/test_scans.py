@@ -125,11 +125,17 @@ def test_editing_the_video_changes_the_key(video):
     assert scans.cache_key(video, **SETTINGS) != before
 
 
-def test_a_release_invalidates_kept_scans(video, monkeypatch):
+def test_a_pipeline_change_invalidates_kept_scans(video, monkeypatch):
     """Grouping thresholds have been retuned against real footage more than
-    once. A scan from before such a change is not old, it is wrong."""
+    once. A scan from before such a change is not old, it is wrong.
+
+    This used to be keyed on the app's version, which was too blunt: three
+    releases that changed only how audio is cut discarded every kept scan,
+    and every name and correction stored with it. It is keyed on the scan
+    format now, which moves only when the answer would.
+    """
     before = scans.cache_key(video, **SETTINGS)
-    monkeypatch.setattr("app.__version__", "99.0.0")
+    monkeypatch.setattr(scans, "SCAN_FORMAT", scans.SCAN_FORMAT + 1)
 
     assert scans.cache_key(video, **SETTINGS) != before
 
@@ -321,3 +327,81 @@ def test_listing_an_absent_cache_is_empty_not_an_error(monkeypatch, tmp_path):
     assert scans.entries() == []
     assert scans.total_bytes() == 0
     assert scans.clear() == 0
+
+
+# ------------------------------------------------- surviving an upgrade
+
+
+def test_the_app_version_no_longer_decides_the_key(video, monkeypatch):
+    """1.9.1, 1.9.2 and 1.9.3 changed only how audio is cut, and each one
+    discarded every kept scan -- and with it every name, merge, split and
+    discard anyone had made. Nothing about cutting audio changes who is in
+    a video."""
+    before = scans.cache_key(video, **SETTINGS)
+    monkeypatch.setattr("app.__version__", "99.0.0")
+
+    assert scans.cache_key(video, **SETTINGS) == before
+
+
+
+def test_a_scan_kept_by_an_older_release_is_found_and_re_filed(video):
+    """The rescue. An entry filed under 1.9.2's key is found, moved to the
+    current key, and the stale copy removed -- without rescanning."""
+    legacy = scans.cache_key(video, _stamp="1.9.2", **SETTINGS)
+    named = a_scan()
+    named.groups[0].name = "Jamie Lee"
+    scans.save(legacy, named)
+
+    key, found = scans.find(video, **SETTINGS)
+
+    assert found is not None
+    assert key == scans.cache_key(video, **SETTINGS)
+    assert key != legacy
+    assert [group.name for group in found.groups] == ["Jamie Lee", None]
+    assert (scans.scan_cache_dir() / f"{key}.npz").is_file()
+    assert not (scans.scan_cache_dir() / f"{legacy}.npz").exists()
+
+
+def test_the_rescued_scan_is_there_on_the_next_look(video):
+    """Re-filing has to stick, or every launch pays the migration again."""
+    scans.save(scans.cache_key(video, _stamp="1.9.0", **SETTINGS), a_scan())
+
+    scans.find(video, **SETTINGS)
+    key, found = scans.find(video, **SETTINGS)
+
+    assert found is not None
+    assert key == scans.cache_key(video, **SETTINGS)
+    assert len(scans.entries()) == 1
+
+
+def test_corrections_come_across_with_the_names(video):
+    """Merges, splits and discards are stored in the same entry, so the
+    rescue either brings all of it or none."""
+    corrected = a_scan(unassigned_count=11)
+    corrected.edited = True
+    corrected.groups[0].name = "Jamie Lee"
+    scans.save(scans.cache_key(video, _stamp="1.9.3", **SETTINGS), corrected)
+
+    _, found = scans.find(video, **SETTINGS)
+
+    assert found.edited is True
+    assert found.unassigned_count == 11
+    assert found.groups[0].name == "Jamie Lee"
+
+
+def test_nothing_kept_means_nothing_found(video):
+    key, found = scans.find(video, **SETTINGS)
+
+    assert found is None
+    assert key == scans.cache_key(video, **SETTINGS)
+
+
+def test_a_legacy_entry_for_other_settings_is_not_claimed(video):
+    """The rescue matches on the same video and the same settings. A scan
+    at a different sampling interval is a different scan."""
+    other = {**SETTINGS, "sample_interval": 2.0}
+    scans.save(scans.cache_key(video, _stamp="1.9.2", **other), a_scan())
+
+    _, found = scans.find(video, **SETTINGS)
+
+    assert found is None
