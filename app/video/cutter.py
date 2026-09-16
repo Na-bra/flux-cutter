@@ -66,6 +66,39 @@ class CutResult:
     encode_seconds: float
 
 
+@dataclass(frozen=True)
+class Clip:
+    """One video's part of a reel: the file and the spans to take from it."""
+
+    video: Path | VideoSource
+    segments: list[AppearanceInterval]
+
+
+@dataclass(frozen=True)
+class ClipProfile:
+    """What a video is made of, as far as joining it to others is concerned."""
+
+    path: Path
+    frame_rate: Fraction
+    width: int
+    height: int
+    sample_rate: int | None
+    layout: str | None
+
+
+# How far apart two frame rates may be and still share a reel.
+#
+# Frames are stamped by counting them against the reel's one frame rate,
+# and each segment's sound is measured from how many frames it kept. A
+# source at a different rate would play at the wrong speed and take the
+# wrong length of sound with it -- 25fps footage in a 23.976 reel runs 4%
+# slow. One part in ten thousand is what separates the same nominal rate
+# written two ways (24000/1001 against 23.976) from different ones; within
+# it a minute-long segment ends at most 6ms adrift, and the next segment
+# starts exact again.
+FRAME_RATE_TOLERANCE = 1e-4
+
+
 # videotoolbox takes -q:v on a 0-100 scale where higher is better; x264 and
 # its relatives take -crf on 0-51 where lower is better. The callers already
 # translate between the two (app/ui/worker.quality_for); this only has to
@@ -83,35 +116,40 @@ VIDEO_TIME_BASE = Fraction(1, 90000)
 
 def _open_output(
     output_path: Path,
-    source_video,
-    source_audio,
+    picture: ClipProfile,
+    sound: ClipProfile | None,
     video_encoder: str,
     audio_encoder: str,
     quality: int,
 ):
-    """Opens the reel and configures its streams to match the source."""
+    """Opens the reel and configures its streams.
+
+    The picture takes its size and rate from `picture`, the sound its rate
+    and layout from `sound` -- for a single video both are that video, so
+    the reel matches its source exactly as it always has.
+    """
     output = av.open(str(output_path), mode="w")
 
     video = output.add_stream(
         video_encoder,
-        rate=source_video.average_rate or Fraction(30, 1),
+        rate=picture.frame_rate,
         options=_quality_options(video_encoder, quality),
     )
-    video.width = source_video.width
-    video.height = source_video.height
+    video.width = picture.width
+    video.height = picture.height
     # yuv420p rather than the source's own format: it is what every player
     # can decode, and the test footage is yuv444p, which many cannot.
     video.pix_fmt = "yuv420p"
     video.codec_context.time_base = VIDEO_TIME_BASE
 
     audio = None
-    if source_audio is not None:
-        audio = output.add_stream(audio_encoder, rate=source_audio.rate)
-        audio.layout = source_audio.layout
+    if sound is not None:
+        audio = output.add_stream(audio_encoder, rate=sound.sample_rate)
+        audio.layout = sound.layout
         # An encoder's codec_context.time_base is not populated until it is
         # opened, so timestamps are computed against the sample rate, which
         # is what an audio timebase is anyway.
-        audio.time_base = Fraction(1, source_audio.rate)
+        audio.time_base = Fraction(1, sound.sample_rate)
 
     return output, video, audio
 
@@ -178,9 +216,7 @@ class _AudioState:
 
     def __init__(self, out_audio, rate: int, frame_rate: Fraction):
         self._encoder = out_audio
-        self._resampler = av.AudioResampler(
-            format=out_audio.format, layout=out_audio.layout, rate=out_audio.rate
-        )
+        self._resampler = None
         self._frame_size = out_audio.codec_context.frame_size or 1024
         self._time_base = Fraction(1, out_audio.rate)
         self._rate = rate
@@ -199,9 +235,21 @@ class _AudioState:
         self.silence_samples = 0
 
     def begin(self) -> None:
-        """Starts buffering a new segment's audio."""
+        """Starts buffering a new segment's audio.
+
+        With a fresh resampler each time. One fixes its input format on the
+        first frame it sees, so a reel drawing on two videos with different
+        sample rates cannot share one; and one converting between rates
+        holds a few samples back, which carried into the next segment would
+        be sound from the moment the reel just cut away from.
+        """
         self._staging = av.AudioFifo()
         self._origin = None
+        self._resampler = av.AudioResampler(
+            format=self._encoder.format,
+            layout=self._encoder.layout,
+            rate=self._encoder.rate,
+        )
 
     def write(self, frame) -> None:
         """Buffers one decoded frame from around the cut.
@@ -373,93 +421,222 @@ def cut_segments(
     """
     if not segments:
         raise CutterError("No segments to export.")
-    for earlier, later in zip(segments, segments[1:]):
-        if later.start_time < earlier.end_time:
+    return cut_clips(
+        [Clip(video, segments)],
+        output_path,
+        video_encoder=video_encoder,
+        audio_encoder=audio_encoder,
+        quality=quality,
+        include_audio=include_audio,
+        on_segment=on_segment,
+    )
+
+
+def _open_source(video: Path | VideoSource):
+    """The path to report and an open container, however the video was given."""
+    if isinstance(video, VideoSource):
+        try:
+            return video.path, video.open()
+        except VideoLoadError as error:
+            raise CutterError(str(error)) from error
+    path = Path(video)
+    try:
+        return path, av.open(str(path))
+    except av.FFmpegError as error:
+        raise CutterError(f"Could not open {path}: {error}") from error
+
+
+def probe_clip(video: Path | VideoSource, include_audio: bool = True) -> ClipProfile:
+    """Reads what joining this video to others depends on, without decoding.
+
+    Raises:
+        CutterError: If the video cannot be opened or has no picture.
+    """
+    path, source = _open_source(video)
+    with source:
+        if not source.streams.video:
+            raise CutterError(f"{path} has no video stream.")
+        picture = source.streams.video[0]
+        sound = (
+            source.streams.audio[0]
+            if include_audio and source.streams.audio
+            else None
+        )
+        return ClipProfile(
+            path=path,
+            frame_rate=picture.average_rate or Fraction(30, 1),
+            width=picture.width,
+            height=picture.height,
+            sample_rate=sound.rate if sound is not None else None,
+            layout=sound.layout.name if sound is not None else None,
+        )
+
+
+def same_frame_rate(first: Fraction, second: Fraction) -> bool:
+    """Whether two videos can share a reel's timeline. See FRAME_RATE_TOLERANCE."""
+    return abs(float(first) - float(second)) <= FRAME_RATE_TOLERANCE * float(first)
+
+
+def _fmt_rate(rate: Fraction) -> str:
+    return f"{float(rate):.3f}".rstrip("0").rstrip(".") + "fps"
+
+
+def cut_clips(
+    clips: list[Clip],
+    output_path: Path,
+    video_encoder: str = "libx264",
+    audio_encoder: str = "aac",
+    quality: int = 20,
+    include_audio: bool = True,
+    on_segment: Callable[[int, int, AppearanceInterval], None] | None = None,
+    on_clip: Callable[[int, int, Path], None] | None = None,
+) -> CutResult:
+    """Cuts spans out of one or more videos into a single joined reel.
+
+    Every video is read before anything is written, because a reel that
+    fails halfway through a season is minutes of encoding thrown away:
+
+    - **One frame rate.** The reel's timeline counts frames at a single
+      rate, so videos at different rates are refused, naming them, rather
+      than joined at the wrong speed. See FRAME_RATE_TOLERANCE.
+    - **One picture size.** The reel takes the first video's size. A video
+      of another shape is scaled to fit inside it with black bars, never
+      stretched; one of the same shape is simply scaled.
+    - **One sound format.** The reel takes the first video that has sound;
+      every other is converted to it. A video with no sound contributes
+      silence of exactly its picture's length, so nothing after it moves.
+
+    Timestamps, the sync of each segment's sound to its picture, and the
+    fade at each join are the same across videos as within one: the
+    counters run from the first segment of the first video to the last of
+    the last.
+
+    Args:
+        clips: The videos, in reel order, each with its segments in order.
+        on_segment: Called as (index, total, segment) after each segment,
+            counting across the whole reel. Raising from it aborts the cut.
+        on_clip: Called as (index, total, path) as each video is started.
+
+    Raises:
+        CutterError: If there is nothing to cut, segments overlap, a video
+            cannot be read, or the videos cannot share one reel.
+    """
+    clips = [clip for clip in clips if clip.segments]
+    if not clips:
+        raise CutterError("No segments to export.")
+    for clip in clips:
+        for earlier, later in zip(clip.segments, clip.segments[1:]):
+            if later.start_time < earlier.end_time:
+                raise CutterError(
+                    "Segments overlap; pass them through merge_for_export first so "
+                    "the joined output does not repeat footage."
+                )
+
+    profiles = [probe_clip(clip.video, include_audio) for clip in clips]
+    picture = profiles[0]
+    for profile in profiles[1:]:
+        if not same_frame_rate(picture.frame_rate, profile.frame_rate):
             raise CutterError(
-                "Segments overlap; pass them through merge_for_export first so "
-                "the joined output does not repeat footage."
+                "These videos cannot share one reel: "
+                f"{picture.path.name} is {_fmt_rate(picture.frame_rate)} but "
+                f"{profile.path.name} is {_fmt_rate(profile.frame_rate)}. "
+                "Joining different frame rates is not supported yet."
             )
+    sound = next((p for p in profiles if p.sample_rate is not None), None)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()
     exported_seconds = 0.0
+    total = sum(len(clip.segments) for clip in clips)
+    index = 0
 
-    if isinstance(video, VideoSource):
-        video_path = video.path
-        try:
-            source = video.open()
-        except VideoLoadError as error:
-            raise CutterError(str(error)) from error
-    else:
-        video_path = Path(video)
-        try:
-            source = av.open(str(video_path))
-        except av.FFmpegError as error:
-            raise CutterError(f"Could not open {video_path}: {error}") from error
+    output, out_video, out_audio = _open_output(
+        output_path, picture, sound, video_encoder, audio_encoder, quality
+    )
+    counters = _Counters()
+    frame_rate = picture.frame_rate
+    audio_state = (
+        _AudioState(out_audio, out_audio.rate, frame_rate)
+        if out_audio is not None
+        else None
+    )
 
-    with source:
-        if not source.streams.video:
-            raise CutterError(f"{video_path} has no video stream.")
-        source_video = source.streams.video[0]
-        source_audio = (
-            source.streams.audio[0]
-            if include_audio and source.streams.audio
-            else None
-        )
-        source_video.thread_type = "AUTO"
-
-        output, out_video, out_audio = _open_output(
-            output_path, source_video, source_audio, video_encoder, audio_encoder, quality
-        )
-
-        counters = _Counters()
-        frame_rate = source_video.average_rate or Fraction(30, 1)
-        audio_state = (
-            _AudioState(out_audio, source_audio.rate, frame_rate)
-            if out_audio is not None
-            else None
-        )
-        elapsed = 0.0
-
-        try:
-            for index, segment in enumerate(segments):
-                written = _write_segment(
-                    source,
-                    source_video,
-                    source_audio,
-                    output,
-                    out_video,
-                    out_audio,
-                    audio_state,
-                    counters,
-                    frame_rate,
-                    segment,
+    try:
+        for clip_index, (clip, profile) in enumerate(zip(clips, profiles)):
+            if on_clip is not None:
+                on_clip(clip_index, len(clips), profile.path)
+            path, source = _open_source(clip.video)
+            with source:
+                source_video = source.streams.video[0]
+                source_audio = (
+                    source.streams.audio[0]
+                    if out_audio is not None and source.streams.audio
+                    else None
                 )
-                elapsed += written
-                exported_seconds += written
+                source_video.thread_type = "AUTO"
 
+                for segment in clip.segments:
+                    written = _write_segment(
+                        source,
+                        source_video,
+                        source_audio,
+                        output,
+                        out_video,
+                        out_audio,
+                        audio_state,
+                        counters,
+                        frame_rate,
+                        segment,
+                    )
+                    exported_seconds += written
+                    if on_segment is not None:
+                        on_segment(index, total, segment)
+                    index += 1
 
-                if on_segment is not None:
-                    on_segment(index, len(segments), segment)
-
-            # Encoders buffer; without a flush the reel loses its tail.
-            if audio_state is not None:
-                audio_state.flush(output, counters)
-            for packet in out_video.encode():
+        # Encoders buffer; without a flush the reel loses its tail.
+        if audio_state is not None:
+            audio_state.flush(output, counters)
+        for packet in out_video.encode():
+            output.mux(packet)
+        if out_audio is not None:
+            for packet in out_audio.encode():
                 output.mux(packet)
-            if out_audio is not None:
-                for packet in out_audio.encode():
-                    output.mux(packet)
-        finally:
-            output.close()
+    finally:
+        output.close()
 
     return CutResult(
         output_path=output_path,
-        segment_count=len(segments),
+        segment_count=total,
         exported_seconds=exported_seconds,
         encode_seconds=time.monotonic() - started,
+    )
+
+
+def _fit_frame(frame, width: int, height: int):
+    """A decoded frame in the reel's size and pixel format.
+
+    The source here is yuv444p, which many players cannot decode; converting
+    explicitly rather than relying on the encoder makes the output format a
+    decision rather than a coincidence.
+
+    A frame of another shape -- a 4:3 episode in a 16:9 reel -- is scaled to
+    fit and centred on black rather than stretched.
+    """
+    if frame.width * height == frame.height * width:
+        return frame.reformat(width=width, height=height, format="yuv420p")
+
+    scale = min(width / frame.width, height / frame.height)
+    fit_width = max(2, min(width, int(round(frame.width * scale))))
+    fit_height = max(2, min(height, int(round(frame.height * scale))))
+    scaled = frame.reformat(width=fit_width, height=fit_height, format="rgb24")
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    top = (height - fit_height) // 2
+    left = (width - fit_width) // 2
+    canvas[top : top + fit_height, left : left + fit_width] = scaled.to_ndarray()
+    return av.VideoFrame.from_ndarray(canvas, format="rgb24").reformat(
+        format="yuv420p"
     )
 
 
@@ -535,12 +712,7 @@ def _write_segment(
             if first_video_time is None:
                 first_video_time = frame.time
             last_video_time = frame.time
-            # The source here is yuv444p, which many players cannot decode;
-            # converting explicitly rather than relying on the encoder makes
-            # the output format a decision rather than a coincidence.
-            converted = frame.reformat(
-                width=out_video.width, height=out_video.height, format="yuv420p"
-            )
+            converted = _fit_frame(frame, out_video.width, out_video.height)
             converted.pts = int(
                 round(counters.video / frame_rate / VIDEO_TIME_BASE)
             )
