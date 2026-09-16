@@ -2452,6 +2452,65 @@ Migration moves a file. It does not rescan, and it runs once per video.
 The merge survives as well as the name: 37 people rather than the 38 a
 fresh scan finds.
 
+## 29. Release notes from the tag's message (`packaging/release_notes.py`)
+
+The release job wrote the same body into every draft: how to get past
+Gatekeeper and SmartScreen, and nothing about what changed. So the real
+notes were typed into the draft by hand afterwards, once per release, from
+memory. That held for 1.9.0 through 1.9.4, and 1.9.0 nearly went out
+without mentioning that Export worked again -- the one thing its users
+needed to know.
+
+An annotated tag already carries that text, written at the moment the
+release is cut. The job now reads it and puts it above the install text.
+The install text moved out of the workflow into `packaging/release-body.md`
+unchanged, byte for byte, so nothing already published reads differently.
+
+### Two things git does that would have shipped wrong notes
+
+Both were found by writing the tests against a real repository rather than
+a fixture. Neither is visible from reading the code.
+
+**A lightweight tag hands back the commit's message.** `%(contents)` on a
+tag that is only a name pointing at a commit answers with that commit's
+message, not an empty string. The first draft of this would have published
+
+    Merge pull request #5 from Na-bra/fix/keep-names-across-upgrades
+
+as the headline of a release. The object type is now checked -- only
+`objecttype == tag` has a message anyone wrote to be read -- and anything
+else falls back to the install text alone, which is what every release
+before this shipped.
+
+**git deletes markdown headings from a tag message.** The default cleanup
+strips every line beginning with `#`, so
+
+    git tag -a v1.2.3 -m "## What changed
+
+    The paragraph."
+
+stores the paragraph and drops the heading. The text never reaches the tag
+object, so nothing downstream can put it back.
+
+This one cannot be fixed in code. Cut a release with:
+
+    git tag -a --cleanup=whitespace v1.2.3 -F notes.md
+
+`tests/test_release_notes.py` pins both behaviours, because the second
+belongs to whoever types the command and a test is the only place that
+knowledge runs.
+
+### What it would have produced
+
+Against the real `v1.9.4` tag, whose message was written by hand into the
+draft the old way, the job now composes notes that match it apart from the
+markdown formatting -- the tag's message is plain text, since headings
+would not have survived being written with `-m`.
+
+A tag with no message, or one whose message only repeats the tag's own
+name, produces exactly the notes every release before this one carried. The
+change can only add.
+
 ## 30. Clicks at the joins (`FADE_SECONDS`)
 
 Measured before fixing, as the backlog asked -- the three releases before
