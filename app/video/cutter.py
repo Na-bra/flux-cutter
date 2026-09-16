@@ -45,6 +45,7 @@ from fractions import Fraction
 from pathlib import Path
 
 import av
+import numpy as np
 
 from app.video.loader import VideoLoadError
 from app.video.source import VideoSource
@@ -113,6 +114,18 @@ def _open_output(
         audio.time_base = Fraction(1, source_audio.rate)
 
     return output, video, audio
+
+
+# How long each cut's sound takes to ease in and out.
+#
+# A join puts two unrelated stretches of sound side by side, and wherever
+# the waveform is not near zero at that instant it jumps -- which is heard
+# as a click. On a steady tone cut ten times, five of the nine joins jumped
+# by 6 to 13 times the largest step the tone itself ever takes. Easing each
+# side to zero over a few milliseconds removes the jump. 5ms is shorter than
+# anything a listener hears as a fade, and it changes no lengths, so the
+# picture and sound stay exactly as aligned as before.
+FADE_SECONDS = 0.005
 
 
 @dataclass
@@ -220,6 +233,47 @@ class _AudioState:
         self._output.write(frame)
         self._pushed += frame.samples
 
+    def _faded(self, parts):
+        """One segment's sound as a single frame, eased in and out at its ends.
+
+        The fade is applied to the whole segment, silence included, so it
+        lands at the join whatever the segment is made of. A segment too
+        short for two full fades gets two that meet in its middle.
+        """
+        planar = self._encoder.format.is_planar
+        channels = len(self._encoder.layout.channels)
+        arrays = []
+        for part in parts:
+            data = part.to_ndarray()
+            arrays.append(data if planar else data.reshape(-1, channels).T)
+        data = np.concatenate(arrays, axis=1)
+        dtype = data.dtype
+
+        total = data.shape[1]
+        length = min(int(round(FADE_SECONDS * self._rate)), total // 2)
+        if length > 0:
+            # Raised cosine: starts and ends flat, so the fade adds no
+            # corner of its own for the ear to catch.
+            ramp = 0.5 - 0.5 * np.cos(np.pi * (np.arange(length) + 0.5) / length)
+            gain = np.ones(total)
+            gain[:length] = ramp
+            gain[total - length :] = ramp[::-1]
+            faded = data * gain
+            if np.issubdtype(dtype, np.integer):
+                faded = np.round(faded)
+            data = faded.astype(dtype)
+
+        if not planar:
+            data = data.T.reshape(1, -1)
+        frame = av.AudioFrame.from_ndarray(
+            np.ascontiguousarray(data),
+            format=self._encoder.format.name,
+            layout=self._encoder.layout.name,
+        )
+        frame.rate = self._rate
+        frame.pts = None
+        return frame
+
     def finish(self, first_video_time: float | None, output, counters) -> None:
         """Takes the picture's span out of the segment's audio and encodes it.
 
@@ -233,10 +287,13 @@ class _AudioState:
         wanted = int(round(counters.video * self._rate / float(self._frame_rate)))
         need = wanted - self._pushed
 
+        # Everything this segment contributes, in order, so it can be faded
+        # as one piece before it joins the reel.
+        parts = []
         if need > 0:
             if first_video_time is None or origin is None or staging is None:
                 # A segment with picture and no sound at all.
-                self._push(self._silence(need))
+                parts.append(self._silence(need))
             else:
                 offset = int(round((first_video_time - origin) * self._rate))
                 if offset > 0:
@@ -245,18 +302,19 @@ class _AudioState:
                 elif offset < 0:
                     # The source's sound starts after its picture does.
                     gap = min(-offset, need)
-                    self._push(self._silence(gap))
+                    parts.append(self._silence(gap))
                     need -= gap
                 if need > 0:
                     taken = staging.read(need, partial=True)
                     got = 0
                     if taken is not None:
-                        taken.pts = None
-                        self._push(taken)
+                        parts.append(taken)
                         got = taken.samples
                     if got < need:
                         # The source's sound ends before its picture does.
-                        self._push(self._silence(need - got))
+                        parts.append(self._silence(need - got))
+        if parts:
+            self._push(self._faded(parts))
 
         self._drain(output, counters)
 

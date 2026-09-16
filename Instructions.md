@@ -2451,3 +2451,56 @@ Migration moves a file. It does not rescan, and it runs once per video.
 
 The merge survives as well as the name: 37 people rather than the 38 a
 fresh scan finds.
+
+## 30. Clicks at the joins (`FADE_SECONDS`)
+
+Measured before fixing, as the backlog asked -- the three releases before
+this were all audio that looked right and wasn't.
+
+### The measurement
+
+A steady 440Hz tone cut at the ten irregular intervals the silence tests
+use. The largest step between two samples a 0.5-amplitude 440Hz sine can
+take is 0.049; the decoded source never exceeds that.
+
+    join   1     2     3     4     5     6     7     8     9
+    step   0.5x  12.2x 0.5x  12.9x 0.5x  6.1x  2.6x  13.2x 0.5x
+
+Five of nine joins jumped by up to 13 times anything the tone does -- a
+click at nearly full scale. The encoder spread each one into the samples
+around it: away from the joins the reel still stepped 2.5x.
+
+The four clean joins were a property of the test signal, not of the cutter.
+440Hz advances exactly a third of a cycle per 24fps frame, so any gap of a
+multiple of three frames lines the phase back up. Real sound has no period
+to fall into step with.
+
+### The probe that found nothing
+
+The first attempt looked for the step at each join's sample index, taken
+from the cutter's running audio count after each segment, and every join
+measured clean. That count is what has been *encoded*; up to a frame of
+the segment is still buffered waiting for a full 1024, so it trails the
+real join by 160-768 samples. The spikes were all at exact multiples of
+2000 samples -- one 24fps frame -- which briefly looked like a sync fault.
+
+Settled with footage carrying seeded noise instead of a tone, where every
+window matches exactly one place in the source. Every segment's sound
+starts on the source sample of its first video frame (1.042s, frame 25,
+for a cut requested at 1.013s), and every transition sits on a frame
+boundary. Sync was exact; the probe was wrong. The test measures the whole
+reel for that reason rather than predicting where the joins are.
+
+### The fix
+
+Each segment's sound is eased to zero over its first and last 5ms with a
+raised cosine, silence included, so the fade lands at the join whatever the
+segment is made of. A segment under 10ms gets two fades that meet in the
+middle. No sample is added or removed, so sync and the no-silence count
+cannot move.
+
+    before  largest step anywhere in the reel  13.2x
+    after                                        1.06x   (every join 0.0x)
+
+`test_no_join_clicks` fails without the fix (0.648 against a limit of
+0.098) and passes with it; the sync, silence and dip tests are unchanged.
