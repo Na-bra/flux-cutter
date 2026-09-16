@@ -64,6 +64,9 @@ class CutResult:
     segment_count: int
     exported_seconds: float
     encode_seconds: float
+    # Seconds written from each clip, in the order the clips were given --
+    # including 0.0 for any that had nothing to take.
+    clip_seconds: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -521,7 +524,8 @@ def cut_clips(
         CutterError: If there is nothing to cut, segments overlap, a video
             cannot be read, or the videos cannot share one reel.
     """
-    clips = [clip for clip in clips if clip.segments]
+    given = list(clips)
+    clips = [clip for clip in given if clip.segments]
     if not clips:
         raise CutterError("No segments to export.")
     for clip in clips:
@@ -551,6 +555,7 @@ def cut_clips(
     exported_seconds = 0.0
     total = sum(len(clip.segments) for clip in clips)
     index = 0
+    per_clip = {id(clip): 0.0 for clip in given}
 
     output, out_video, out_audio = _open_output(
         output_path, picture, sound, video_encoder, audio_encoder, quality
@@ -591,6 +596,7 @@ def cut_clips(
                         segment,
                     )
                     exported_seconds += written
+                    per_clip[id(clip)] += written
                     if on_segment is not None:
                         on_segment(index, total, segment)
                     index += 1
@@ -611,6 +617,7 @@ def cut_clips(
         segment_count=total,
         exported_seconds=exported_seconds,
         encode_seconds=time.monotonic() - started,
+        clip_seconds=tuple(per_clip[id(clip)] for clip in given),
     )
 
 

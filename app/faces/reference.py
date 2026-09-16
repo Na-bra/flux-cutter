@@ -21,6 +21,12 @@ confidently wrong reel:
 - **Pick between two plausible people.** When the best and second-best
   identities are within a margin of each other, that is reported as
   ambiguous rather than resolved by rounding.
+
+A reference does not have to be a photograph. A person already named on a
+card in one scan is a better one: their face is averaged over every time
+the scan saw them, in the footage's own lighting and on its own camera,
+rather than taken from one picture the user had to go and find
+(`reference_from_groups`). Matching treats both identically.
 """
 
 from dataclasses import dataclass
@@ -53,15 +59,26 @@ class ReferenceError(Exception):
 
 @dataclass(frozen=True)
 class ReferenceFace:
-    """One face from a photograph, ready to be matched against a scan."""
+    """One face to find in a scan: from a photograph, or from a named card."""
 
     embedding: np.ndarray
     embedding_space: str
-    detection: FaceDetection
-    source: Path
+    # The face found in the photograph; None when this came from cards.
+    detection: FaceDetection | None
+    # The photograph; None when this came from cards.
+    source: Path | None
     # How many faces the photo held. One is the ordinary case; more means
     # the largest was taken and the caller should probably say so.
     face_count: int
+    # What to call this reference when reporting; the photo's file name
+    # when not given.
+    label: str | None = None
+
+    @property
+    def name(self) -> str:
+        if self.label:
+            return self.label
+        return self.source.name if self.source is not None else "the reference"
 
 
 @dataclass(frozen=True)
@@ -182,6 +199,56 @@ def load_reference_face(
     )
 
 
+def reference_from_groups(
+    groups: list[FaceIdentityGroup], label: str
+) -> ReferenceFace:
+    """A reference built from cards a person has already named.
+
+    Each card's own average face is normalised and the results averaged,
+    so a card seen for twenty minutes and one seen for twenty seconds
+    count equally: the aim is what the person looks like across the
+    episodes they were named in, not in whichever episode had most of them.
+
+    Raises:
+        ReferenceError: If none of the cards has a face to average, or they
+            were embedded by different models and cannot be combined.
+    """
+    vectors = []
+    spaces = set()
+    for group in groups:
+        if group.representative_embedding is None:
+            continue
+        vector = np.asarray(group.representative_embedding, dtype=np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm == 0.0:
+            continue
+        vectors.append(vector / norm)
+        spaces.update(
+            obs.embedding_space
+            for obs in group.observations
+            if obs.embedding_space is not None
+        )
+
+    if not vectors:
+        raise ReferenceError(f"The cards named {label!r} hold no faces to match on.")
+    if len(spaces) > 1:
+        raise ReferenceError(
+            f"The cards named {label!r} come from scans in different modes "
+            f"({', '.join(sorted(spaces))}), and faces from different modes "
+            "cannot be compared. Scan every video in the same mode."
+        )
+
+    average = np.mean(vectors, axis=0)
+    return ReferenceFace(
+        embedding=(average / np.linalg.norm(average)).astype(np.float32),
+        embedding_space=next(iter(spaces)) if spaces else "",
+        detection=None,
+        source=None,
+        face_count=1,
+        label=label,
+    )
+
+
 def score_groups(
     reference: ReferenceFace, groups: list[FaceIdentityGroup]
 ) -> list[float]:
@@ -210,9 +277,13 @@ def score_groups(
             ),
             None,
         )
-        if space is not None and space != reference.embedding_space:
+        if (
+            space is not None
+            and reference.embedding_space
+            and space != reference.embedding_space
+        ):
             raise ReferenceError(
-                f"The reference photo was embedded as {reference.embedding_space} "
+                f"The reference {reference.name} was embedded as {reference.embedding_space} "
                 f"but this scan produced {space} vectors. Run both in the same "
                 "mode."
             )
@@ -257,7 +328,7 @@ def match_reference(
 
     if scores[best] < minimum_similarity:
         raise ReferenceError(
-            f"No identity in this video matches {reference.source.name}. The "
+            f"No identity in this video matches {reference.name}. The "
             f"closest scored {scores[best]:.2f}, under the {minimum_similarity:.2f} "
             "floor. They may not appear in this video, or not clearly enough "
             "to be grouped."
@@ -265,7 +336,7 @@ def match_reference(
 
     if runner_up is not None and scores[best] - runner_up < margin:
         raise ReferenceError(
-            f"{reference.source.name} matches two people about equally well "
+            f"{reference.name} matches two people about equally well "
             f"(#{best + 1} at {scores[best]:.2f}, #{ranked[1] + 1} at "
             f"{runner_up:.2f}). Pick one with --select-index rather than "
             "guessing between them."

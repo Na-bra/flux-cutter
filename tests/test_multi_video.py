@@ -230,3 +230,22 @@ def test_videos_with_nothing_to_take_are_passed_over(footage, tmp_path):
 def test_nothing_to_take_from_any_video_is_an_error(footage, tmp_path):
     with pytest.raises(CutterError):
         cut_clips([Clip(footage["wide_48k"], [])], tmp_path / "reel.mp4")
+
+
+def test_seconds_are_reported_for_each_video_given(footage, tmp_path):
+    """In the order given, with nothing for a video that had nothing to take,
+    so a batch can say what each episode contributed."""
+    result = cut_clips(
+        [
+            Clip(footage["wide_48k"], FOUR[:2]),
+            Clip(footage["silent"], []),
+            Clip(footage["square_44k"], FOUR[:1]),
+        ],
+        tmp_path / "reel.mp4",
+    )
+
+    first, empty, last = result.clip_seconds
+    assert empty == 0.0
+    assert first == pytest.approx(3.0, abs=0.1)
+    assert last == pytest.approx(1.5, abs=0.1)
+    assert sum(result.clip_seconds) == pytest.approx(result.exported_seconds)
