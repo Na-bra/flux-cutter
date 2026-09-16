@@ -309,21 +309,39 @@ for what that does and does not prove.
 
 ### 10. Run a whole folder
 
-One photo, many videos, one reel each:
+Name the person once, in the window, on any episode where they appear. Then
+cut them out of the whole season into one reel:
 
 ```bash
 python -m app batch ~/footage/season-1 \
-	--reference photos/lead.jpg --output-dir output/season-1
+	--person "Jamie Lee" --combine output/jamie-season-1.mp4
 ```
 
-Folders, files, or a mix; `--recursive` searches at any depth. Reels are
-named after the video they came from (`S01E03-reel.mp4`).
+No picture of them is needed from anywhere but the footage. The name is
+looked up in the kept scans of those videos, and every card carrying it is
+averaged into one face. Episodes where you named them use those cards;
+every other episode is searched for that face, with the same floor and
+margin as a photo, so an episode where the match is unclear is skipped and
+said so rather than guessed at. Naming them in two episodes gives a steadier
+face than naming them in one.
 
-Cross-video identity comes free here, and that is the point: every episode
-is matched against the *same* photograph, so there is no notion of "the
-same person in episode 1 and episode 7" to get wrong. Carrying a centroid
-forward from one scan to the next would have to survive a change of
-lighting, camera and costume between episodes.
+Measured on the 22-minute episode split into two files, with four
+characters named in the first: all four matched the right card in the
+second, at 0.92-0.97, with no other card above 0.30. A reel joining both
+files kept picture and sound within 1ms over two minutes.
+
+Without `--combine`, each video gets its own reel, named after it
+(`S01E03-reel.mp4`) in `--output-dir`. Nobody named yet? `--reference
+photos/lead.jpg` matches a photograph instead. Folders, files, or a mix;
+`--recursive` searches at any depth.
+
+**One reel from many videos.** Every video is scanned and planned before
+anything is encoded, so a video that cannot contribute is found out before
+minutes of encoding depend on it. Videos of a different shape are fitted
+with black bars rather than stretched, and a different sample rate or a
+missing sound track is handled. A video at a different frame rate from the
+rest is left out by name — joining 25fps footage into a 24fps reel would
+play it at the wrong speed — and the reel is cut from the others.
 
 **Nothing aborts the run.** An episode that is unreadable, holds nobody who
 matches, or has nothing worth cutting is recorded and skipped, and the run
@@ -464,7 +482,7 @@ python -m app ui                                  # or: python -m app.ui
 python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
 ```
 
-Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid name people or merge, split and discard cards the grouping got wrong. Reference photos and batch runs are command-line only for now. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
+Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid name people or merge, split and discard cards the grouping got wrong. Reference photos and batch runs are command-line only for now, but a name you give a card here is what `batch --person` looks for across a folder. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
 
 **Folder** and **File name** are separate fields because they change on different rhythms. A folder is chosen once for a session's worth of reels (**Choose...** opens a directory picker, and a folder that does not exist yet is created on export). The file name follows whichever face is selected — `test_3-person-2.mp4` — but only while it is still the name the app suggested; type your own and it survives clicking through the whole gallery. A missing `.mp4` extension is added for you.
 
@@ -631,7 +649,7 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-438 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, reference-photo matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+497 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, sound-to-picture sync across joins and across videos, reference-photo and named-person matching, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
 
 The tests need no display. `app/ui/worker.py` deliberately imports no toolkit at all, and `app/ui/web.py` keeps every decision on the Python side, so the window's behaviour — which filename to suggest, when to refuse a click, what to do about footage that moved — is tested without opening anything.
 
@@ -666,6 +684,7 @@ The next logical prototype milestones are:
 - ~~cut a reel of several people at once~~
 - ~~see frames from the reel before committing to an encode~~
 - ~~name the people, so a card is a person rather than a position~~
-- **next:** `batch` still reports each video by filename and cuts one reel per episode. A season-wide report — who appears where, and for how long — is the thing the kept scans now make cheap, since every episode's identities are already on disk
+- ~~cut one person out of a folder of videos into one reel, found by a name given in the window~~
+- **next:** the same in the window — scan a folder and pick someone from a cast of face cards linked across its videos, with a "same person?" question shown as two faces side by side when a link is unclear. After that, leaving repeated footage (intros, recaps) out of a season reel, and a season-wide report of who appears where, which the kept scans make cheap
 
 This roadmap may evolve as the prototype proves which stages need refinement.
