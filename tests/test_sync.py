@@ -337,3 +337,108 @@ def test_the_sound_does_not_dip_at_any_join(tone, tmp_path):
     interior = loudness[3:-3]
 
     assert interior.min() > 0.5 * np.median(interior)
+
+
+def _decoded_audio(path: Path) -> np.ndarray:
+    container = av.open(str(path))
+    try:
+        return np.concatenate(
+            [
+                frame.to_ndarray().astype(np.float64).reshape(-1)
+                for frame in container.decode(container.streams.audio[0])
+            ]
+        )
+    finally:
+        container.close()
+
+
+def test_no_join_clicks(tone, tmp_path):
+    """A join set two unrelated moments of sound side by side, and wherever
+    the waveform was not near zero at that instant it jumped -- a click.
+    On this reel five of the nine joins jumped by 6 to 13 times the largest
+    step the tone ever takes, and the encoder smeared each jump into the
+    samples around it.
+
+    Measured over the whole reel rather than at predicted join positions:
+    an earlier probe guessed where the joins were from the cutter's running
+    audio count, which trails the true join by up to a frame's worth of
+    buffered samples, and found nothing there.
+
+    The other four joins did not click only by coincidence of this signal:
+    440Hz advances exactly a third of a cycle per 24fps frame, so a gap of
+    a multiple of three frames lines the phase back up. Real sound has no
+    such luck.
+    """
+    output = tmp_path / "cut.mp4"
+    cut_segments(tone, IRREGULAR, output)
+
+    source_steps = np.abs(np.diff(_decoded_audio(tone)))
+    reel = _decoded_audio(output)
+    # The codec's own ramp at the very start and end of the file is not a join.
+    reel_steps = np.abs(np.diff(reel[2048:-2048]))
+
+    assert reel_steps.max() < 2 * source_steps.max()
+
+
+class _Encoder:
+    """Only what _AudioState reads from an output stream."""
+
+    def __init__(self, format_name, layout_name):
+        self.format = av.AudioFormat(format_name)
+        self.layout = av.AudioLayout(layout_name)
+        self.rate = RATE
+
+        class _Context:
+            frame_size = 1024
+
+        self.codec_context = _Context()
+
+
+def _flat(frame, planar, channels):
+    data = frame.to_ndarray()
+    return data if planar else data.reshape(-1, channels).T
+
+
+@pytest.mark.parametrize(
+    "format_name, layout_name, planar, channels",
+    [("fltp", "mono", True, 1), ("s16", "stereo", False, 2)],
+)
+def test_the_fade_eases_both_ends_and_keeps_every_sample(
+    format_name, layout_name, planar, channels
+):
+    from app.video.cutter import FADE_SECONDS, _AudioState
+
+    state = _AudioState(_Encoder(format_name, layout_name), RATE, Fraction(FPS))
+    dtype = np.float32 if planar else np.int16
+    full = 0.5 if planar else 16000
+    samples = 4800
+    shape = (channels, samples) if planar else (1, samples * channels)
+    part = av.AudioFrame.from_ndarray(
+        np.full(shape, full, dtype=dtype), format=format_name, layout=layout_name
+    )
+
+    faded = state._faded([part, part])
+    data = _flat(faded, planar, channels).astype(np.float64)
+    fade = int(round(FADE_SECONDS * RATE))
+
+    assert faded.samples == 2 * samples
+    # Each channel eased to near zero at both ends, untouched in between.
+    assert np.all(np.abs(data[:, 0]) < 0.01 * full)
+    assert np.all(np.abs(data[:, -1]) < 0.01 * full)
+    assert np.all(data[:, fade:-fade] == full)
+
+
+def test_a_segment_shorter_than_two_fades_still_comes_out_whole():
+    from app.video.cutter import _AudioState
+
+    state = _AudioState(_Encoder("fltp", "mono"), RATE, Fraction(FPS))
+    part = av.AudioFrame.from_ndarray(
+        np.full((1, 101), 0.5, dtype=np.float32), format="fltp", layout="mono"
+    )
+
+    faded = state._faded([part])
+    data = faded.to_ndarray()[0]
+
+    assert faded.samples == 101
+    assert np.isfinite(data).all()
+    assert data.max() <= 0.5
