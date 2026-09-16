@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from app.modes import mode_ids
+
 from app.faces.detector import BoundingBox, FaceDetection
 from app.faces.grouper import (
     DEFAULT_CONSOLIDATION_THRESHOLD,
@@ -687,3 +689,43 @@ def test_the_picker_is_capped_so_it_stays_readable(monkeypatch):
     asked = asked_timestamps(monkeypatch, person)
 
     assert len(asked) == 24
+
+
+@pytest.mark.parametrize("mode", mode_ids())
+def test_the_window_scans_each_mode_with_the_same_settings_as_the_command_line(mode):
+    """The window once built animation settings from live action's numbers,
+    and grouped the 7-minute animation sample into 2 people instead of 6.
+    Same settings also means the same kept scan, so a name given in the
+    window is one `batch --person` can find."""
+    import argparse
+
+    from app.__main__ import resolve_mode_settings
+
+    args = argparse.Namespace(
+        mode=mode,
+        confidence_threshold=None,
+        similarity_threshold=None,
+        consolidation_threshold=None,
+        min_confidence=None,
+        min_face_size=None,
+        min_group_eye_span=None,
+    )
+    resolve_mode_settings(args)
+    window = ScanSettings.for_mode(mode, sample_interval=0.5)
+
+    for field in (
+        "mode",
+        "confidence_threshold",
+        "similarity_threshold",
+        "consolidation_threshold",
+        "min_confidence",
+        "min_face_size",
+        "min_group_eye_span",
+    ):
+        assert getattr(window, field) == getattr(args, field), field
+
+
+def test_live_action_settings_are_unchanged_so_its_kept_scans_still_match():
+    """Only animation's numbers were wrong. Live action's kept scans, and
+    every name in them, must still be found under the same key."""
+    assert ScanSettings.for_mode("live") == ScanSettings()

@@ -264,7 +264,7 @@ class Bridge:
 
         if mode in MODES:
             self._mode = mode
-        settings = ScanSettings(sample_interval=float(interval), mode=self._mode)
+        settings = ScanSettings.for_mode(self._mode, sample_interval=float(interval))
         self._scan_settings = settings
         self._start(self._scan_worker, path, settings)
         return {"started": True}
@@ -501,7 +501,7 @@ class Bridge:
             if self._scan_result is not None
             else ScanSettings().sample_interval
         )
-        return ScanSettings(sample_interval=interval, mode=self._mode)
+        return ScanSettings.for_mode(self._mode, sample_interval=interval)
 
     def edit_people(self, operation: str, tracks=None, name: str = "") -> dict:
         """Merges, splits or discards the chosen cards.
