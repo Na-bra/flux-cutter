@@ -53,6 +53,35 @@ def read_tag_message(tag: str, repo: Path | None = None) -> str:
     return contents if objecttype.strip() == "tag" else ""
 
 
+def restore_tag(tag: str, remote: str, repo: Path | None = None) -> None:
+    """Fetches the tag itself again, when what is checked out is not it.
+
+    actions/checkout, on a tag push, fetches every tag and then fetches the
+    tagged commit once more *under the tag's name* -- which replaces the
+    annotated tag with a lightweight one pointing at the commit. The
+    message is gone before anything can read it. v1.9.5 was the first
+    release this ran for, and its draft arrived with the install text
+    alone, because a lightweight tag is exactly what the fallback is for.
+
+    Fetching the tag ref by name, forced, puts the annotated object back.
+    """
+    result = subprocess.run(
+        ["git", "cat-file", "-t", f"refs/tags/{tag}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    if result.stdout.strip() == "tag":
+        return
+    subprocess.run(
+        ["git", "fetch", "--force", "--no-tags", remote, f"refs/tags/{tag}:refs/tags/{tag}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
 def tag_message(raw: str, tag: str = "") -> str:
     """The part of a tag's message worth printing, or "" if there is none."""
     text = raw.split(SIGNATURE_MARKER, 1)[0].strip()
@@ -86,6 +115,19 @@ def main(argv: list[str] | None = None) -> int:
         "--repo", type=Path, default=None, help="repository to read the tag from"
     )
     parser.add_argument(
+        "--fetch-from",
+        default=None,
+        metavar="REMOTE",
+        help="fetch the tag again from this remote first, in case a checkout "
+        "has replaced the annotated tag with a lightweight one",
+    )
+    parser.add_argument(
+        "--require-message",
+        action="store_true",
+        help="fail rather than fall back to the install text when the tag "
+        "has no message -- so a release job cannot quietly lose its notes",
+    )
+    parser.add_argument(
         "--install-file",
         type=Path,
         default=INSTALL_TEXT,
@@ -93,12 +135,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    sys.stdout.write(
-        compose(
-            read_tag_message(args.tag, args.repo),
-            args.install_file.read_text(encoding="utf-8"),
-            args.tag,
+    if args.fetch_from:
+        restore_tag(args.tag, args.fetch_from, args.repo)
+    raw = read_tag_message(args.tag, args.repo)
+
+    if args.require_message and not tag_message(raw, args.tag):
+        # The annotation form is what GitHub Actions shows on the run's
+        # summary page, where a silent fallback would not be noticed.
+        print(
+            f"::error::{args.tag} has no message to put in the release notes. "
+            "Tag releases with: git tag -a --cleanup=whitespace -F notes.md "
+            f"{args.tag}",
+            file=sys.stderr,
         )
+        return 1
+
+    sys.stdout.write(
+        compose(raw, args.install_file.read_text(encoding="utf-8"), args.tag)
     )
     return 0
 
