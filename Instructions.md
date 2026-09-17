@@ -2563,3 +2563,107 @@ cannot move.
 
 `test_no_join_clicks` fails without the fix (0.648 against a limit of
 0.098) and passes with it; the sync, silence and dip tests are unchanged.
+
+## 31. One person across a folder of videos (`batch --person --combine`)
+
+The first version of batch needed a photograph of the person. That misses
+the point: the tool exists to find people so the user does not have to, and
+asking them to go and find a picture of a character first is that work
+handed back. A person is now named where they are already visible -- on
+their card, in the window -- and found everywhere else from that.
+
+### A name becomes a face
+
+`find_person` reads the kept scans of the videos in the run; nothing is
+scanned or decoded to do it, because a name only exists in a scan somebody
+has opened. Every card carrying the name, in any video, is normalised and
+averaged (`reference_from_groups`), so a card seen for twenty minutes does
+not outweigh one seen for twenty seconds. That average is an ordinary
+reference face, and from there matching is exactly the photo path: the same
+floor, the same margin, the same refusal across modes.
+
+In a scan where the person is named, the named cards are used as they are,
+even if the face would have picked another card -- the user's own naming is
+the stronger evidence. Everywhere else the face is matched, and an unclear
+match skips the video with the scores, rather than cutting a guess into a
+reel.
+
+### Measured
+
+The 22-minute episode was split into two files by copying packets, the same
+characters appearing in both. Four were named in the first half through the
+window's own save path (`apply_edit`), and matched against the second:
+
+    name        card by eye   matched   score   next best
+    Lead        #1            #1        0.97    0.13
+    Friend      #2            #2        0.96    0.30
+    Bald Man    #12           #12       0.93    0.15
+    Glasses     #3            #3        0.92    0.22
+
+Four of four, and far clearer than photographs: the photo floor is 0.35,
+and a card's average face comes from the footage's own lighting and camera.
+The name given to the woman in `test.mp4` was, correctly, found nowhere in
+`test_2.MOV`, whose people are different (best score -0.02).
+
+### One reel from many videos (`cut_clips`)
+
+`cut_segments` is now the one-video case of `cut_clips`, so every earlier
+cutter and sync test runs through the new path. Videos are all read before
+anything is written:
+
+- **Frame rate** must match within one part in ten thousand. Frames are
+  stamped by count at the reel's one rate and each segment's sound length is
+  derived from its frame count, so 25fps footage in a 24fps reel would play
+  4% slow with the wrong span of sound. `test.mp4` (30.000) and
+  `test_2.MOV` (30.0015, a phone recording) are within it. Batch leaves a
+  mismatched video out by name; `cut_clips` itself refuses.
+- **Shape** comes from the first video; another shape is fitted with black
+  bars, never stretched.
+- **Sound** takes the first video that has any. The resampler is now made
+  fresh per segment: one fixes its input format on first use, so two sample
+  rates cannot share it, and when converting it holds samples back that
+  would otherwise open the next cut with sound from the last.
+- **No sound** contributes silence of exactly the picture's length.
+
+Each guard was checked by breaking it. Stretching, dropping the rate check,
+and one shared resampler each failed a test. A silent clip one frame long
+did not at first: sound is counted from the reel's start, so the error --
+42.7ms -- is confined to the next segment and slipped under the usual 50ms
+sync bound. That test holds 30ms against an honest spread of 16ms.
+
+On the split episode, the reel for one character came out at 123.457s of
+picture against 123.456s of sound.
+
+### What a "scene" still is
+
+Sampled frames from that reel show the other side of the character's
+conversations as often as the character: segments are padded and short gaps
+bridged, so a reverse shot within a second of a detection is kept. The
+frames were checked against the source at the mapped times (mean difference
+2-19 of 255) with the character detected 0.5-1.2s away, so this is the
+editorial rules working as written, not a cutting error. Snapping cuts to
+shot boundaries is the step that would change it.
+
+### Also found
+
+- `batch` parsed `--rescan` and never passed it on, so it always reused.
+- The window scanned animation with live action's thresholds. See 32.
+
+## 32. The window's animation scans used live action's thresholds
+
+`ScanSettings` defaults are live action's numbers, and the window built its
+settings by changing only `mode`. Animation was grouped with a similarity
+floor of 0.35 where the mode's own is 0.75, and detected with live action's
+face size and confidence floors. Found because the window's kept-scan key
+for animation never matched the command line's, which would have made a
+name given in the window invisible to `batch --person`.
+
+On the 7-minute animation sample at a 0.5s interval:
+
+    window as shipped      306 faces   76 tracks    2 people (163, 117)
+    animation's own        344 faces   108 tracks   6 people
+
+`ScanSettings.for_mode` resolves a mode as the command line resolves unset
+flags, and a test holds the two equal for every mode. Live action's values
+were already right, so its kept scans and names are unaffected; animation
+scans kept by the window were wrong and scan again.

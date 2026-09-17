@@ -554,7 +554,7 @@ def main():
     # 'batch' command
     batch_parser = subparsers.add_parser(
         "batch",
-        help="Cut one person's reel out of every video in a folder, from a photo.",
+        help="Cut one person out of every video in a folder, found by name or photo.",
     )
     batch_parser.add_argument(
         "video_paths",
@@ -563,16 +563,29 @@ def main():
         help="Videos, folders of videos, or a mix of both.",
     )
     batch_parser.add_argument(
+        "--person",
+        default=None,
+        help="Name you gave the person's card in any of these videos. Videos "
+        "where nobody named them are searched for the same face.",
+    )
+    batch_parser.add_argument(
         "--reference",
         type=Path,
-        required=True,
-        help="Photo of the person to cut out of every video.",
+        default=None,
+        help="Photo of the person, for when nobody has been named yet.",
+    )
+    batch_parser.add_argument(
+        "--combine",
+        type=Path,
+        default=None,
+        metavar="REEL",
+        help="Write one reel joining every video, instead of one reel each.",
     )
     batch_parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("output/batch"),
-        help="Where the reels are written, one per video.",
+        help="Where the reels are written, one per video. Unused with --combine.",
     )
     batch_parser.add_argument(
         "--recursive",
@@ -639,6 +652,15 @@ def main():
     # "Choose a person" is a parse-time complaint, and discovering it after
     # a seven-minute scan -- which is where it surfaced until this ran here
     # -- is the same mistake as validating the photo late.
+    if args.command == "batch":
+        if not args.person and args.reference is None:
+            parser.error(
+                "choose a person: --person NAME (a name given to their card "
+                "in the window) or --reference photo.jpg"
+            )
+        if args.person and args.reference is not None:
+            parser.error("--person and --reference each name a person; pass one")
+
     if args.command in ("export", "timestamps"):
         ways = [
             args.select_index is not None,
@@ -720,37 +742,44 @@ def main():
         return
 
     if args.command == "batch":
-        run_batch(
-            args.video_paths,
-            reference=reference,
-            output_dir=args.output_dir,
-            recursive=args.recursive,
-            reference_threshold=args.reference_threshold,
-            export_settings=dict(
-                sample_interval=args.interval,
-                confidence_threshold=args.confidence_threshold,
-                padding_ratio=args.padding,
-                similarity_threshold=args.similarity_threshold,
-                margin_threshold=args.margin_threshold,
-                consolidation_threshold=args.consolidation_threshold,
-                min_confidence=args.min_confidence,
-                min_face_size=args.min_face_size,
-                min_group_eye_span=args.min_group_eye_span,
-                forbid_cooccurring=not args.allow_cooccurring_identities,
-                cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
-                mode=args.mode,
-                min_detections=args.min_detections,
-                gap_tolerance_seconds=args.gap_tolerance,
-                appearance_padding_seconds=args.appearance_padding,
-                bridge_gap_seconds=args.bridge_gap,
-                min_segment_seconds=args.min_segment,
-                export_padding_seconds=args.export_padding,
-                video_encoder=args.encoder,
-                audio_encoder=args.audio_encoder,
-                quality=args.quality,
-                include_audio=not args.no_audio,
-            ),
-        )
+        try:
+            run_batch(
+                args.video_paths,
+                reference=reference,
+                person=args.person,
+                combine_path=args.combine,
+                use_cache=not args.rescan,
+                output_dir=args.output_dir,
+                recursive=args.recursive,
+                reference_threshold=args.reference_threshold,
+                export_settings=dict(
+                    sample_interval=args.interval,
+                    confidence_threshold=args.confidence_threshold,
+                    padding_ratio=args.padding,
+                    similarity_threshold=args.similarity_threshold,
+                    margin_threshold=args.margin_threshold,
+                    consolidation_threshold=args.consolidation_threshold,
+                    min_confidence=args.min_confidence,
+                    min_face_size=args.min_face_size,
+                    min_group_eye_span=args.min_group_eye_span,
+                    forbid_cooccurring=not args.allow_cooccurring_identities,
+                    cooccurrence_similarity_ceiling=args.cooccurrence_ceiling,
+                    mode=args.mode,
+                    min_detections=args.min_detections,
+                    gap_tolerance_seconds=args.gap_tolerance,
+                    appearance_padding_seconds=args.appearance_padding,
+                    bridge_gap_seconds=args.bridge_gap,
+                    min_segment_seconds=args.min_segment,
+                    export_padding_seconds=args.export_padding,
+                    video_encoder=args.encoder,
+                    audio_encoder=args.audio_encoder,
+                    quality=args.quality,
+                    include_audio=not args.no_audio,
+                ),
+            )
+        except SelectionError as error:
+            print(f"Error: {error}", file=sys.stderr)
+            sys.exit(1)
         return
 
     try:
