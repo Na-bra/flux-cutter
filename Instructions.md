@@ -2667,3 +2667,80 @@ On the 7-minute animation sample at a 0.5s interval:
 flags, and a test holds the two equal for every mode. Live action's values
 were already right, so its kept scans and names are unaffected; animation
 scans kept by the window were wrong and scan again.
+
+## 33. A folder's cast in the window (`app/faces/cast.py`, `app/ui/folder.py`)
+
+The window's answer to "who is in this season?": one card per person across
+every episode, picked by clicking a face from the footage. Nothing is
+uploaded and no photo is needed.
+
+### Linking cards across videos
+
+Each episode's scan already groups its own faces into cards. Linking them
+uses the rule `batch --person` uses to find a named person elsewhere, so
+the window and the command line agree:
+
+- Two cards in different videos link when **each is the other's clear best
+  match** in its video: over the mode's floor, and ahead of that video's
+  runner-up by the match margin. Mutual, so one card cannot be claimed by
+  two people.
+- **Cards with one name are one person**, and cards with different names
+  never are.
+- Anything plausible that fails the rule is a **"same person?" question**,
+  shown as two faces. Answers override every score and are applied last:
+  applied first, a "yes" joining a split card made the person look as if
+  it already held a card from that video, and the clear link the answer
+  relied on was refused.
+
+Questions are only asked across videos. Within one, grouping has already
+kept two cards apart, often because both faces share a frame; a split card
+still surfaces through its match in another episode.
+
+### Measured
+
+The 22-minute episode split into two files, scanned as the window does:
+
+    57 cards -> 47 people
+    10 linked across both episodes     all 10 right by eye, none wrong
+    4 questions                        all 4 genuine candidates
+
+The four questions were the lead's split card against the lead, the masked
+hero in two expressions, a girl in stage makeup, and the hero unmasked
+against masked -- each a thing worth a person's look, and no pair of
+strangers among them. Linked cards scored 0.92-0.97; no other card reached
+0.30 against them.
+
+Naming a person from the cast wrote the name into both episodes' kept
+scans; reopened, it was on both cards, and the single-video view shows it
+too. Their reel, exported from the window, came out at 123.457s of picture
+against 123.456s of sound.
+
+### What driving the window found
+
+The folder view was built against tests of the bridge, then driven for
+real: the page opened by pywebview, clicked from a script, and screenshotted.
+That found three bugs the tests had not:
+
+- **A line through every card's name.** The name block was an inline span,
+  so its top border drew through the text once the face strip sat above it.
+- **An empty orange box over the single-video gallery.** The question panel
+  is a grid, and `display: grid` beat the `hidden` attribute. The page now
+  makes `hidden` always win.
+- **A reel saved under the wrong video's name** -- and not only in the new
+  view. The window forgot its own last file-name suggestion when a scan
+  finished, so that suggestion then looked typed by hand and was kept:
+  scan one video and pick someone, scan a second, and the box still named
+  the first. It shipped in the single-video window. The suggestion is now
+  kept across scans, with a test for each view.
+
+A test also now holds the page and the bridge to each other: every method
+the page calls must exist on the bridge, and every event the bridge sends
+must have a handler. Neither side fails loudly when the other is missing
+one -- a missing method is a button that does nothing.
+
+### Not yet
+
+Answers to "same person?" last for the session; a "yes" is kept beyond it
+only by naming the person, since cards with one name are one person. Merge,
+split and discard are single-video corrections and are hidden in folder
+view.

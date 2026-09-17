@@ -175,10 +175,10 @@
 
   .thumb { aspect-ratio: 1; display: block; width: 100%; background: var(--sunk); }
 
-  .card .info { padding: 8px 9px 9px; border-top: 1px solid var(--rule); }
+  .card .info { display: block; padding: 8px 9px 9px; border-top: 1px solid var(--rule); }
   .card .who { font-size: .8rem; font-weight: 600; display: flex; justify-content: space-between; gap: 6px; align-items: baseline; }
   .card .who .rank { font-family: var(--mono); font-size: .66rem; color: var(--faint); font-weight: 400; }
-  .card .stat { font-family: var(--mono); font-size: .68rem; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .card .stat { display: block; font-family: var(--mono); font-size: .68rem; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
 
   .unassigned {
     margin-top: 14px; padding: 9px 11px; border: 1px dashed var(--rule);
@@ -234,6 +234,40 @@
   .legend b { color: var(--ink); font-weight: 600; }
   .legend p { margin: 0; }
 
+  /* Video or folder: what the source box holds. */
+  .seg { display: inline-flex; margin-left: auto; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+  .seg button { height: 18px; padding: 0 8px; font-size: .62rem; font-family: var(--mono); letter-spacing: .06em; text-transform: uppercase; border: 0; border-radius: 0; background: transparent; color: var(--faint); font-weight: 500; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+  .field > .labelrow { display: flex; align-items: center; gap: 8px; }
+  .field > .labelrow > span { font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+
+  /* One face per video under a cast card, so a card that has mixed two
+     people up shows it without being opened. */
+  .faces { display: flex; gap: 3px; padding: 6px 9px 0; }
+  .faces img { width: 22px; height: 22px; border-radius: 3px; object-fit: cover; background: var(--sunk); }
+  .faces .more { font-family: var(--mono); font-size: .62rem; color: var(--faint); align-self: center; }
+
+  /* "Same person?" -- asked as two faces, one question at a time, because
+     it is a thing to look at rather than a score to read. */
+  .question {
+    margin-bottom: 14px; padding: 12px; background: var(--surface);
+    border: 1px solid var(--signal); border-radius: 6px;
+    display: grid; grid-template-columns: auto auto 1fr; gap: 12px; align-items: center;
+  }
+  @media (max-width: 860px) { .question { grid-template-columns: auto auto; } }
+  .question figure { margin: 0; width: 104px; }
+  .question img { width: 104px; height: 104px; object-fit: cover; border-radius: 4px; display: block; background: var(--sunk); }
+  .question figcaption { font-family: var(--mono); font-size: .64rem; color: var(--faint); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .question .ask { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .question .ask b { font-size: .9rem; }
+  .question .ask p { margin: 0; font-size: .76rem; color: var(--muted); }
+  .question .ask .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* `hidden` must win over any display set above. The question panel is
+     a grid, and a grid with `hidden` still showed: an empty orange box
+     over the single-video gallery. */
+  [hidden] { display: none !important; }
+
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -243,7 +277,13 @@
 
   <div class="toolbar">
     <div class="field">
-      <label>Source video</label>
+      <div class="labelrow">
+        <span id="sourceLabel">Source video</span>
+        <span class="seg" role="group" aria-label="What to scan">
+          <button type="button" data-view="video" aria-pressed="true">Video</button>
+          <button type="button" data-view="folder" aria-pressed="false">Folder</button>
+        </span>
+      </div>
       <div class="control">
         <span class="path" id="videoPath"><span class="dim">No video chosen</span></span>
         <button class="ghost" id="chooseVideo" style="height:24px;padding:0 9px;font-size:.74rem">Choose…</button>
@@ -281,6 +321,7 @@
           <button class="ghost" id="discardBtn">Not a person</button>
         </span>
       </div>
+      <div class="question" id="question" hidden></div>
       <div class="grid" id="grid" role="group" aria-label="People found"></div>
       <div class="split" id="split" hidden>
         <p class="split-head">
@@ -303,6 +344,7 @@
           <dt>cuts</dt><dd id="pickedCuts">—</dd>
           <dt>reel length</dt><dd id="pickedLen">—</dd>
           <dt>detections</dt><dd id="pickedDet">—</dd>
+          <dt id="pickedVideosLabel" hidden>videos</dt><dd id="pickedVideos" hidden>—</dd>
         </dl>
         <div class="strip" id="strip" hidden></div>
       </div>
@@ -341,7 +383,7 @@
   const $ = (id) => document.getElementById(id);
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", people: [], selected: [], busy: null, previewToken: 0 };
+  let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, drawn: { video: null, folder: null } };
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -374,9 +416,48 @@
     $("grid").innerHTML = "<p>Press Scan for people.</p>";
   });
 
+  // The source box and the gallery follow the switch. Each view keeps what
+  // it last drew, so flicking between them does not lose a scan.
+  function showSource() {
+    const path = state.view === "folder" ? state.folder : state.video;
+    $("sourceLabel").textContent = state.view === "folder" ? "Folder of videos" : "Source video";
+    if (path) $("videoPath").textContent = path;
+    else $("videoPath").innerHTML = '<span class="dim">' +
+      (state.view === "folder" ? "No folder chosen" : "No video chosen") + "</span>";
+  }
+
+  function setView(view) {
+    if (state.busy || view === state.view) return;
+    state.view = view;
+    document.querySelectorAll(".seg button").forEach(b =>
+      b.setAttribute("aria-pressed", b.dataset.view === view));
+    showSource();
+    $("galleryTitle").textContent = view === "folder" ? "Who's in this folder" : "Who's in this video";
+    const drawn = state.drawn[view];
+    $("question").hidden = true;
+    $("unassigned").hidden = true;
+    $("galleryMeta").textContent = "";
+    if (!drawn) {
+      state.people = []; state.selected = [];
+      $("fixups").hidden = true; $("picked").hidden = true; $("exportBtn").disabled = true;
+      $("grid").innerHTML = "<p>Press Scan for people.</p>";
+      $("foot").textContent = "Choose a person to export.";
+      return;
+    }
+    if (view === "folder") drawCast(drawn); else drawPeople(drawn);
+  }
+
+  document.querySelectorAll(".seg button").forEach(b =>
+    b.addEventListener("click", () => setView(b.dataset.view)));
+
   $("chooseVideo").addEventListener("click", async () => {
+    if (state.view === "folder") {
+      const r = await pywebview.api.choose_folder();
+      if (r.path) { state.folder = r.path; showSource(); }
+      return;
+    }
     const r = await pywebview.api.choose_video();
-    if (r.path) { state.video = r.path; $("videoPath").textContent = r.path; }
+    if (r.path) { state.video = r.path; showSource(); }
   });
 
   $("chooseFolder").addEventListener("click", async () => {
@@ -391,15 +472,17 @@
 
   $("actionBtn").addEventListener("click", async () => {
     if (state.busy) { pywebview.api.cancel(); $("actionBtn").disabled = true; return; }
-    const r = await pywebview.api.start_scan(state.video, $("mode").value, Number($("interval").value));
+    const r = state.view === "folder"
+      ? await pywebview.api.start_folder_scan(state.folder, $("mode").value, Number($("interval").value))
+      : await pywebview.api.start_scan(state.video, $("mode").value, Number($("interval").value));
     if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
     busy("scan");
     status("<b>Scanning…</b>");
   });
 
   $("exportBtn").addEventListener("click", async () => {
-    const r = await pywebview.api.start_export(
-      $("folder").textContent, $("fname").value, $("enc").value, $("q").value);
+    const start = state.view === "folder" ? pywebview.api.start_folder_export : pywebview.api.start_export;
+    const r = await start($("folder").textContent, $("fname").value, $("enc").value, $("q").value);
     if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
     busy("export");
     status("<b>Exporting…</b>");
@@ -410,6 +493,7 @@
     $("actionBtn").textContent = "Cancel";
     $("exportBtn").disabled = true;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
+    document.querySelectorAll(".seg button").forEach(b => b.disabled = true);
   }
 
   function idle() {
@@ -418,6 +502,7 @@
     $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
+    document.querySelectorAll(".seg button").forEach(b => b.disabled = false);
   }
 
   window.onStatus = (d) => status("<b>" + d.text + "</b>");
@@ -426,9 +511,14 @@
   window.onExportProgress = (d) => { setBar(d.fraction); $("statusTime").textContent = d.done + " / " + d.total; };
   window.onScanCancelled = () => { idle(); setBar(0); status("<b>Scan cancelled.</b>"); };
   window.onExportCancelled = () => { idle(); setBar(0); status("<b>Export cancelled.</b> No partial file was left behind."); };
-  window.onRelocated = (d) => { state.video = d.path; $("videoPath").textContent = d.path; };
+  window.onRelocated = (d) => { state.video = d.path; showSource(); };
   window.onFailed = (d) => { idle(); setBar(0); status("<b>" + d.title + ".</b> " + d.detail); };
-  window.onExported = (d) => { idle(); setBar(1); status("<b>Reel saved.</b> " + d.path); };
+  window.onExported = (d) => {
+    idle(); setBar(1);
+    const left = (d.leftOut || []).map(l => esc(l.video) + " (" + esc(l.reason) + ")");
+    status("<b>Reel saved.</b> " + esc(d.path) +
+      (left.length ? " Left out: " + left.join(", ") + "." : ""));
+  };
 
   window.onScanned = (d) => {
     idle();
@@ -444,6 +534,7 @@
     );
     $("galleryMeta").textContent = "sorted by screen time";
 
+    state.drawn.video = d;
     drawPeople(d);
 
     const u = $("unassigned");
@@ -454,6 +545,9 @@
   function drawPeople(d) {
     state.people = d.people;
     state.selected = [];
+    $("mergeBtn").hidden = $("splitBtn").hidden = $("discardBtn").hidden = false;
+    $("question").hidden = true;
+    $("pickedVideosLabel").hidden = $("pickedVideos").hidden = true;
     $("exportBtn").disabled = true;
     $("picked").hidden = true;
     $("strip").hidden = true;
@@ -488,6 +582,7 @@
   async function applyEdit(operation, tracks) {
     const r = await pywebview.api.edit_people(operation, tracks || []);
     if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
+    state.drawn.video = r;
     drawPeople(r);
     status("<b>" + r.note + "</b> " + r.people.length + " people now.");
   }
@@ -497,12 +592,23 @@
   $("renameBtn").addEventListener("click", async () => {
     const person = state.people.find(p => p.index === state.selected[0]);
     const typed = window.prompt(
-      "What is this person called? Leave it empty to clear the name.",
+      state.view === "folder"
+        ? "What is this person called? The name is saved in every video they are in."
+        : "What is this person called? Leave it empty to clear the name.",
       person && person.name ? person.name : ""
     );
     if (typed === null) return;
+    if (state.view === "folder") {
+      const r = await pywebview.api.name_cast_person(typed);
+      if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
+      state.drawn.folder = r;
+      drawCast(r);
+      status("<b>" + esc(r.note) + "</b>");
+      return;
+    }
     const r = await pywebview.api.edit_people("rename", [], typed);
     if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
+    state.drawn.video = r;
     const keep = state.selected.slice();
     drawPeople(r);
     // Renaming changes no membership, so the selection is put back.
@@ -550,9 +656,125 @@
     applyEdit("split", picked);
   });
 
+  // ------------------------------------------------------------ folder view
+
+  window.onFolderScanned = (d) => {
+    idle();
+    setBar(1);
+    $("statusTime").textContent = "";
+    status("<b>Folder scanned.</b> " + d.people.length + " people across " +
+      d.videoCount + " video" + (d.videoCount === 1 ? "" : "s") +
+      (d.questions.length ? ", " + d.questions.length + " to check." : "."));
+    state.drawn.folder = d;
+    drawCast(d);
+  };
+
+  function drawCast(d) {
+    state.people = d.people;
+    state.selected = d.selected === null || d.selected === undefined ? [] : [d.selected];
+    $("split").hidden = true;
+    $("mergeBtn").hidden = $("splitBtn").hidden = $("discardBtn").hidden = true;
+    $("fixups").hidden = !d.people.length;
+    $("renameBtn").disabled = state.selected.length !== 1;
+    $("galleryMeta").textContent = d.videoCount + " videos · sorted by screen time";
+    if (!state.selected.length) {
+      $("picked").hidden = true; $("exportBtn").disabled = true;
+      $("foot").textContent = "Choose a person to export.";
+    }
+
+    drawQuestion(d.questions);
+
+    if (!d.people.length) {
+      $("grid").innerHTML = "<p>No one found in these videos. Try a finer sampling interval.</p>";
+    } else {
+      $("grid").innerHTML = d.people.map((p, i) => `
+        <button class="card" aria-pressed="${state.selected.includes(p.index)}" data-i="${p.index}">
+          <img class="thumb" src="${p.thumbnail}" alt="${esc(p.label)}">
+          <span class="faces">${p.faces.slice(0, 4).map(f =>
+            `<img src="${f.thumbnail}" alt="In ${esc(f.video)}" title="${esc(f.video)}">`).join("")}
+            ${p.faces.length > 4 ? `<span class="more">+${p.faces.length - 4}</span>` : ""}</span>
+          <span class="info">
+            <span class="who">${esc(p.label)} <span class="rank">#${i+1}</span></span>
+            <span class="stat">in ${p.videos} of ${d.videoCount} · ${p.onScreen}</span>
+          </span>
+        </button>`).join("");
+    }
+
+    const u = $("unassigned");
+    u.hidden = !d.skipped.length;
+    u.innerHTML = d.skipped.length
+      ? "<b>Could not read " + d.skipped.length + " video" + (d.skipped.length === 1 ? "" : "s") + ":</b> " +
+        d.skipped.map(s => esc(s.video) + " (" + esc(s.reason) + ")").join(", ")
+      : "";
+  }
+
+  function drawQuestion(questions) {
+    const box = $("question");
+    if (!questions.length) { box.hidden = true; box.innerHTML = ""; return; }
+    const q = questions[0];
+    box.hidden = false;
+    box.innerHTML = `
+      <figure><img src="${q.first.thumbnail}" alt=""><figcaption>${esc(q.first.video)}</figcaption></figure>
+      <figure><img src="${q.second.thumbnail}" alt=""><figcaption>${esc(q.second.video)}</figcaption></figure>
+      <div class="ask">
+        <b>Same person?</b>
+        <p>These look alike but not clearly enough to join on their own.${
+          questions.length > 1 ? " " + (questions.length - 1) + " more after this." : ""}</p>
+        <div class="buttons">
+          <button class="primary" data-answer="yes" data-q="${q.id}">Same person</button>
+          <button class="ghost" data-answer="no" data-q="${q.id}">Different people</button>
+        </div>
+      </div>`;
+  }
+
+  $("question").addEventListener("click", async (e) => {
+    const button = e.target.closest("button[data-answer]");
+    if (!button) return;
+    const r = await pywebview.api.answer_question(Number(button.dataset.q), button.dataset.answer === "yes");
+    if (!r.applied) { status("<b>" + esc(r.reason) + "</b>"); return; }
+    state.drawn.folder = r;
+    drawCast(r);
+    status("<b>" + esc(r.note) + "</b> " + r.people.length + " people now.");
+  });
+
+  function showPicked(r) {
+    $("picked").hidden = false;
+    $("pickedName").textContent = r.name;
+    $("pickedTime").textContent = r.onScreen;
+    $("pickedCuts").textContent = r.cuts;
+    $("pickedLen").textContent = r.reel;
+    $("pickedDet").textContent = r.detections;
+    const folder = r.videos !== undefined;
+    $("pickedVideosLabel").hidden = $("pickedVideos").hidden = !folder;
+    if (folder) $("pickedVideos").textContent = r.videos;
+    if (r.filename) $("fname").value = r.filename;
+    $("exportBtn").disabled = false;
+    state.previewToken = r.token;
+    const strip = $("strip");
+    strip.hidden = false;
+    strip.innerHTML = '<p class="waiting">Reading the reel…</p>';
+  }
+
   $("grid").addEventListener("click", async (e) => {
     const card = e.target.closest(".card");
     if (!card) return;
+    if (state.view === "folder") {
+      const r = await pywebview.api.select_cast_person(Number(card.dataset.i), $("fname").value);
+      if (!r.accepted) return;
+      state.selected = r.index === null ? [] : [r.index];
+      $("renameBtn").disabled = state.selected.length !== 1;
+      document.querySelectorAll("#grid .card").forEach(c =>
+        c.setAttribute("aria-pressed", state.selected.includes(Number(c.dataset.i))));
+      if (r.index === null) {
+        $("picked").hidden = true; $("strip").hidden = true; $("exportBtn").disabled = true;
+        $("foot").textContent = "Choose a person to export.";
+        return;
+      }
+      showPicked(r);
+      $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
+        " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file.";
+      return;
+    }
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
     if (!r.accepted) return;
 
@@ -601,7 +823,7 @@
     }
     strip.hidden = false;
     strip.innerHTML = d.frames.map(f => `
-      <figure>
+      <figure title="${f.video ? esc(f.video) + " " : ""}${f.at}">
         <img src="${f.image}" alt="A frame from the reel at ${f.at}">
         <figcaption>${f.at}</figcaption>
       </figure>`).join("");

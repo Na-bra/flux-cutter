@@ -997,3 +997,274 @@ def test_starting_a_job_clears_a_cancellation_from_the_last_one(bridge, tmp_path
     bridge._worker.join(timeout=5)
 
     assert not bridge._cancel.is_set()
+
+
+# ------------------------------------------------------------------- folder
+
+
+def folder_person(index: int, vector, name=None, detections=10) -> Person:
+    vector = np.asarray(vector, dtype=np.float32)
+    vector = vector / np.linalg.norm(vector)
+    observations = [
+        FaceObservation(
+            embedding=vector,
+            detection=FaceDetection(
+                box=BoundingBox(x_min=0, y_min=0, x_max=80, y_max=80), confidence=0.9
+            ),
+            face_crop=np.zeros((80, 80, 3), dtype=np.uint8),
+            source_timestamp=10.0 + step,
+        )
+        for step in range(3)
+    ]
+    return Person(
+        index=index,
+        thumbnail=Image.new("RGB", (32, 32)),
+        detection_count=detections,
+        first_seen=10.0,
+        last_seen=12.0,
+        group=FaceIdentityGroup(
+            group_id=index, observations=observations, representative_embedding=vector
+        ),
+        name=name,
+    )
+
+
+def make_folder():
+    from app.ui.folder import FolderScan
+
+    def video(name, *people):
+        return ScanResult(
+            video_path=Path("/season-1") / name,
+            video_duration=120.0,
+            sample_interval=0.5,
+            people=list(people),
+        )
+
+    return FolderScan(
+        videos=[
+            # The lead in both; in e2 their card is split, so e2's second
+            # card is a question rather than a link.
+            video("e1.mp4", folder_person(0, [1, 0, 0], detections=40), folder_person(1, [0, 1, 0])),
+            video(
+                "e2.mp4",
+                folder_person(0, [1, 0, 0], detections=30),
+                folder_person(1, [0.6, 0, 0.8], detections=5),
+            ),
+        ],
+        settings=ScanSettings.for_mode("live"),
+    )
+
+
+@pytest.fixture
+def with_folder(bridge):
+    bridge.window = FakeWindow()
+    bridge._folder = make_folder()
+    bridge._rebuild_cast()
+    return bridge
+
+
+def test_a_folder_scan_needs_a_folder(bridge, tmp_path):
+    video = tmp_path / "e1.mp4"
+    video.write_bytes(b"x")
+
+    assert bridge.start_folder_scan(str(video), "live", 0.5)["started"] is False
+    assert bridge.start_folder_scan("", "live", 0.5)["started"] is False
+
+
+def test_pressing_scan_on_a_folder_uses_the_mode_s_own_settings(bridge, tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+
+    assert bridge.start_folder_scan(str(tmp_path), "animation", 1.0) == {"started": True}
+
+    target, (path, settings) = started[0]
+    assert target == bridge._folder_worker
+    assert path == tmp_path
+    assert settings == ScanSettings.for_mode("animation", sample_interval=1.0)
+
+
+def test_a_scanned_folder_is_drawn_as_its_cast(bridge, tmp_path, monkeypatch):
+    bridge.window = FakeWindow()
+    monkeypatch.setattr(web, "scan_folder", lambda *args, **kwargs: make_folder())
+
+    bridge._folder_worker(tmp_path, ScanSettings.for_mode("live"))
+
+    drawn = bridge.window.emitted("onFolderScanned")
+    assert drawn["videoCount"] == 2
+    assert drawn["videos"] == ["e1.mp4", "e2.mp4"]
+    lead = drawn["people"][0]
+    assert lead["detections"] == 70
+    assert lead["videos"] == 2
+    assert [face["video"] for face in lead["faces"]] == ["e1.mp4", "e2.mp4"]
+    assert lead["thumbnail"].startswith("data:image/jpeg;base64,")
+    assert len(drawn["questions"]) == 1
+    question = drawn["questions"][0]
+    assert {question["first"]["video"], question["second"]["video"]} == {"e1.mp4", "e2.mp4"}
+
+
+def test_saying_yes_joins_the_two_cards_into_one_person(with_folder):
+    before = len(with_folder._cast)
+
+    answered = with_folder.answer_question(0, True)
+
+    assert answered["applied"] is True
+    assert len(answered["people"]) == before - 1
+    assert answered["questions"] == []
+    assert answered["people"][0]["detections"] == 75
+
+
+def test_saying_no_keeps_them_apart_and_stops_asking(with_folder):
+    answered = with_folder.answer_question(0, False)
+
+    assert answered["applied"] is True
+    assert answered["questions"] == []
+    assert len(answered["people"]) == 3
+
+
+def test_a_stale_question_is_refused_rather_than_misapplied(with_folder):
+    with_folder.answer_question(0, True)
+    assert with_folder.answer_question(0, True)["applied"] is False
+
+
+def test_choosing_a_person_describes_their_reel_across_the_folder(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+
+    chosen = with_folder.select_cast_person(0, "")
+
+    assert chosen["accepted"] is True
+    assert chosen["videos"] == 2
+    assert chosen["cuts"] >= 2
+    assert chosen["filename"] == "season-1-person-1.mp4"
+    assert "from 2 videos" in chosen["summary"]
+
+
+def test_clicking_the_chosen_person_again_clears_the_choice(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    with_folder.select_cast_person(0, "")
+
+    assert with_folder.select_cast_person(0, "")["index"] is None
+    assert with_folder._cast_selected is None
+
+
+def test_the_choice_follows_the_person_when_an_answer_reorders_the_cast(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    with_folder.select_cast_person(0, "")
+    lead = {(v, c.index) for v, c in with_folder._cast_selected.appearances}
+
+    answered = with_folder.answer_question(0, True)
+
+    now = {(v, c.index) for v, c in with_folder._cast_selected.appearances}
+    assert lead < now
+    assert answered["selected"] == with_folder._cast_selected.index
+
+
+def test_naming_a_person_names_them_in_every_video(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    named_with = []
+
+    def fake_name(folder, person, name):
+        named_with.append((person.index, name))
+        from app.ui.folder import FolderScan
+
+        videos = []
+        for result in folder.videos:
+            people = [
+                Person(**{**p.__dict__, "name": name})
+                if any(c is p for _, c in person.appearances)
+                else p
+                for p in result.people
+            ]
+            videos.append(ScanResult(**{**result.__dict__, "people": people}))
+        return FolderScan(videos=videos, settings=folder.settings)
+
+    monkeypatch.setattr(web, "name_cast_person", fake_name)
+    with_folder.select_cast_person(0, "")
+
+    named = with_folder.name_cast_person("Lead")
+
+    assert named_with == [(0, "Lead")]
+    assert named["note"] == "Named them Lead in 2 videos."
+    assert named["people"][0]["label"] == "Lead"
+
+
+def test_naming_needs_a_chosen_person(with_folder):
+    assert with_folder.name_cast_person("Lead")["applied"] is False
+
+
+def test_a_folder_export_needs_a_chosen_person(with_folder):
+    assert with_folder.start_folder_export("/tmp", "reel.mp4", "libx264", "High")["started"] is False
+
+
+def test_a_folder_export_reports_what_was_left_out(with_folder, monkeypatch, tmp_path):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    with_folder.select_cast_person(0, "")
+    monkeypatch.setattr(
+        web,
+        "export_cast",
+        lambda folder, person, output, **kwargs: (None, [(Path("/season-1/e2.mp4"), "it is 25.000fps")]),
+    )
+
+    with_folder._folder_export_worker(tmp_path / "lead.mp4", ExportSettings())
+
+    exported = with_folder.window.emitted("onExported")
+    assert exported["path"] == str(tmp_path / "lead.mp4")
+    assert exported["leftOut"] == [{"video": "e2.mp4", "reason": "it is 25.000fps"}]
+
+
+def test_the_cast_is_not_touched_while_a_job_runs(with_folder):
+    with_folder._worker = AliveWorker()
+
+    assert with_folder.select_cast_person(0, "")["accepted"] is False
+    assert with_folder.answer_question(0, True)["applied"] is False
+    assert with_folder.name_cast_person("Lead")["applied"] is False
+
+
+def test_the_page_and_the_bridge_agree_on_every_call_and_event():
+    """The page calls Python by name and Python calls the page by name, and
+    neither side fails loudly when the other does not have it: a missing
+    bridge method is a button that does nothing, and an event with no
+    handler is a scan that never finishes on screen."""
+    import re
+
+    page = Path(web.__file__).with_name("window.html").read_text(encoding="utf-8")
+    bridge_source = Path(web.__file__).read_text(encoding="utf-8")
+
+    called = set(re.findall(r"pywebview\.api\.(\w+)", page))
+    assert called, "found no calls; the pattern is stale"
+    assert {name for name in called if not callable(getattr(web.Bridge, name, None))} == set()
+
+    emitted = set(re.findall(r'_emit\(\s*"(\w+)"', bridge_source)) | {"onStatus"}
+    handled = set(re.findall(r"window\.(on\w+)\s*=", page))
+    assert emitted - handled == set()
+
+
+def test_scanning_another_video_does_not_keep_the_last_video_s_file_name(bridge, monkeypatch):
+    """The window forgot its own suggestion when a new scan finished, so the
+    old one looked typed by hand and was kept: a reel of the second video
+    saved under the first video's name. Found by exporting from the window."""
+    bridge.window = FakeWindow()
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result("/videos/first.mp4"))
+    bridge._scan_worker(Path("/videos/first.mp4"), ScanSettings())
+    box = bridge.select_person(0, "")["filename"]
+    assert box == "first-person-1.mp4"
+
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result("/videos/second.mp4"))
+    bridge._scan_worker(Path("/videos/second.mp4"), ScanSettings())
+
+    assert bridge.select_person(0, box)["filename"] == "second-person-1.mp4"
+
+
+def test_a_folder_after_a_video_does_not_keep_the_video_s_file_name(bridge, monkeypatch, tmp_path):
+    bridge.window = FakeWindow()
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    monkeypatch.setattr(bridge, "_start_cast_preview", lambda: None)
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result("/videos/first.mp4"))
+    bridge._scan_worker(Path("/videos/first.mp4"), ScanSettings())
+    box = bridge.select_person(0, "")["filename"]
+
+    monkeypatch.setattr(web, "scan_folder", lambda *a, **k: make_folder())
+    bridge._folder_worker(tmp_path, ScanSettings.for_mode("live"))
+
+    assert bridge.select_cast_person(0, box)["filename"] == "season-1-person-1.mp4"
