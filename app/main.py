@@ -17,7 +17,12 @@ from app.faces.grouper import (
     IdentityGrouper,
     auto_min_detections,
 )
-from app.faces.reference import ReferenceError, ReferenceFace, match_reference
+from app.faces.reference import (
+    ReferenceError,
+    ReferenceFace,
+    match_reference,
+    reference_from_groups,
+)
 from app.faces.tracker import FaceTracker
 from app.modes import DEFAULT_MODE, get_mode
 from app.scans import CachedScan
@@ -32,7 +37,14 @@ from app.ui.gallery import (
     save_gallery_montage,
     save_identity_gallery_montage,
 )
-from app.video.cutter import CutterError, cut_segments
+from app.video.cutter import (
+    Clip,
+    CutterError,
+    cut_clips,
+    cut_segments,
+    probe_clip,
+    same_frame_rate,
+)
 from app.video.export import merge_for_export
 from app.video.frames import extract_frames
 from app.video.loader import (
@@ -259,15 +271,39 @@ def _resolve_selection(
 ) -> list[int]:
     """Which person card the run is about, however the user said it.
 
-    An index and a photograph are two ways of naming the same thing, and
-    they resolve to the same index here so that everything downstream --
-    interval building, cutting, the report -- stays unaware of which one
-    the user reached for.
+    An index, a name and a reference face are ways of naming the same
+    thing, and they resolve to the same index here so that everything
+    downstream -- interval building, cutting, the report -- stays unaware
+    of which one the user reached for.
+
+    A name and a reference together mean "this person, wherever they are":
+    a scan where somebody named them uses those cards as named, and any
+    other scan is searched by face. That is how a person named once is
+    found across a folder of videos.
 
     Raises:
         SelectionError: If no person was named, the index is out of range,
             or the reference matched nobody clearly enough.
     """
+    if select_name:
+        wanted = [
+            position
+            for position, group in enumerate(identity_gallery.groups)
+            if group.name and group.name.casefold() == select_name.casefold()
+        ]
+        if wanted:
+            print(f"{select_name} is named in this scan.")
+            return wanted
+        if reference is None:
+            known = sorted(
+                group.name for group in identity_gallery.groups if group.name
+            )
+            raise SelectionError(
+                f"Nobody in this scan is called {select_name!r}. "
+                + (f"Named so far: {', '.join(known)}." if known else
+                   "Nobody has been named yet -- name them in the window.")
+            )
+
     if reference is not None:
         try:
             match = match_reference(
@@ -285,27 +321,10 @@ def _resolve_selection(
             else f"next best {match.runner_up_similarity:.2f}"
         )
         print(
-            f"{reference.source.name} matched Person #{match.index + 1} "
+            f"{reference.name} matched Person #{match.index + 1} "
             f"at {match.similarity:.2f} ({runner_up})."
         )
         return [match.index]
-
-    if select_name:
-        wanted = [
-            position
-            for position, group in enumerate(identity_gallery.groups)
-            if group.name and group.name.casefold() == select_name.casefold()
-        ]
-        if not wanted:
-            known = sorted(
-                group.name for group in identity_gallery.groups if group.name
-            )
-            raise SelectionError(
-                f"Nobody in this scan is called {select_name!r}. "
-                + (f"Named so far: {', '.join(known)}." if known else
-                   "Nobody has been named yet -- name them in the window.")
-            )
-        return wanted
 
     if select_index is None:
         raise SelectionError(
@@ -787,6 +806,102 @@ def run_appearance_timestamps(
     print("--- End Report ---\n")
 
 
+@dataclass(frozen=True)
+class ExportPlan:
+    """What would be cut from one video, decided before any encoding."""
+
+    video_path: Path
+    selection_name: str
+    selected_group: FaceIdentityGroup
+    intervals: list
+    segments: list
+
+    @property
+    def seconds(self) -> float:
+        return sum(s.end_time - s.start_time for s in self.segments)
+
+
+def plan_export(
+    scan: CachedScan,
+    video_path: Path,
+    *,
+    sample_interval: float,
+    padding_ratio: float,
+    mode: str,
+    gap_tolerance_seconds: float | None,
+    appearance_padding_seconds: float | None,
+    bridge_gap_seconds: float | None,
+    min_segment_seconds: float | None,
+    export_padding_seconds: float | None,
+    select_index: int | list[int] | None = None,
+    reference: ReferenceFace | None = None,
+    reference_threshold: float | None = None,
+    select_name: str | None = None,
+) -> ExportPlan | None:
+    """Chooses the person in a scan and works out the segments to cut.
+
+    Separate from the cut so a folder of videos can be planned in full
+    before a reel joining them starts encoding. Returns None, having said
+    why, when there is nothing to cut.
+
+    Raises:
+        SelectionError: If the person cannot be picked out of this scan.
+    """
+    if scan.frame_count == 0:
+        print("No frames extracted.")
+        return None
+
+    video_duration = scan.video_duration
+    if video_duration is None:
+        video_duration = scan.last_timestamp
+        print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
+
+    identity_gallery = build_identity_gallery(
+        scan.groups,
+        unassigned_count=scan.unassigned_count,
+        padding_ratio=padding_ratio,
+    )
+
+    if not identity_gallery.groups:
+        print("No identity groups found; nothing to export.")
+        return None
+
+    chosen = _resolve_selection(
+        identity_gallery, select_index, reference, reference_threshold, mode,
+        select_name,
+    )
+    selected_group = combined_group(
+        [identity_gallery.groups[index] for index in chosen]
+    )
+    selection_name = _selection_name(chosen, identity_gallery.groups)
+    intervals = build_appearance_intervals(
+        selected_group,
+        video_duration=video_duration,
+        sample_interval=sample_interval,
+        gap_tolerance_seconds=gap_tolerance_seconds,
+        padding_seconds=appearance_padding_seconds,
+    )
+    segments = merge_for_export(
+        intervals,
+        video_duration=video_duration,
+        bridge_gap_seconds=bridge_gap_seconds,
+        min_segment_seconds=min_segment_seconds,
+        padding_seconds=export_padding_seconds,
+    )
+
+    if not segments:
+        print("No segments to export for this person.")
+        return None
+
+    return ExportPlan(
+        video_path=video_path,
+        selection_name=selection_name,
+        selected_group=selected_group,
+        intervals=intervals,
+        segments=segments,
+    )
+
+
 def run_export(
     container,
     video_path: Path,
@@ -840,51 +955,28 @@ def run_export(
         use_cache=use_cache,
     )
 
-    if result.frame_count == 0:
-        print("No frames extracted.")
-        return
-
-    video_duration = result.video_duration
-    if video_duration is None:
-        video_duration = result.last_timestamp
-        print(f"Warning: video duration unavailable; using last sampled timestamp ({video_duration:.2f}s) instead.")
-
-    identity_gallery = build_identity_gallery(
-        result.groups,
-        unassigned_count=result.unassigned_count,
-        padding_ratio=padding_ratio,
-    )
-
-    if not identity_gallery.groups:
-        print("No identity groups found; nothing to export.")
-        return
-
-    chosen = _resolve_selection(
-        identity_gallery, select_index, reference, reference_threshold, mode,
-        select_name,
-    )
-    selected_group = combined_group(
-        [identity_gallery.groups[index] for index in chosen]
-    )
-    selection_name = _selection_name(chosen, identity_gallery.groups)
-    intervals = build_appearance_intervals(
-        selected_group,
-        video_duration=video_duration,
+    plan = plan_export(
+        result,
+        video_path,
         sample_interval=sample_interval,
+        padding_ratio=padding_ratio,
+        mode=mode,
         gap_tolerance_seconds=gap_tolerance_seconds,
-        padding_seconds=appearance_padding_seconds,
-    )
-    segments = merge_for_export(
-        intervals,
-        video_duration=video_duration,
+        appearance_padding_seconds=appearance_padding_seconds,
         bridge_gap_seconds=bridge_gap_seconds,
         min_segment_seconds=min_segment_seconds,
-        padding_seconds=export_padding_seconds,
+        export_padding_seconds=export_padding_seconds,
+        select_index=select_index,
+        reference=reference,
+        reference_threshold=reference_threshold,
+        select_name=select_name,
     )
-
-    if not segments:
-        print("No segments to export for this person.")
+    if plan is None:
         return
+    selection_name = plan.selection_name
+    selected_group = plan.selected_group
+    intervals = plan.intervals
+    segments = plan.segments
 
     appearance_seconds = sum(i.end_time - i.start_time for i in intervals)
     segment_seconds = sum(s.end_time - s.start_time for s in segments)
@@ -983,37 +1075,161 @@ def batch_output_path(video_path: Path, output_dir: Path, suffix: str = "reel") 
     return output_dir / f"{video_path.stem}-{suffix}.mp4"
 
 
+# The settings a scan's cache key is built from, and the ones that turn a
+# scan into segments. Batch takes one dictionary of everything and hands
+# each stage its share.
+SCAN_SETTINGS = (
+    "sample_interval",
+    "confidence_threshold",
+    "padding_ratio",
+    "similarity_threshold",
+    "margin_threshold",
+    "consolidation_threshold",
+    "min_confidence",
+    "min_face_size",
+    "min_group_eye_span",
+    "forbid_cooccurring",
+    "cooccurrence_similarity_ceiling",
+    "mode",
+    "min_detections",
+)
+PLAN_SETTINGS = (
+    "sample_interval",
+    "padding_ratio",
+    "mode",
+    "gap_tolerance_seconds",
+    "appearance_padding_seconds",
+    "bridge_gap_seconds",
+    "min_segment_seconds",
+    "export_padding_seconds",
+)
+CUT_SETTINGS = ("video_encoder", "audio_encoder", "quality", "include_audio")
+
+
+def _share(settings: dict, names: tuple[str, ...]) -> dict:
+    return {name: settings[name] for name in names if name in settings}
+
+
+def find_person(videos: list[Path], name: str, settings: dict) -> ReferenceFace:
+    """The face of someone named on a card, from the kept scans of these videos.
+
+    Nothing is scanned or decoded: a name only exists in a scan somebody
+    has already opened and named people in, so the kept scans are the whole
+    of what there is to search. Every card with the name counts, across
+    every video, and their faces are averaged -- so naming the person in
+    two episodes gives a steadier target than naming them in one.
+
+    Raises:
+        SelectionError: If nobody in these videos' kept scans has the name,
+            which is said before anything long starts, with the names that
+            do exist.
+    """
+    named: list[FaceIdentityGroup] = []
+    named_in: list[Path] = []
+    known: set[str] = set()
+    for path in videos:
+        try:
+            _, kept = find_scan(path, **_share(settings, SCAN_SETTINGS))
+        except OSError:
+            continue
+        if kept is None:
+            continue
+        here = [
+            group
+            for group in kept.groups
+            if group.name and group.name.casefold() == name.casefold()
+        ]
+        known.update(group.name for group in kept.groups if group.name)
+        if here:
+            named.extend(here)
+            named_in.append(path)
+
+    if not named:
+        raise SelectionError(
+            f"Nobody is named {name!r} in these videos. Open one in the "
+            "window, click their card and give it that name, then run this "
+            "again."
+            + (f" Names so far: {', '.join(sorted(known))}." if known else "")
+        )
+
+    # Spelled the way it was saved, not the way it was typed.
+    name = named[0].name
+    try:
+        reference = reference_from_groups(named, label=name)
+    except ReferenceError as error:
+        raise SelectionError(str(error)) from error
+
+    elsewhere = len(videos) - len(named_in)
+    print(
+        f"{name} is named in {len(named_in)} of {len(videos)} "
+        f"video{'s' if len(videos) != 1 else ''}"
+        + (f"; finding them in the other {elsewhere} by face." if elsewhere else ".")
+    )
+    return reference
+
+
 def run_batch(
     video_paths: list[Path],
-    reference: ReferenceFace,
+    reference: ReferenceFace | None,
     output_dir: Path,
     export_settings: dict,
     recursive: bool = False,
     reference_threshold: float | None = None,
+    person: str | None = None,
+    combine_path: Path | None = None,
+    use_cache: bool = True,
 ) -> list[BatchOutcome]:
-    """Cuts one person's reel out of every video, from a single photograph.
+    """Cuts one person out of every video in a folder.
 
-    Cross-video identity comes free here, and that is the point: matching
-    every episode against the *same* reference vector needs no notion of
-    "the same person in video A and video B" at all. Carrying a centroid
-    forward from one scan to the next would have to survive a change of
-    lighting, camera and costume between episodes; a photograph is the
-    same photograph every time.
+    The person is named one of two ways, and neither needs a picture of
+    them from anywhere but the footage:
+
+    - `person`, a name given to their card in any of these videos. Scans
+      where they are named use those cards; every other video is searched
+      for the same face (`find_person`).
+    - `reference`, a photograph, for when nobody has been named yet.
+
+    Either way every video is matched against the *same* face, so nothing
+    needs to decide that a stranger in episode 3 is the person from
+    episode 1 by comparing the two episodes to each other -- a comparison
+    that would have to survive a change of lighting, camera and costume.
+
+    With `combine_path`, the videos become one reel rather than one each.
+    Every video is scanned and planned first and the reel is cut once, at
+    the end, so a video that cannot contribute is found out before minutes
+    of encoding depend on it.
 
     Nothing here aborts the run. A season is twenty scans of several
     minutes each, and losing the other nineteen because episode three is
     a different mode, or holds nobody who matches, or was never a readable
     video, is the one failure mode that would make this unusable. Every
     video's outcome is recorded and the summary says which produced a reel.
+
+    Raises:
+        SelectionError: Only before any video is touched: when `person`
+            is named nowhere, or no way of naming someone was given.
     """
     videos = collect_videos(video_paths, recursive=recursive)
     if not videos:
         print("No videos found to process.", file=sys.stderr)
         return []
 
+    if person:
+        target = find_person(videos, person, export_settings)
+    elif reference is not None:
+        target = reference
+    else:
+        raise SelectionError("Choose a person with a name or a reference photo.")
+
+    if combine_path is not None:
+        return _run_combined(
+            videos, target, person, combine_path, export_settings,
+            reference_threshold, use_cache,
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     print(
-        f"Cutting {reference.source.name} out of {len(videos)} "
+        f"Cutting {target.name} out of {len(videos)} "
         f"video{'s' if len(videos) != 1 else ''} into {output_dir}.\n"
     )
 
@@ -1027,8 +1243,10 @@ def run_batch(
                     container,
                     video_path=video_path,
                     output_path=destination,
-                    reference=reference,
+                    reference=target,
+                    select_name=person,
                     reference_threshold=reference_threshold,
+                    use_cache=use_cache,
                     **export_settings,
                 )
         except (VideoLoadError, SelectionError, CutterError, ReferenceError) as error:
@@ -1075,3 +1293,123 @@ def run_batch(
     )
     print("--- End Batch ---\n")
     return outcomes
+
+
+def _run_combined(
+    videos: list[Path],
+    target: ReferenceFace,
+    person: str | None,
+    combine_path: Path,
+    export_settings: dict,
+    reference_threshold: float | None,
+    use_cache: bool,
+) -> list[BatchOutcome]:
+    """Plans every video, then cuts what they hold into one reel."""
+    print(
+        f"Cutting {target.name} out of {len(videos)} "
+        f"video{'s' if len(videos) != 1 else ''} into one reel, {combine_path}.\n"
+    )
+    outcomes: dict[Path, BatchOutcome] = {}
+    plans: list[ExportPlan] = []
+
+    for position, video_path in enumerate(videos, start=1):
+        print(f"=== [{position}/{len(videos)}] {video_path.name}")
+        try:
+            with load_video(video_path) as container:
+                scan = scan_or_reuse(
+                    container,
+                    video_path,
+                    use_cache=use_cache,
+                    **_share(export_settings, SCAN_SETTINGS),
+                )
+            plan = plan_export(
+                scan,
+                video_path,
+                reference=target,
+                select_name=person,
+                reference_threshold=reference_threshold,
+                **_share(export_settings, PLAN_SETTINGS),
+            )
+        except (VideoLoadError, SelectionError, CutterError, ReferenceError) as error:
+            print(f"  skipped: {error}\n", file=sys.stderr)
+            outcomes[video_path] = BatchOutcome(video_path, skipped_because=str(error))
+            continue
+
+        if plan is None:
+            outcomes[video_path] = BatchOutcome(
+                video_path, skipped_because="nothing to cut for this person"
+            )
+            continue
+
+        print(f"  {len(plan.segments)} segment(s), {plan.seconds:.1f}s\n")
+        plans.append(plan)
+
+    # One reel has one frame rate. The first contributing video sets it,
+    # and a video at another rate is left out by name rather than taking
+    # the whole reel down with it.
+    usable: list[ExportPlan] = []
+    rate = None
+    for plan in plans:
+        try:
+            profile = probe_clip(plan.video_path)
+        except CutterError as error:
+            outcomes[plan.video_path] = BatchOutcome(
+                plan.video_path, skipped_because=str(error)
+            )
+            continue
+        if rate is None:
+            rate = profile.frame_rate
+        elif not same_frame_rate(rate, profile.frame_rate):
+            outcomes[plan.video_path] = BatchOutcome(
+                plan.video_path,
+                skipped_because=(
+                    f"it is {float(profile.frame_rate):.3f}fps and the reel is "
+                    f"{float(rate):.3f}fps; joining different frame rates is "
+                    "not supported yet"
+                ),
+            )
+            continue
+        usable.append(plan)
+
+    if usable:
+        cut_settings = _share(export_settings, CUT_SETTINGS)
+        print(f"Encoding {sum(p.seconds for p in usable):.1f}s from {len(usable)} video(s)...")
+        try:
+            export = cut_clips(
+                [Clip(plan.video_path, plan.segments) for plan in usable],
+                combine_path,
+                on_clip=lambda index, total, path: print(f"  [{index + 1}/{total}] {path.name}"),
+                **cut_settings,
+            )
+        except CutterError as error:
+            print(f"  the reel could not be cut: {error}\n", file=sys.stderr)
+            for plan in usable:
+                outcomes[plan.video_path] = BatchOutcome(
+                    plan.video_path,
+                    skipped_because=f"the reel could not be cut: {error}",
+                )
+        else:
+            for plan, seconds in zip(usable, export.clip_seconds):
+                outcomes[plan.video_path] = BatchOutcome(
+                    plan.video_path,
+                    output_path=export.output_path,
+                    reel_seconds=seconds,
+                )
+
+    ordered = [outcomes[path] for path in videos]
+    print("--- Batch summary ---")
+    for outcome in ordered:
+        if outcome.succeeded:
+            print(f"  {outcome.video_path.name}  {outcome.reel_seconds:.1f}s")
+        else:
+            print(f"  {outcome.video_path.name} -- {outcome.skipped_because}")
+    contributed = [outcome for outcome in ordered if outcome.succeeded]
+    if contributed:
+        print(
+            f"\n{len(contributed)}/{len(ordered)} videos went into {combine_path}, "
+            f"{sum(o.reel_seconds for o in contributed):.1f}s in total."
+        )
+    else:
+        print(f"\nNo video had anything to cut; {combine_path} was not written.")
+    print("--- End Batch ---\n")
+    return ordered

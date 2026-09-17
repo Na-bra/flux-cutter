@@ -49,7 +49,7 @@ from app.scans import CachedScan
 from app.scans import find as find_scan
 from app.scans import save as save_scan
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
-from app.modes import DEFAULT_MODE
+from app.modes import DEFAULT_MODE, get_mode
 from app.video.cutter import cut_segments
 from app.video.source import VideoSource
 from app.video.export import (
@@ -96,6 +96,33 @@ class ScanSettings:
     forbid_cooccurring: bool = DEFAULT_FORBID_COOCCURRING
     cooccurrence_similarity_ceiling: float = DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
     min_detections: int | None = None
+
+    @classmethod
+    def for_mode(cls, mode: str = DEFAULT_MODE, sample_interval: float = 0.5) -> "ScanSettings":
+        """The settings a scan in this mode should run with.
+
+        The field defaults above are live action's numbers. Building
+        settings with only `mode=` changed kept those, so the window scanned
+        animation with a live-action similarity floor of 0.35 where
+        animation's own is 0.75. On the 7-minute animation sample that found
+        2 people where the mode's own thresholds find 6, and 306 faces where
+        they find 344.
+
+        Resolved the same way the command line resolves an unset flag
+        (`resolve_mode_settings` in app/__main__.py), so the two front ends
+        run the same scan -- and share its kept copy, and the names in it.
+        """
+        spec = get_mode(mode)
+        return cls(
+            sample_interval=sample_interval,
+            mode=spec.id,
+            confidence_threshold=spec.detection.confidence_threshold,
+            similarity_threshold=spec.grouping.similarity_threshold,
+            consolidation_threshold=spec.grouping.consolidation_threshold,
+            min_confidence=spec.detection.min_confidence,
+            min_face_size=spec.detection.min_face_size,
+            min_group_eye_span=spec.grouping.min_group_eye_span,
+        )
 
 
 @dataclass(frozen=True)

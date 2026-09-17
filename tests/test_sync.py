@@ -27,49 +27,65 @@ RATE = 48000
 BURST_SAMPLES = 2400  # 50ms, long enough not to be confused with a fragment
 
 
-def write_marked_video(path: Path, seconds: int) -> None:
-    """Footage with a white frame and a tone burst on every whole second."""
-    container = av.open(str(path), mode="w")
-    video = container.add_stream("libx264", rate=FPS)
-    video.width, video.height, video.pix_fmt = 160, 90, "yuv420p"
-    video.options = {"crf": "18", "g": "12"}
-    audio = container.add_stream("aac", rate=RATE)
-    audio.layout = "mono"
+def write_marked_video(
+    path: Path,
+    seconds: int,
+    fps: int = FPS,
+    rate: int | None = RATE,
+    width: int = 160,
+    height: int = 90,
+) -> None:
+    """Footage with a white frame and a tone burst on every whole second.
 
-    for n in range(seconds * FPS):
-        shade = 255 if n % FPS == 0 else 0
+    `rate=None` writes picture only. The other parameters exist so a reel
+    can be cut from videos that differ the ways real episodes do.
+    """
+    container = av.open(str(path), mode="w")
+    video = container.add_stream("libx264", rate=fps)
+    video.width, video.height, video.pix_fmt = width, height, "yuv420p"
+    video.options = {"crf": "18", "g": "12"}
+    audio = None
+    if rate is not None:
+        audio = container.add_stream("aac", rate=rate)
+        audio.layout = "mono"
+
+    for n in range(seconds * fps):
+        shade = 255 if n % fps == 0 else 0
         frame = av.VideoFrame.from_ndarray(
-            np.full((90, 160, 3), shade, dtype=np.uint8), format="rgb24"
+            np.full((height, width, 3), shade, dtype=np.uint8), format="rgb24"
         )
         frame.pts = n
-        frame.time_base = Fraction(1, FPS)
+        frame.time_base = Fraction(1, fps)
         for packet in video.encode(frame):
             container.mux(packet)
 
-    samples = np.zeros(seconds * RATE, dtype=np.float32)
-    for second in range(seconds):
-        tone = np.sin(2 * np.pi * 1000 * np.arange(BURST_SAMPLES) / RATE)
-        samples[second * RATE : second * RATE + BURST_SAMPLES] = 0.9 * tone
+    if audio is not None:
+        burst = int(BURST_SAMPLES * rate / RATE)
+        samples = np.zeros(seconds * rate, dtype=np.float32)
+        for second in range(seconds):
+            tone = np.sin(2 * np.pi * 1000 * np.arange(burst) / rate)
+            samples[second * rate : second * rate + burst] = 0.9 * tone
 
-    for offset in range(0, len(samples), 1024):
-        block = samples[offset : offset + 1024]
-        if len(block) < 1024:
-            block = np.pad(block, (0, 1024 - len(block)))
-        frame = av.AudioFrame.from_ndarray(
-            (block * 32767).astype(np.int16).reshape(1, -1),
-            format="s16",
-            layout="mono",
-        )
-        frame.rate = RATE
-        frame.pts = offset
-        frame.time_base = Fraction(1, RATE)
-        for packet in audio.encode(frame):
-            container.mux(packet)
+        for offset in range(0, len(samples), 1024):
+            block = samples[offset : offset + 1024]
+            if len(block) < 1024:
+                block = np.pad(block, (0, 1024 - len(block)))
+            frame = av.AudioFrame.from_ndarray(
+                (block * 32767).astype(np.int16).reshape(1, -1),
+                format="s16",
+                layout="mono",
+            )
+            frame.rate = rate
+            frame.pts = offset
+            frame.time_base = Fraction(1, rate)
+            for packet in audio.encode(frame):
+                container.mux(packet)
 
     for packet in video.encode():
         container.mux(packet)
-    for packet in audio.encode():
-        container.mux(packet)
+    if audio is not None:
+        for packet in audio.encode():
+            container.mux(packet)
     container.close()
 
 
@@ -225,7 +241,7 @@ def test_no_audio_is_carried_across_a_cut(marked, tmp_path):
 # ------------------------------------------------------- nothing is made up
 
 
-def write_tone_video(path: Path, seconds: int) -> None:
+def write_tone_video(path: Path, seconds: int, rate: int = RATE) -> None:
     """Footage whose sound never stops: a steady tone under every frame.
 
     Any dropout in a reel cut from it is manufactured, because there is no
@@ -235,7 +251,7 @@ def write_tone_video(path: Path, seconds: int) -> None:
     video = container.add_stream("libx264", rate=FPS)
     video.width, video.height, video.pix_fmt = 160, 90, "yuv420p"
     video.options = {"crf": "23", "g": "12"}
-    audio = container.add_stream("aac", rate=RATE)
+    audio = container.add_stream("aac", rate=rate)
     audio.layout = "mono"
 
     for n in range(seconds * FPS):
@@ -247,8 +263,8 @@ def write_tone_video(path: Path, seconds: int) -> None:
         for packet in video.encode(frame):
             container.mux(packet)
 
-    total = seconds * RATE
-    tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(total) / RATE)
+    total = seconds * rate
+    tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(total) / rate)
     for offset in range(0, total, 1024):
         block = tone[offset : offset + 1024]
         if len(block) < 1024:
@@ -256,9 +272,9 @@ def write_tone_video(path: Path, seconds: int) -> None:
         frame = av.AudioFrame.from_ndarray(
             (block * 32767).astype(np.int16).reshape(1, -1), format="s16", layout="mono"
         )
-        frame.rate = RATE
+        frame.rate = rate
         frame.pts = offset
-        frame.time_base = Fraction(1, RATE)
+        frame.time_base = Fraction(1, rate)
         for packet in audio.encode(frame):
             container.mux(packet)
 

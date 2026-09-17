@@ -795,6 +795,24 @@ def test_a_scan_remembers_the_mode_it_was_given(bridge, tmp_path, monkeypatch):
     assert bridge._mode == "animation"
 
 
+def test_an_animation_scan_uses_animation_s_own_thresholds(bridge, tmp_path, monkeypatch):
+    """It once ran with live action's: a similarity floor of 0.35 against
+    animation's 0.75, which found 2 people in the animation sample instead
+    of 6. And the edits made on it are saved under these settings' key."""
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    video = tmp_path / "episode.mp4"
+    video.write_bytes(b"x")
+
+    bridge.start_scan(str(video), "animation", 0.5)
+
+    (_, settings), = started
+    assert settings == web.ScanSettings.for_mode("animation", sample_interval=0.5)
+    assert settings.similarity_threshold != web.ScanSettings().similarity_threshold
+    bridge._scan_settings = None
+    assert bridge._settings_for_scan() == settings
+
+
 def test_a_mode_the_app_does_not_have_is_ignored(bridge, tmp_path, monkeypatch):
     """The page sends it, so it is not trusted."""
     monkeypatch.setattr(bridge, "_start", lambda *args: None)
