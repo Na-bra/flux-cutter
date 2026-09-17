@@ -197,3 +197,59 @@ def test_git_eats_markdown_headings_unless_told_not_to(tmp_path):
     assert "## The headline" not in release_notes.read_tag_message("eaten", tmp_path)
     assert "The paragraph." in release_notes.read_tag_message("eaten", tmp_path)
     assert "## The headline" in release_notes.read_tag_message("kept", tmp_path)
+
+
+@needs_git
+def test_the_message_survives_what_actions_checkout_does_to_the_tag(tmp_path):
+    """v1.9.5's draft arrived with no notes. On a tag push, actions/checkout
+    runs these two fetches -- copied from that job's log -- and the second
+    replaces the annotated tag with a lightweight one on the same commit."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    run = _repo(origin)
+    run("git", "tag", "-a", "--cleanup=whitespace", "v9.9.9", "-m", "## What changed\n\nIt works.")
+    commit = run("git", "rev-parse", "v9.9.9^{}").stdout.strip()
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    job = lambda *args: subprocess.run(
+        args, cwd=runner, check=True, capture_output=True, text=True
+    )
+    job("git", "init", "-q")
+    job("git", "remote", "add", "origin", str(origin))
+    job("git", "fetch", "--prune", "origin", "+refs/heads/*:refs/remotes/origin/*", "+refs/tags/*:refs/tags/*")
+    job("git", "fetch", "--no-tags", "--prune", "origin", f"+{commit}:refs/tags/v9.9.9")
+
+    # The damage, reproduced: the tag is now just a name for the commit.
+    assert release_notes.read_tag_message("v9.9.9", runner) == ""
+
+    notes = subprocess.run(
+        [sys.executable, str(SCRIPT), "--tag", "v9.9.9", "--repo", str(runner),
+         "--fetch-from", "origin", "--require-message"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+
+    assert notes.startswith("## What changed")
+
+
+@needs_git
+def test_a_release_with_no_message_fails_loudly_when_asked_to(tmp_path):
+    """The fallback to install text alone is what hid the v1.9.5 failure."""
+    run = _repo(tmp_path)
+    run("git", "tag", "v9.9.9")
+
+    finished = subprocess.run(
+        [sys.executable, str(SCRIPT), "--tag", "v9.9.9", "--repo", str(tmp_path), "--require-message"],
+        capture_output=True, text=True,
+    )
+
+    assert finished.returncode == 1
+    assert "::error::" in finished.stderr
+    assert "--cleanup=whitespace" in finished.stderr
+    assert finished.stdout == ""
+
+
+def test_the_workflow_restores_the_tag_and_requires_its_message():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "--fetch-from origin" in workflow
+    assert "--require-message" in workflow

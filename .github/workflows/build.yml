@@ -151,12 +151,16 @@ jobs:
         # about what changed, which left the notes to be written by hand
         # afterwards -- a step that is easy to forget and was nearly
         # forgotten for 1.9.0. An annotated tag already says what changed;
-        # this puts that at the top. A tag with no message still produces
-        # exactly the notes every release before this one shipped.
+        # this puts that at the top.
+        #
+        # --fetch-from undoes what checkout does to the tag (see
+        # restore_tag), and --require-message fails the job rather than
+        # drafting a release with no word of what changed -- which is what
+        # the first run of this did, silently, for v1.9.5.
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          python packaging/release_notes.py --tag "$TAG" > release-notes.md
+          python packaging/release_notes.py --tag "$TAG" --fetch-from origin --require-message > release-notes.md
           echo "--- notes this release will carry ---"
           cat release-notes.md
 
