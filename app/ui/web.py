@@ -45,7 +45,18 @@ from app.ui.worker import (
     quality_for,
     scan,
 )
+from app.faces.cast import Answers
 from app.faces.edits import EditError
+from app.ui.folder import (
+    CastPerson,
+    FolderScan,
+    cast_of,
+    cast_preview_frames,
+    export_cast,
+    name_cast_person,
+    plan_cast_export,
+    scan_folder,
+)
 from app.video.loader import VideoLoadError
 from app.video.source import SourceMismatch
 
@@ -168,6 +179,13 @@ class Bridge:
         # similar.
         self._scan_settings: ScanSettings | None = None
         self._suggested_filename = ""
+        # A folder is its own view with its own state, so opening one does
+        # not throw away a single video already scanned, or the reverse.
+        self._folder: FolderScan | None = None
+        self._answers = Answers()
+        self._cast: list[CastPerson] = []
+        self._questions: list = []
+        self._cast_selected: CastPerson | None = None
 
     # ------------------------------------------------------------- helpers
 
@@ -300,7 +318,9 @@ class Bridge:
             self._scan_result.close()
         self._scan_result = result
         self._selected = []
-        self._suggested_filename = ""
+        # The last suggestion is deliberately kept. Forgetting it made the
+        # file name already in the box look typed by hand, so it survived
+        # and a reel of this video was saved under the previous one's name.
         self._emit("onScanned", self._scan_payload(result))
 
     def _scan_payload(self, result: ScanResult) -> dict:
@@ -655,6 +675,292 @@ class Bridge:
 
         self._emit("onExported", {"path": str(output_path)})
 
+    # -------------------------------------------------------------- folder
+
+    def start_folder_scan(self, folder: str, mode: str, interval: float) -> dict:
+        """Scans every video in a folder, reusing any already scanned."""
+        if self._busy():
+            return {"started": False, "reason": "already running"}
+
+        path = Path(folder.strip()) if folder else None
+        if path is None or not path.is_dir():
+            return {"started": False, "reason": "Choose a folder of videos first."}
+
+        if mode in MODES:
+            self._mode = mode
+        settings = ScanSettings.for_mode(self._mode, sample_interval=float(interval))
+        self._start(self._folder_worker, path, settings)
+        return {"started": True}
+
+    def _folder_worker(self, folder: Path, settings: ScanSettings) -> None:
+        def video(index: int, total: int, path: Path) -> None:
+            self._status(f"Scanning {path.name} ({index + 1} of {total})…")
+
+        def report(fraction: float, timestamp: float) -> None:
+            self._emit("onScanProgress", {"fraction": fraction, "timestamp": timestamp})
+
+        def downloading(description: str, fraction: float, done: int, total: int) -> None:
+            self._emit(
+                "onDownload",
+                {"description": description, "fraction": fraction, "done": done, "total": total},
+            )
+
+        try:
+            scanned = scan_folder(
+                [folder],
+                settings,
+                on_video=video,
+                on_progress=report,
+                cancel=self._cancel,
+                on_download=downloading,
+            )
+        except Cancelled:
+            self._emit("onScanCancelled")
+            return
+        except Exception as error:
+            self._emit("onFailed", {"title": "Scan failed", "detail": str(error)})
+            return
+
+        if self._folder is not None:
+            self._folder.close()
+        self._folder = scanned
+        self._answers = Answers()
+        self._cast_selected = None
+        self._rebuild_cast()
+        self._emit("onFolderScanned", {**self._cast_payload(), "folderName": folder.name})
+
+    def _rebuild_cast(self) -> None:
+        assert self._folder is not None
+        self._cast, self._questions = cast_of(self._folder, self._answers)
+        if self._cast_selected is not None:
+            # Keep the same person selected by what they are made of, since
+            # their position in the cast moves as answers change it.
+            wanted = {(v, c.index) for v, c in self._cast_selected.appearances}
+            self._cast_selected = next(
+                (p for p in self._cast if wanted & {(v, c.index) for v, c in p.appearances}),
+                None,
+            )
+
+    def _cast_payload(self) -> dict:
+        assert self._folder is not None
+        videos = self._folder.videos
+        interval = self._folder.settings.sample_interval
+
+        def card(video: int, person: Person) -> dict:
+            return {
+                "video": videos[video].video_path.name,
+                "thumbnail": _data_uri(person.thumbnail),
+                "label": person.label,
+            }
+
+        people = []
+        for member in self._cast:
+            # The face on the card is the one seen most; the strip beneath
+            # it is one face per video, so a card that has mixed two people
+            # up shows it at a glance.
+            best_video, best = max(member.appearances, key=lambda a: a[1].detection_count)
+            seen = {}
+            for video, person in member.appearances:
+                if video not in seen or person.detection_count > seen[video].detection_count:
+                    seen[video] = person
+            people.append(
+                {
+                    "index": member.index,
+                    "name": member.name,
+                    "label": member.label,
+                    "thumbnail": _data_uri(best.thumbnail),
+                    "faces": [card(v, seen[v]) for v in sorted(seen)],
+                    "videos": len(seen),
+                    "onScreen": _clock(member.detection_count * interval),
+                    "detections": member.detection_count,
+                }
+            )
+
+        return {
+            "people": people,
+            "questions": [
+                {
+                    "id": position,
+                    "first": card(q.first.video, self._person_at(q.first)),
+                    "second": card(q.second.video, self._person_at(q.second)),
+                }
+                for position, q in enumerate(self._questions)
+            ],
+            "videoCount": len(videos),
+            "videos": [result.video_path.name for result in videos],
+            "skipped": [
+                {"video": path.name, "reason": reason} for path, reason in self._folder.skipped
+            ],
+            "selected": self._cast_selected.index if self._cast_selected else None,
+        }
+
+    def _person_at(self, ref) -> Person:
+        result = self._folder.videos[ref.video]
+        return next(p for p in result.people if p.index == ref.person)
+
+    def answer_question(self, question: int, same: bool) -> dict:
+        """Records yes or no to "same person?", and redraws the cast."""
+        if self._busy() or self._folder is None:
+            return {"applied": False, "reason": "Not while a job is running."}
+        try:
+            asked = self._questions[int(question)]
+        except (IndexError, ValueError, TypeError):
+            return {"applied": False, "reason": "That question has already been answered."}
+
+        self._answers.record(asked.first, asked.second, same=bool(same))
+        self._rebuild_cast()
+        return {
+            "applied": True,
+            **self._cast_payload(),
+            "note": "Joined them into one person." if same else "Kept them apart.",
+        }
+
+    def select_cast_person(self, index: int, current_filename: str = "") -> dict:
+        """Chooses one person from the folder's cast, and describes their reel."""
+        if self._busy() or self._folder is None:
+            return {"accepted": False}
+        chosen = next((p for p in self._cast if p.index == int(index)), None)
+        if chosen is None:
+            return {"accepted": False}
+
+        self._preview_token += 1
+        if self._cast_selected is not None and self._cast_selected.index == chosen.index:
+            self._cast_selected = None
+            return {"accepted": True, "index": None, "summary": "Choose a person to export."}
+
+        self._cast_selected = chosen
+        plans = plan_cast_export(self._folder, chosen)
+        cuts = sum(len(segments) for _, segments in plans)
+        reel = sum(s.end_time - s.start_time for _, segments in plans for s in segments)
+        self._start_cast_preview()
+
+        return {
+            "accepted": True,
+            "index": chosen.index,
+            "token": self._preview_token,
+            "name": chosen.label,
+            "cuts": cuts,
+            "reel": _clock(reel),
+            "onScreen": _clock(chosen.detection_count * self._folder.settings.sample_interval),
+            "detections": chosen.detection_count,
+            "videos": len(plans),
+            "filename": self._suggest_cast_filename(chosen, current_filename),
+            "summary": (
+                f"{chosen.label} selected - {cuts} cuts from {len(plans)} "
+                f"video{'s' if len(plans) != 1 else ''}, about {_clock(reel)} of footage."
+            ),
+        }
+
+    def _suggest_cast_filename(self, person: CastPerson, current: str) -> str | None:
+        """`<folder>-<name>.mp4`, unless the box holds something typed by hand."""
+        assert self._folder is not None
+        stem = (
+            self._folder.videos[0].video_path.parent.name if self._folder.videos else "reel"
+        ) or "reel"
+        part = _filename_part(person.name) or f"person-{person.index + 1}"
+        suggestion = f"{stem}-{part}.mp4"
+        hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
+        self._suggested_filename = suggestion
+        return None if hand_typed else suggestion
+
+    def _start_cast_preview(self) -> None:
+        token = self._preview_token
+        folder, person = self._folder, self._cast_selected
+        if folder is None or person is None:
+            return
+
+        def build() -> None:
+            try:
+                frames = cast_preview_frames(folder, person)
+                if token != self._preview_token:
+                    return
+                # "V2 6:43" rather than the file name, which covered the frame
+                # it labelled; the name is kept for the tooltip.
+                number = {
+                    result.video_path.name: position + 1
+                    for position, result in enumerate(folder.videos)
+                }
+                self._emit(
+                    "onPreview",
+                    {
+                        "token": token,
+                        "frames": [
+                            {
+                                "at": f"V{number.get(name, '?')} {_clock(timestamp)}",
+                                "video": name,
+                                "image": _data_uri(image),
+                            }
+                            for name, timestamp, image in frames
+                        ],
+                    },
+                )
+            except Exception:
+                self._emit("onPreview", {"token": token, "frames": []})
+
+        threading.Thread(target=build, daemon=True).start()
+
+    def name_cast_person(self, name: str = "") -> dict:
+        """Names the chosen person in every video they are in."""
+        if self._busy() or self._folder is None:
+            return {"applied": False, "reason": "Not while a job is running."}
+        if self._cast_selected is None:
+            return {"applied": False, "reason": "Choose a person first."}
+        try:
+            self._folder = name_cast_person(self._folder, self._cast_selected, name)
+        except EditError as error:
+            return {"applied": False, "reason": str(error)}
+
+        self._rebuild_cast()
+        videos = len(self._cast_selected.videos) if self._cast_selected else 0
+        note = (
+            f"Named them {name.strip()} in {videos} video{'s' if videos != 1 else ''}."
+            if name.strip()
+            else "Cleared their name."
+        )
+        return {"applied": True, **self._cast_payload(), "note": note}
+
+    def start_folder_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
+        if self._busy():
+            return {"started": False, "reason": "already running"}
+        if self._folder is None or self._cast_selected is None:
+            return {"started": False, "reason": "Choose a person first."}
+
+        settings = ExportSettings(
+            video_encoder=encoder,
+            quality=quality_for(encoder, quality),
+        )
+        self._start(self._folder_export_worker, output_path(folder, filename), settings)
+        return {"started": True}
+
+    def _folder_export_worker(self, output: Path, settings: ExportSettings) -> None:
+        def report(fraction: float, done: int, total: int) -> None:
+            self._emit("onExportProgress", {"fraction": fraction, "done": done, "total": total})
+
+        try:
+            output.parent.mkdir(parents=True, exist_ok=True)
+            _, left_out = export_cast(
+                self._folder,
+                self._cast_selected,
+                output,
+                settings=settings,
+                on_progress=report,
+                cancel=self._cancel,
+            )
+        except Cancelled:
+            self._emit("onExportCancelled")
+            return
+        except Exception as error:
+            self._emit("onFailed", {"title": "Export failed", "detail": str(error)})
+            return
+
+        self._emit(
+            "onExported",
+            {
+                "path": str(output),
+                "leftOut": [{"video": path.name, "reason": reason} for path, reason in left_out],
+            },
+        )
+
     # --------------------------------------------------------------- other
 
     def cancel(self) -> dict:
@@ -666,6 +972,8 @@ class Bridge:
         self._cancel.set()
         if self._scan_result is not None:
             self._scan_result.close()
+        if self._folder is not None:
+            self._folder.close()
         return {"ok": True}
 
 
