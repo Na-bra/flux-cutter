@@ -772,7 +772,9 @@
       }
       showPicked(r);
       $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
-        " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file.";
+        " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file." +
+        (r.repeated ? " Leaves out " + r.repeated +
+          " that later videos repeat of footage already in the reel." : "");
       return;
     }
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);

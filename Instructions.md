@@ -2744,3 +2744,63 @@ Answers to "same person?" last for the session; a "yes" is kept beyond it
 only by naming the person, since cards with one name are one person. Merge,
 split and discard are single-video corrections and are hidden in folder
 view.
+
+## 36. Leaving repeated footage out of season reels (`app/video/repeats.py`)
+
+A season reel cut naively has a character in the recap twice, and one in
+the opening credits once per episode.
+
+### Faces could not find repeats
+
+The scans already hold every face they saw, so the first attempt looked
+there. A two-minute recap was made from the test episode the way a real
+one is -- re-encoded, at lower quality, starting at 30.23s so the scan's
+0.5s sampling falls between the original's samples. Its faces matched
+their originals at a median of only 0.82 (each is caught a fraction of a
+second later), while new footage of the same people reached 0.86.
+
+Two refinements did not rescue it. Voting for one time offset per run of
+sightings let chance alignments through (64-82% of an unrelated episode's
+runs "aligned"). Pooling votes over the whole cast and requiring the face
+in the same place on screen still flagged thirteen stretches of an episode
+that repeats nothing, and found only 29 of the recap's 120 seconds.
+
+### Frames can
+
+A repeat is the same pixels, whoever is in them. A 63-bit perceptual hash
+of a frame every 0.5s:
+
+    closest frame, bits apart   median   within 8   within 12
+    recap vs its episode           4        72%        84%
+    other episode vs it           18         0%         1%
+
+Frames within 10 bits vote for the offset between the videos; the frames
+agreeing with the best one, joined across gaps of up to 5s (fast motion
+hashes less alike), are the repeated stretches. On the three videos:
+
+    recap repeats episode 1     0.0-119.2s at +30.239s (made at +30.23s)
+    every other pair            nothing, at 8, 10 and 12 bits
+
+The offset was first taken as the centre of the winning vote window,
+0.15s off; the median of the matches in it is 9ms off. Frames with almost
+no detail -- black, a flat card -- look alike everywhere and do not vote.
+
+### What is left out
+
+Only footage the reel really does show from an earlier video. A recap of a
+scene the reel skipped is the only time it appears, so it stays; slivers
+under 0.5s left by a cut are dropped.
+
+On episode 1, episode 2 and the recap, `batch --person Lead --combine`:
+
+    recap      79.9s planned -> 5.5s kept, 74.4s left out
+    episodes   unchanged (300.9s, 355.8s)
+
+The 5.5s kept are two recap moments (2.0s and 3.5s) that episode 1's own
+cut of the lead does not include -- checked by mapping them back.
+
+Fingerprinting costs one more read of each video, about 11-13s per 11
+minutes of 720p, and is kept beside the scans keyed by the file alone;
+finding the repeats between two videos then takes about 10ms. The folder
+view does both when a folder is scanned, so choosing a person stays
+instant.

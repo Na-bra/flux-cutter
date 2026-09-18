@@ -405,3 +405,56 @@ def test_a_name_alone_still_refuses_a_scan_without_it():
         app_main._resolve_selection(
             gallery(card([1.0, 0.0], "Sam")), None, None, select_name="Jamie"
         )
+
+
+# ------------------------------------------------------------ repeats
+
+
+def with_repeats(monkeypatch, found):
+    """Every video fingerprints; `found` says what repeats what, by name."""
+    from app.video.repeats import Repeat
+
+    monkeypatch.setattr(app_main, "fingerprint_kept", lambda path, directory: Path(path).name)
+    monkeypatch.setattr(
+        app_main, "find_repeats",
+        lambda later, earlier: [Repeat(*r) for r in found.get((later, earlier), [])],
+    )
+
+
+def test_a_combined_reel_leaves_out_what_a_later_video_repeats(season, monkeypatch, capsys):
+    # e5 repeats e1 from 0-10s at no offset: e5's 1-3s and 5-6s are e1's.
+    with_repeats(monkeypatch, {("e5.mp4", "e1.mp4"): [(0.0, 10.0, 0.0, 20)]})
+
+    outcomes = run_batch(
+        [season.folder], season.reference, season.tmp / "unused",
+        export_settings={}, combine_path=season.tmp / "jamie.mp4",
+    )
+
+    reasons = {o.video_path.name: o.skipped_because for o in outcomes if not o.succeeded}
+    assert "already in the reel" in reasons["e5.mp4"]
+    assert [Path(c.video).name for c in season.state.clips] == ["e1.mp4"]
+
+
+def test_keep_repeats_keeps_them(season, monkeypatch):
+    with_repeats(monkeypatch, {("e5.mp4", "e1.mp4"): [(0.0, 10.0, 0.0, 20)]})
+
+    run_batch(
+        [season.folder], season.reference, season.tmp / "unused",
+        export_settings={}, combine_path=season.tmp / "jamie.mp4", keep_repeats=True,
+    )
+
+    assert "e5.mp4" in [Path(c.video).name for c in season.state.clips]
+
+
+def test_part_of_a_video_repeated_is_trimmed_and_the_summary_says_so(season, monkeypatch, capsys):
+    # Only e5's 1-3s repeats e1's 1-3s.
+    with_repeats(monkeypatch, {("e5.mp4", "e1.mp4"): [(0.5, 3.5, 0.0, 7)]})
+
+    run_batch(
+        [season.folder], season.reference, season.tmp / "unused",
+        export_settings={}, combine_path=season.tmp / "jamie.mp4",
+    )
+
+    e5 = next(c for c in season.state.clips if Path(c.video).name == "e5.mp4")
+    assert e5.segments == [span(5.0, 6.0)]
+    assert "left out 2.0s already in the reel" in capsys.readouterr().out

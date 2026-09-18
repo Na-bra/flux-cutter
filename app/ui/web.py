@@ -55,6 +55,7 @@ from app.ui.folder import (
     export_cast,
     name_cast_person,
     plan_cast_export,
+    repeated_seconds,
     scan_folder,
 )
 from app.video.loader import VideoLoadError
@@ -713,6 +714,7 @@ class Bridge:
                 on_progress=report,
                 cancel=self._cancel,
                 on_download=downloading,
+                on_status=self._status,
             )
         except Cancelled:
             self._emit("onScanCancelled")
@@ -832,6 +834,7 @@ class Bridge:
         plans = plan_cast_export(self._folder, chosen)
         cuts = sum(len(segments) for _, segments in plans)
         reel = sum(s.end_time - s.start_time for _, segments in plans for s in segments)
+        repeated = repeated_seconds(self._folder, chosen)
         self._start_cast_preview()
 
         return {
@@ -845,6 +848,7 @@ class Bridge:
             "detections": chosen.detection_count,
             "videos": len(plans),
             "filename": self._suggest_cast_filename(chosen, current_filename),
+            "repeated": _clock(repeated) if repeated >= 0.5 else None,
             "summary": (
                 f"{chosen.label} selected - {cuts} cuts from {len(plans)} "
                 f"video{'s' if len(plans) != 1 else ''}, about {_clock(reel)} of footage."

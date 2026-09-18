@@ -582,6 +582,12 @@ def main():
         help="Write one reel joining every video, instead of one reel each.",
     )
     batch_parser.add_argument(
+        "--keep-repeats",
+        action="store_true",
+        help="With --combine, keep footage a later video repeats of one already "
+        "in the reel (recaps, openings) instead of leaving it out.",
+    )
+    batch_parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("output/batch"),
@@ -749,6 +755,7 @@ def main():
                 person=args.person,
                 combine_path=args.combine,
                 use_cache=not args.rescan,
+                keep_repeats=args.keep_repeats,
                 output_dir=args.output_dir,
                 recursive=args.recursive,
                 reference_threshold=args.reference_threshold,
