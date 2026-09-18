@@ -307,3 +307,167 @@ def test_the_preview_draws_on_every_video(season, monkeypatch):
     frames = cast_preview_frames(season, cast[0], limit=6)
 
     assert [name for name, _, _ in frames] == ["e1.mp4"] * 3 + ["e2.mp4"] * 3
+
+
+# ------------------------------------------------------- remembered answers
+
+
+@pytest.fixture
+def on_disk(tmp_path):
+    """The season fixture, with videos that exist so their scans have keys."""
+    folder = tmp_path / "season"
+    folder.mkdir()
+    videos = []
+    for name, people in (
+        ("e1.mp4", (person(0, LEAD, detections=40), person(1, FRIEND))),
+        ("e2.mp4", (person(0, FRIEND), person(1, LEAD, detections=30))),
+    ):
+        (folder / name).write_bytes(name.encode())
+        videos.append(ScanResult(video_path=folder / name, video_duration=60.0,
+                                 sample_interval=0.5, people=list(people)))
+    return FolderScan(videos=videos, settings=SETTINGS)
+
+
+def test_an_answer_holds_the_next_time_the_folder_is_opened(on_disk):
+    from app.ui.folder import load_answers, remember_answer
+
+    assert remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+
+    reopened = load_answers(on_disk)
+
+    assert frozenset({CardRef(0, 0), CardRef(1, 1)}) in reopened.different
+    cast, _ = cast_of(on_disk, reopened)
+    # The lead's two cards stay apart; the friend is still linked.
+    assert sorted(p.detection_count for p in cast) == [20, 30, 40]
+
+
+def test_changing_an_answer_replaces_the_one_kept(on_disk):
+    from app.ui.folder import load_answers, remember_answer
+
+    remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+    remember_answer(on_disk, CardRef(1, 1), CardRef(0, 0), same=True)
+
+    reopened = load_answers(on_disk)
+    assert frozenset({CardRef(0, 0), CardRef(1, 1)}) in reopened.same
+    assert not reopened.different
+
+
+def test_an_answer_follows_the_card_not_its_place_in_the_gallery(on_disk):
+    """A correction renumbers the gallery; the answer must stay with the
+    card it was about, not land on whichever card took its number."""
+    from app.ui.folder import load_answers, remember_answer
+
+    remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+    e2 = on_disk.videos[1]
+    renumbered = ScanResult(
+        **{**e2.__dict__, "people": [
+            Person(**{**e2.people[1].__dict__, "index": 0}),
+            Person(**{**e2.people[0].__dict__, "index": 1}),
+        ]}
+    )
+    moved = FolderScan(videos=[on_disk.videos[0], renumbered], settings=SETTINGS)
+
+    reopened = load_answers(moved)
+
+    assert frozenset({CardRef(0, 0), CardRef(1, 0)}) in reopened.different
+
+
+def test_an_answer_about_a_card_since_changed_no_longer_applies(on_disk):
+    from app.ui.folder import load_answers, remember_answer
+
+    remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+    e1 = on_disk.videos[0]
+    merged_since = ScanResult(**{**e1.__dict__, "people": [
+        Person(**{**e1.people[0].__dict__, "detection_count": 55}), e1.people[1],
+    ]})
+
+    reopened = load_answers(FolderScan(videos=[merged_since, on_disk.videos[1]], settings=SETTINGS))
+
+    assert not reopened.different
+
+
+def test_a_damaged_answers_file_is_ignored_not_fatal(on_disk):
+    from app.scans import scan_cache_dir
+    from app.ui.folder import ANSWERS_FILE, load_answers
+
+    scan_cache_dir().mkdir(parents=True, exist_ok=True)
+    (scan_cache_dir() / ANSWERS_FILE).write_text("{not json")
+
+    assert not load_answers(on_disk).same
+
+
+# -------------------------------------------------------------- corrections
+
+
+def test_detaching_a_named_card_clears_its_copy_of_the_name(season, monkeypatch):
+    """A shared name would put the card straight back: cards with one name
+    are one person whatever their faces score."""
+    from app.ui.folder import detach_cards
+
+    season.videos[0] = result("e1.mp4", person(0, LEAD, name="Lead", detections=40), person(1, FRIEND))
+    season.videos[1] = result("e2.mp4", person(0, FRIEND), person(1, LEAD, name="Lead", detections=30))
+    renamed = []
+
+    def fake_edit(scan_result, settings, operation, indexes, name=None):
+        renamed.append((scan_result.video_path.name, operation, indexes, name))
+        people = [Person(**{**p.__dict__, "name": name}) if p.index in indexes else p
+                  for p in scan_result.people]
+        return ScanResult(**{**scan_result.__dict__, "people": people})
+
+    monkeypatch.setattr(folder_module, "apply_edit", fake_edit)
+    answers = Answers()
+    lead = cast_of(season)[0][0]
+
+    split = detach_cards(season, answers, lead, [CardRef(1, 1)])
+
+    assert renamed == [("e2.mp4", "rename", [1], "")]
+    cast, _ = cast_of(split, answers)
+    assert sorted(p.detection_count for p in cast if p.detection_count >= 30) == [30, 40]
+
+
+def test_discarding_never_empties_a_video(season, monkeypatch):
+    from app.faces.edits import EditError
+    from app.ui.folder import discard_people
+
+    def fake_edit(scan_result, settings, operation, indexes, name=None):
+        if scan_result.video_path.name == "e3.mp4":
+            raise EditError("That would discard everyone this scan found.")
+        return scan_result
+
+    monkeypatch.setattr(folder_module, "apply_edit", fake_edit)
+    cast, _ = cast_of(season)
+    stranger = next(p for p in cast if p.videos == [2])
+
+    _, refused = discard_people(season, [stranger])
+
+    assert refused == ["e3.mp4"]
+
+
+def test_several_people_together_are_one_reel_of_either():
+    from app.ui.folder import CastPerson, together
+
+    a = CastPerson(0, "Lead", [(0, person(0, LEAD))], 40)
+    b = CastPerson(1, None, [(1, person(0, FRIEND))], 10)
+
+    both = together([a, b])
+
+    assert both.name == "Lead and Person #2"
+    assert both.detection_count == 50
+    assert both.videos == [0, 1]
+
+
+def test_merging_overrides_an_earlier_split(season):
+    """An old 'different' between their cards vetoed the join, and the
+    merge did nothing without saying so."""
+    from app.ui.folder import join_people
+
+    answers = Answers()
+    answers.record(CardRef(0, 0), CardRef(1, 1), same=False)
+    apart, _ = cast_of(season, answers)
+    leads = [p for p in apart if p.detection_count in (40, 30)]
+    assert len(leads) == 2
+
+    join_people(season, answers, leads)
+
+    cast, _ = cast_of(season, answers)
+    assert any(p.detection_count == 70 for p in cast)

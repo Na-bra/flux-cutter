@@ -13,6 +13,8 @@ without a window.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -22,6 +24,8 @@ from PIL import Image
 from app.faces.cast import Answers, CardRef, CastCard, SamePersonQuestion, build_cast
 from app.main import collect_videos
 from app.modes import get_mode
+from app.scans import cache_key, scan_cache_dir
+from app.faces.edits import EditError
 from app.ui.worker import (
     Cancelled,
     ExportSettings,
@@ -165,11 +169,213 @@ def cast_of(
     return cast, questions
 
 
+# -------------------------------------------------- remembered answers
+
+# Beside the kept scans, because an answer is about cards in them.
+ANSWERS_FILE = "cast-answers.json"
+
+
+def card_key(folder: FolderScan, video: int, person_index: int) -> str | None:
+    """A name for one card that is the same next time the folder is opened.
+
+    Its position in the gallery is not: that moves with every correction.
+    The kept scan's key says which video under which settings, and the
+    card's first sighting and number of detections say which card in it.
+    A card that is merged or split afterwards gets a different key, and
+    answers about the card it used to be no longer apply to it -- which is
+    right, because it is no longer that card.
+    """
+    result = folder.videos[video]
+    person = next((p for p in result.people if p.index == person_index), None)
+    if person is None:
+        return None
+    try:
+        scan = cache_key(result.video_path, **dataclasses.asdict(folder.settings))
+    except OSError:
+        return None
+    timestamps = [o.source_timestamp for o in person.group.observations]
+    first = min(timestamps) if timestamps else person.first_seen
+    return f"{scan}:{first:.3f}:{person.detection_count}"
+
+
+def _answers_path() -> Path:
+    return scan_cache_dir() / ANSWERS_FILE
+
+
+def _stored() -> dict[str, bool]:
+    try:
+        data = json.loads(_answers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    pairs = data.get("pairs") if isinstance(data, dict) else None
+    return {k: bool(v) for k, v in pairs.items()} if isinstance(pairs, dict) else {}
+
+
+def _pair(a: str, b: str) -> str:
+    return "|".join(sorted((a, b)))
+
+
+def load_answers(folder: FolderScan) -> Answers:
+    """Every answer given before about cards in this folder."""
+    answers = Answers()
+    stored = _stored()
+    if not stored:
+        return answers
+    keys = {}
+    for video, result in enumerate(folder.videos):
+        for person in result.people:
+            key = card_key(folder, video, person.index)
+            if key is not None:
+                keys[key] = CardRef(video, person.index)
+    for pair, same in stored.items():
+        first, _, second = pair.partition("|")
+        if first in keys and second in keys:
+            answers.record(keys[first], keys[second], same=same)
+    return answers
+
+
+def remember_answer(folder: FolderScan, first: CardRef, second: CardRef, same: bool) -> bool:
+    """Keeps one answer for next time. Best effort, like a kept edit.
+
+    Returns whether it was written: an answer the user can see must not fail
+    because the cache could not be, it would only have to be given again.
+    """
+    a = card_key(folder, first.video, first.person)
+    b = card_key(folder, second.video, second.person)
+    if a is None or b is None:
+        return False
+    stored = _stored()
+    stored[_pair(a, b)] = bool(same)
+    try:
+        path = _answers_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"version": 1, "pairs": stored}), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        return False
+    return True
+
+
+# ------------------------------------------------------------ corrections
+
+
+def cards_of(person: CastPerson) -> list[CardRef]:
+    return [CardRef(video, card.index) for video, card in person.appearances]
+
+
+def _main_card(person: CastPerson) -> CardRef:
+    video, card = max(person.appearances, key=lambda a: a[1].detection_count)
+    return CardRef(video, card.index)
+
+
+def join_people(folder: FolderScan, answers: Answers, people: list[CastPerson]) -> None:
+    """Says the chosen people are one person: the cast kept them apart wrongly.
+
+    Recorded as answers, one per person joined, and kept, so the join
+    survives reopening the folder the way a single answer does.
+    """
+    if len(people) < 2:
+        raise EditError("Choose at least two people to merge.")
+    names = {p.name.casefold() for p in people if p.name}
+    if len(names) > 1:
+        raise EditError(
+            "They have different names, and cards with different names are "
+            "never one person. Clear or change a name first."
+        )
+    # A merge is the newest thing said about these people, so any earlier
+    # "different" between their cards gives way to it. Left in place, one
+    # old answer vetoed the join and the merge did nothing, silently --
+    # found by merging two people split apart in an earlier session.
+    groups = [cards_of(person) for person in people]
+    for i, first in enumerate(groups):
+        for second in groups[i + 1 :]:
+            for a in first:
+                for b in second:
+                    if frozenset((a, b)) in answers.different:
+                        answers.record(a, b, same=True)
+                        remember_answer(folder, a, b, same=True)
+    anchor = _main_card(people[0])
+    for other in people[1:]:
+        ref = _main_card(other)
+        answers.record(anchor, ref, same=True)
+        remember_answer(folder, anchor, ref, same=True)
+
+
+def detach_cards(
+    folder: FolderScan, answers: Answers, person: CastPerson, detached: list[CardRef]
+) -> FolderScan:
+    """Says some of a person's cards are somebody else.
+
+    Every detached card is recorded as a different person from every card
+    kept, so neither the scores nor an old answer can put them back. A
+    shared name would -- cards with one name are one person -- so a
+    detached card's copy of the person's name is cleared in its video's
+    kept scan.
+    """
+    everyone = cards_of(person)
+    detached = [ref for ref in detached if ref in everyone]
+    kept = [ref for ref in everyone if ref not in detached]
+    if not detached or not kept:
+        raise EditError("Pick some of their faces, but not all of them.")
+
+    for gone in detached:
+        for stays in kept:
+            answers.record(gone, stays, same=False)
+            remember_answer(folder, gone, stays, same=False)
+
+    videos = list(folder.videos)
+    for ref in detached:
+        result = videos[ref.video]
+        card = next(p for p in result.people if p.index == ref.person)
+        if card.name:
+            videos[ref.video] = apply_edit(result, folder.settings, "rename", [card.index], name="")
+    return replace(folder, videos=videos)
+
+
+def discard_people(folder: FolderScan, people: list[CastPerson]) -> tuple[FolderScan, list[str]]:
+    """Removes cards that are not people, from every video's kept scan.
+
+    Returns the folder and the videos where nothing could be removed -- a
+    scan is never emptied of everyone, the same rule as in one video.
+
+    Every video discarded from renumbers its gallery, so answers held by
+    gallery position must be reloaded afterwards (`load_answers`).
+    """
+    grouped: dict[int, list[int]] = {}
+    for person in people:
+        for video, card in person.appearances:
+            grouped.setdefault(video, []).append(card.index)
+
+    videos = list(folder.videos)
+    refused = []
+    for video, indexes in sorted(grouped.items()):
+        try:
+            videos[video] = apply_edit(
+                videos[video], folder.settings, "discard", sorted(set(indexes))
+            )
+        except EditError:
+            refused.append(videos[video].video_path.name)
+    return replace(folder, videos=videos), refused
+
+
 def _by_video(person: CastPerson) -> dict[int, list[Person]]:
     grouped: dict[int, list[Person]] = {}
     for video, card in person.appearances:
         grouped.setdefault(video, []).append(card)
     return dict(sorted(grouped.items()))
+
+
+def together(people: list[CastPerson]) -> CastPerson:
+    """Several people as one, for a reel of every scene any of them is in."""
+    if len(people) == 1:
+        return people[0]
+    return CastPerson(
+        index=people[0].index,
+        name=" and ".join(p.label for p in people),
+        appearances=[a for p in people for a in p.appearances],
+        detection_count=sum(p.detection_count for p in people),
+    )
 
 
 def plan_cast_export(

@@ -2745,6 +2745,43 @@ only by naming the person, since cards with one name are one person. Merge,
 split and discard are single-video corrections and are hidden in folder
 view.
 
+## 34. Correcting the cast, and keeping it corrected
+
+Folder view had no way to fix what the cast got wrong, and what it was told
+lasted only as long as the window.
+
+**Answers are kept** in `cast-answers.json` beside the kept scans, keyed by
+the scan a card belongs to and the card's first sighting and detection
+count -- not its gallery position, which moves with every correction. A card
+merged or split since gets a new key, and old answers stop applying to it.
+
+**Merge, Split and Not a person** now work across the folder. Merge and
+split are recorded as answers, so they are kept the same way. Split shows
+one face per card with its video, and clears a detached card's copy of a
+shared name, since a name would otherwise put it straight back. Not a person
+removes the cards from every video's kept scan, never emptying a video.
+Several people can be chosen at once, for a reel of every scene any of them
+is in.
+
+Driven in the real window across three separate launches -- merge two
+people, reopen, split them, reopen:
+
+    merge      47 -> 46 people
+    reopened   still one person
+    split      46 -> 47
+    reopened   still apart
+
+That found two bugs:
+
+- **A merge that did nothing.** An earlier split had left "different"
+  answers between the two people's cards, and those vetoed the new "same".
+  Nothing said so. A merge is now the newest word about those people and
+  overrides earlier answers between them, and the window never reports a
+  join the cast does not show.
+- **A split picker off-screen.** It sat below the grid, which for a cast of
+  forty is far below the fold, so Split... looked like it did nothing. It
+  now opens under the buttons, in both views.
+
 ## 35. Joining videos at different frame rates
 
 A reel counts its frames at one rate and measures each segment's sound from

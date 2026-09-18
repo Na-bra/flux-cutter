@@ -1142,7 +1142,7 @@ def test_clicking_the_chosen_person_again_clears_the_choice(with_folder, monkeyp
     monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
     with_folder.select_cast_person(0, "")
 
-    assert with_folder.select_cast_person(0, "")["index"] is None
+    assert with_folder.select_cast_person(0, "")["indexes"] == []
     assert with_folder._cast_selected is None
 
 
@@ -1155,7 +1155,7 @@ def test_the_choice_follows_the_person_when_an_answer_reorders_the_cast(with_fol
 
     now = {(v, c.index) for v, c in with_folder._cast_selected.appearances}
     assert lead < now
-    assert answered["selected"] == with_folder._cast_selected.index
+    assert answered["selected"] == [with_folder._cast_selected.index]
 
 
 def test_naming_a_person_names_them_in_every_video(with_folder, monkeypatch):
@@ -1268,3 +1268,118 @@ def test_a_folder_after_a_video_does_not_keep_the_video_s_file_name(bridge, monk
     bridge._folder_worker(tmp_path, ScanSettings.for_mode("live"))
 
     assert bridge.select_cast_person(0, box)["filename"] == "season-1-person-1.mp4"
+
+
+def test_an_answered_question_is_not_asked_again_after_reopening(bridge, monkeypatch, tmp_path):
+    """Answers lasted only as long as the window. Now the folder remembers."""
+    from app.ui.folder import FolderScan
+
+    folder = tmp_path / "season-1"
+    folder.mkdir()
+    made = make_folder()
+    videos = []
+    for result in made.videos:
+        path = folder / result.video_path.name
+        path.write_bytes(path.name.encode())
+        videos.append(ScanResult(**{**result.__dict__, "video_path": path}))
+    on_disk = FolderScan(videos=videos, settings=made.settings)
+
+    bridge.window = FakeWindow()
+    monkeypatch.setattr(web, "scan_folder", lambda *a, **k: on_disk)
+    bridge._folder_worker(folder, ScanSettings.for_mode("live"))
+    assert len(bridge.window.emitted("onFolderScanned")["questions"]) == 1
+    bridge.answer_question(0, False)
+
+    reopened = web.Bridge()
+    reopened.window = FakeWindow()
+    reopened._folder_worker(folder, ScanSettings.for_mode("live"))
+
+    assert reopened.window.emitted("onFolderScanned")["questions"] == []
+
+
+# ------------------------------------------------------ folder corrections
+
+
+def test_two_people_chosen_make_one_reel_of_either(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    one = with_folder.select_cast_person(0, "")
+    both = with_folder.select_cast_person(1, one["filename"])
+
+    assert both["indexes"] == [0, 1]
+    assert both["detections"] == one["detections"] + with_folder._cast[1].detection_count
+    assert both["filename"] == "season-1-person-1+person-2.mp4"
+
+
+def test_merging_two_people_keeps_them_as_one(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    before = len(with_folder._cast)
+    with_folder.select_cast_person(0, "")
+    with_folder.select_cast_person(1, "")
+
+    merged = with_folder.edit_cast("merge")
+
+    assert merged["applied"] is True
+    assert len(merged["people"]) == before - 1
+    # Still chosen, as the one person they now are.
+    assert len(merged["selected"]) == 1
+
+
+def test_merging_people_with_different_names_is_refused(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    from app.ui.folder import CastPerson
+
+    with_folder._cast_chosen = [
+        CastPerson(**{**with_folder._cast[0].__dict__, "name": "Lead"}),
+        CastPerson(**{**with_folder._cast[1].__dict__, "name": "Friend"}),
+    ]
+
+    refused = with_folder.edit_cast("merge")
+
+    assert refused["applied"] is False
+    assert "different names" in refused["reason"]
+
+
+def test_splitting_shows_one_face_per_card_and_separates_those_picked(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    lead = with_folder._cast[0]
+    assert len(lead.appearances) == 2
+
+    offered = with_folder.cards_of_cast(lead.index)
+    assert [c["video"] for c in offered["cards"]] == ["e1.mp4", "e2.mp4"]
+
+    with_folder.select_cast_person(lead.index, "")
+    split = with_folder.edit_cast("split", [offered["cards"][1]["card"]])
+
+    assert split["applied"] is True
+    assert all(p["videos"] == 1 for p in split["people"] if p["detections"] in (40, 30))
+
+
+def test_splitting_off_every_face_is_refused(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    lead = with_folder._cast[0]
+    with_folder.select_cast_person(lead.index, "")
+    every = [c["card"] for c in with_folder.cards_of_cast(lead.index)["cards"]]
+
+    assert with_folder.edit_cast("split", every)["applied"] is False
+
+
+def test_discarding_removes_the_person_from_every_video(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    calls = []
+
+    def fake_edit(result, settings, operation, indexes, name=None):
+        calls.append((result.video_path.name, operation, indexes))
+        people = [p for p in result.people if p.index not in indexes]
+        people = [Person(**{**p.__dict__, "index": i}) for i, p in enumerate(people)]
+        return ScanResult(**{**result.__dict__, "people": people})
+
+    from app.ui import folder as folder_module
+
+    monkeypatch.setattr(folder_module, "apply_edit", fake_edit)
+    with_folder.select_cast_person(0, "")
+
+    discarded = with_folder.edit_cast("discard")
+
+    assert discarded["applied"] is True
+    assert calls == [("e1.mp4", "discard", [0]), ("e2.mp4", "discard", [0])]
+    assert discarded["selected"] == []

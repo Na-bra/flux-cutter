@@ -190,7 +190,7 @@
 
   /* The split picker: one shot per track, because a track is the only
      unit a person's card can honestly be divided along. */
-  .split { margin-top: 12px; border-top: 1px solid var(--rule); padding-top: 11px; }
+  .split { margin-bottom: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 11px; }
   .split-head { margin: 0 0 9px; font-size: .78rem; color: var(--faint); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .split-head b { color: var(--ink); }
   .split-head button { height: 24px; padding: 0 9px; font-size: .74rem; margin-left: auto; }
@@ -321,17 +321,19 @@
           <button class="ghost" id="discardBtn">Not a person</button>
         </span>
       </div>
-      <div class="question" id="question" hidden></div>
-      <div class="grid" id="grid" role="group" aria-label="People found"></div>
+      <!-- Above the grid, next to the buttons that open it: below a cast of
+           forty it was off-screen, and Split... looked like it did nothing. -->
       <div class="split" id="split" hidden>
         <p class="split-head">
           <b>Which of these is somebody else?</b>
-          Pick the shots that are not the same person, then split them off.
+          <span id="splitHint">Pick the shots that are not the same person, then split them off.</span>
           <button class="ghost" id="splitDo">Split off</button>
           <button class="ghost" id="splitCancel">Cancel</button>
         </p>
         <div class="grid tracks" id="tracks"></div>
       </div>
+      <div class="question" id="question" hidden></div>
+      <div class="grid" id="grid" role="group" aria-label="People found"></div>
       <p class="unassigned" id="unassigned" hidden></p>
     </div>
 
@@ -580,6 +582,16 @@
   }
 
   async function applyEdit(operation, tracks) {
+    if (state.view === "folder") {
+      // Across the folder: merge and split are kept as answers, discard
+      // is removed from every video's kept scan.
+      const r = await pywebview.api.edit_cast(operation, tracks || []);
+      if (!r.applied) { status("<b>" + esc(r.reason) + "</b>"); return; }
+      state.drawn.folder = r;
+      drawCast(r);
+      status("<b>" + esc(r.note) + "</b> " + r.people.length + " people now.");
+      return;
+    }
     const r = await pywebview.api.edit_people(operation, tracks || []);
     if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
     state.drawn.video = r;
@@ -627,6 +639,22 @@
   $("discardBtn").addEventListener("click", () => applyEdit("discard"));
 
   $("splitBtn").addEventListener("click", async () => {
+    if (state.view === "folder") {
+      const r = await pywebview.api.cards_of_cast(state.selected[0]);
+      if (!r.cards.length) {
+        status("<b>Nothing to split.</b> This person is one card in one video.");
+        return;
+      }
+      $("splitHint").textContent = "Pick the faces that are someone else. They stay apart from now on.";
+      $("tracks").innerHTML = r.cards.map(c => `
+        <button class="card" aria-pressed="false" data-t="${c.card}">
+          <img src="${c.image}" alt="In ${esc(c.video)}">
+          <span class="at">${esc(c.video)} · ${c.onScreen}</span>
+        </button>`).join("");
+      $("split").hidden = false;
+      return;
+    }
+    $("splitHint").textContent = "Pick the shots that are not the same person, then split them off.";
     const r = await pywebview.api.tracks_of(state.selected[0]);
     if (!r.tracks.length) {
       status("<b>Nothing to split.</b> This person was seen in one unbroken run.");
@@ -650,7 +678,7 @@
 
   $("splitDo").addEventListener("click", () => {
     const picked = [...document.querySelectorAll("#tracks .card[aria-pressed='true']")]
-      .map(c => Number(c.dataset.t));
+      .map(c => state.view === "folder" ? c.dataset.t : Number(c.dataset.t));
     if (!picked.length) { status("<b>Pick the shots that are somebody else.</b>"); return; }
     $("split").hidden = true;
     applyEdit("split", picked);
@@ -671,11 +699,11 @@
 
   function drawCast(d) {
     state.people = d.people;
-    state.selected = d.selected === null || d.selected === undefined ? [] : [d.selected];
+    state.selected = d.selected || [];
     $("split").hidden = true;
-    $("mergeBtn").hidden = $("splitBtn").hidden = $("discardBtn").hidden = true;
+    $("mergeBtn").hidden = $("splitBtn").hidden = $("discardBtn").hidden = false;
     $("fixups").hidden = !d.people.length;
-    $("renameBtn").disabled = state.selected.length !== 1;
+    updateFixups();
     $("galleryMeta").textContent = d.videoCount + " videos · sorted by screen time";
     if (!state.selected.length) {
       $("picked").hidden = true; $("exportBtn").disabled = true;
@@ -761,18 +789,20 @@
     if (state.view === "folder") {
       const r = await pywebview.api.select_cast_person(Number(card.dataset.i), $("fname").value);
       if (!r.accepted) return;
-      state.selected = r.index === null ? [] : [r.index];
-      $("renameBtn").disabled = state.selected.length !== 1;
+      state.selected = r.indexes;
+      $("split").hidden = true;
+      updateFixups();
       document.querySelectorAll("#grid .card").forEach(c =>
         c.setAttribute("aria-pressed", state.selected.includes(Number(c.dataset.i))));
-      if (r.index === null) {
+      if (!r.indexes.length) {
         $("picked").hidden = true; $("strip").hidden = true; $("exportBtn").disabled = true;
         $("foot").textContent = "Choose a person to export.";
         return;
       }
       showPicked(r);
       $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
-        " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file.";
+        " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file." +
+        (r.indexes.length > 1 ? " Any scene with any of them." : "");
       return;
     }
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
