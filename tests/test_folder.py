@@ -379,3 +379,80 @@ def test_a_damaged_answers_file_is_ignored_not_fatal(on_disk):
     (scan_cache_dir() / ANSWERS_FILE).write_text("{not json")
 
     assert not load_answers(on_disk).same
+
+
+# -------------------------------------------------------------- corrections
+
+
+def test_detaching_a_named_card_clears_its_copy_of_the_name(season, monkeypatch):
+    """A shared name would put the card straight back: cards with one name
+    are one person whatever their faces score."""
+    from app.ui.folder import detach_cards
+
+    season.videos[0] = result("e1.mp4", person(0, LEAD, name="Lead", detections=40), person(1, FRIEND))
+    season.videos[1] = result("e2.mp4", person(0, FRIEND), person(1, LEAD, name="Lead", detections=30))
+    renamed = []
+
+    def fake_edit(scan_result, settings, operation, indexes, name=None):
+        renamed.append((scan_result.video_path.name, operation, indexes, name))
+        people = [Person(**{**p.__dict__, "name": name}) if p.index in indexes else p
+                  for p in scan_result.people]
+        return ScanResult(**{**scan_result.__dict__, "people": people})
+
+    monkeypatch.setattr(folder_module, "apply_edit", fake_edit)
+    answers = Answers()
+    lead = cast_of(season)[0][0]
+
+    split = detach_cards(season, answers, lead, [CardRef(1, 1)])
+
+    assert renamed == [("e2.mp4", "rename", [1], "")]
+    cast, _ = cast_of(split, answers)
+    assert sorted(p.detection_count for p in cast if p.detection_count >= 30) == [30, 40]
+
+
+def test_discarding_never_empties_a_video(season, monkeypatch):
+    from app.faces.edits import EditError
+    from app.ui.folder import discard_people
+
+    def fake_edit(scan_result, settings, operation, indexes, name=None):
+        if scan_result.video_path.name == "e3.mp4":
+            raise EditError("That would discard everyone this scan found.")
+        return scan_result
+
+    monkeypatch.setattr(folder_module, "apply_edit", fake_edit)
+    cast, _ = cast_of(season)
+    stranger = next(p for p in cast if p.videos == [2])
+
+    _, refused = discard_people(season, [stranger])
+
+    assert refused == ["e3.mp4"]
+
+
+def test_several_people_together_are_one_reel_of_either():
+    from app.ui.folder import CastPerson, together
+
+    a = CastPerson(0, "Lead", [(0, person(0, LEAD))], 40)
+    b = CastPerson(1, None, [(1, person(0, FRIEND))], 10)
+
+    both = together([a, b])
+
+    assert both.name == "Lead and Person #2"
+    assert both.detection_count == 50
+    assert both.videos == [0, 1]
+
+
+def test_merging_overrides_an_earlier_split(season):
+    """An old 'different' between their cards vetoed the join, and the
+    merge did nothing without saying so."""
+    from app.ui.folder import join_people
+
+    answers = Answers()
+    answers.record(CardRef(0, 0), CardRef(1, 1), same=False)
+    apart, _ = cast_of(season, answers)
+    leads = [p for p in apart if p.detection_count in (40, 30)]
+    assert len(leads) == 2
+
+    join_people(season, answers, leads)
+
+    cast, _ = cast_of(season, answers)
+    assert any(p.detection_count == 70 for p in cast)
