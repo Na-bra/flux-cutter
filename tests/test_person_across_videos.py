@@ -221,14 +221,15 @@ def season(tmp_path, monkeypatch):
     """Four episodes with stand-in scans, plans, probes and a cut.
 
     e2 cannot be read, e3 holds nobody to cut, and e4 is at another frame
-    rate. The cut records the clips it was given.
+    rate -- which the cut converts, so it is in the reel. The cut records
+    the clips it was given.
     """
     folder = tmp_path / "season"
     for name in ("e1.mp4", "e2.mp4", "e3.mp4", "e4.mp4", "e5.mp4"):
         video(folder, name)
 
     reference = reference_from_groups([card([1.0, 0.0])], label="Jamie")
-    state = SimpleNamespace(clips=None, fail_cut=None, rates={"e4.mp4": 25})
+    state = SimpleNamespace(clips=None, fail_cut=None, rates={"e4.mp4": 25}, unreadable=set())
 
     @contextmanager
     def load(path):
@@ -251,6 +252,8 @@ def season(tmp_path, monkeypatch):
         )
 
     def probe(path, include_audio=True):
+        if Path(path).name in state.unreadable:
+            raise CutterError(f"{Path(path).name} has no video stream.")
         return SimpleNamespace(frame_rate=state.rates.get(Path(path).name, 24))
 
     def cut(clips, output_path, **kwargs):
@@ -280,11 +283,13 @@ def test_a_season_becomes_one_reel_in_episode_order(season):
         export_settings={}, combine_path=reel,
     )
 
-    assert [Path(c.video).name for c in season.state.clips] == ["e1.mp4", "e5.mp4"]
+    # e4 is at 25fps against the others' 24, and is in the reel: it used to
+    # be left out, and the cut now converts it.
+    assert [Path(c.video).name for c in season.state.clips] == ["e1.mp4", "e4.mp4", "e5.mp4"]
     assert [o.video_path.name for o in outcomes] == [
         "e1.mp4", "e2.mp4", "e3.mp4", "e4.mp4", "e5.mp4",
     ]
-    assert [o.succeeded for o in outcomes] == [True, False, False, False, True]
+    assert [o.succeeded for o in outcomes] == [True, False, False, True, True]
     assert {o.output_path for o in outcomes if o.succeeded} == {reel}
     assert outcomes[0].reel_seconds == 3.0
 
@@ -298,17 +303,17 @@ def test_every_video_that_is_left_out_says_why(season):
 
     assert "could not open e2" in reasons["e2.mp4"]
     assert reasons["e3.mp4"] == "nothing to cut for this person"
-    assert "25.000fps" in reasons["e4.mp4"] and "24.000fps" in reasons["e4.mp4"]
+    assert "e4.mp4" not in reasons
 
 
-def test_the_first_contributing_video_sets_the_frame_rate(season):
-    """Not the first video in the folder -- that one may have nothing to cut."""
-    season.state.rates = {"e1.mp4": 25, "e4.mp4": 25}
-    run_batch(
+def test_a_video_that_cannot_be_read_before_the_cut_is_left_out_by_name(season):
+    season.state.unreadable = {"e5.mp4"}
+    outcomes = run_batch(
         [season.folder], season.reference, season.tmp / "unused",
         export_settings={}, combine_path=season.tmp / "jamie.mp4",
     )
     assert [Path(c.video).name for c in season.state.clips] == ["e1.mp4", "e4.mp4"]
+    assert "no video stream" in outcomes[4].skipped_because
 
 
 def test_a_failed_cut_is_reported_against_every_video_that_was_in_it(season):
@@ -432,7 +437,8 @@ def test_a_combined_reel_leaves_out_what_a_later_video_repeats(season, monkeypat
 
     reasons = {o.video_path.name: o.skipped_because for o in outcomes if not o.succeeded}
     assert "already in the reel" in reasons["e5.mp4"]
-    assert [Path(c.video).name for c in season.state.clips] == ["e1.mp4"]
+    # e4 is at 25fps and converted, so it is in the reel; e5 is all repeat.
+    assert [Path(c.video).name for c in season.state.clips] == ["e1.mp4", "e4.mp4"]
 
 
 def test_keep_repeats_keeps_them(season, monkeypatch):

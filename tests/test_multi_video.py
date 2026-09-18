@@ -141,21 +141,71 @@ def test_a_reel_whose_first_video_is_silent_still_has_sound(footage, tmp_path):
         container.close()
 
 
-def test_different_frame_rates_are_refused_before_anything_is_written(
-    footage, tmp_path
-):
-    """25fps footage in a 24fps reel would play 4% slow and take the wrong
-    length of sound with it. Refused up front, naming both videos, and
-    before a single frame is encoded."""
+def _duration(path):
+    container = av.open(str(path))
+    try:
+        video, audio = container.streams.video[0], container.streams.audio[0]
+        rate = float(video.guessed_rate or video.average_rate)
+        frames = sum(1 for _ in container.decode(video))
+        container.seek(0)
+        samples = sum(f.samples for f in container.decode(audio))
+        return frames / rate, samples / audio.rate, rate
+    finally:
+        container.close()
+
+
+@pytest.mark.parametrize("other_fps", [25, 30, 20])
+def test_a_video_at_another_frame_rate_plays_at_its_own_speed(tmp_path, other_fps):
+    """It used to be refused. 25fps footage copied frame for frame into a
+    24fps reel would run 4% slow and take the wrong length of sound with it;
+    converted, each of its frames covers as many of the reel's as it should.
+    Faster sources drop frames, slower ones repeat them."""
+    other = tmp_path / f"other_{other_fps}.mp4"
+    write_marked_video(other, seconds=12, fps=other_fps)
+    base = tmp_path / "base.mp4"
+    write_marked_video(base, seconds=12)
     output = tmp_path / "reel.mp4"
 
-    with pytest.raises(CutterError) as refused:
-        cut_clips([Clip(footage["wide_48k"], FOUR), Clip(footage["pal"], FOUR)], output)
+    cut_clips([Clip(base, FOUR), Clip(other, FOUR)], output)
 
-    message = str(refused.value)
-    assert "wide_48k.mp4" in message and "pal.mp4" in message
-    assert "24fps" in message and "25fps" in message
-    assert not output.exists()
+    picture, sound, rate = _duration(output)
+    assert rate == pytest.approx(24)
+    # Eight segments of 1.5s: 12s of picture, not 12s * 24/25.
+    assert picture == pytest.approx(12.0, abs=2 / 24)
+    assert abs(picture - sound) < 0.03
+
+    flashes, bursts, fragments = read_marks(output)
+    assert len(flashes) == len(bursts) == 8
+    spread = offsets(flashes, bursts)
+    assert spread.max() - spread.min() < 0.05
+
+
+def test_converting_manufactures_no_silence(tmp_path, monkeypatch):
+    """A slower source's last frame covers more of the reel than one reel
+    frame, so its sound has to be read that much further or the gap is
+    filled with silence.
+
+    10fps, because sound is decoded in ~21ms blocks and the last one read
+    always runs past the cut. At 20fps the shortfall is 8ms and that
+    overrun hid it; at 10fps it is 58ms, which nothing hides.
+    """
+    base = tmp_path / "base.mp4"
+    write_tone_video(base, seconds=8)
+    twenty = tmp_path / "ten.mp4"
+    write_marked_video(twenty, seconds=8, fps=10)
+
+    made_up = []
+    original = cutter._AudioState._silence
+
+    def counting(self, samples):
+        made_up.append(samples)
+        return original(self, samples)
+
+    monkeypatch.setattr(cutter._AudioState, "_silence", counting)
+    spans = [AppearanceInterval(1.013, 3.271), AppearanceInterval(4.502, 6.918)]
+    cut_clips([Clip(base, spans), Clip(twenty, spans)], tmp_path / "reel.mp4")
+
+    assert sum(made_up) == 0
 
 
 def test_no_silence_is_manufactured_at_a_join_between_videos(tmp_path, monkeypatch):

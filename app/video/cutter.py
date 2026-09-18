@@ -89,17 +89,62 @@ class ClipProfile:
     layout: str | None
 
 
-# How far apart two frame rates may be and still share a reel.
+# How far apart two frame rates may be and still count as one.
 #
 # Frames are stamped by counting them against the reel's one frame rate,
-# and each segment's sound is measured from how many frames it kept. A
-# source at a different rate would play at the wrong speed and take the
-# wrong length of sound with it -- 25fps footage in a 23.976 reel runs 4%
-# slow. One part in ten thousand is what separates the same nominal rate
-# written two ways (24000/1001 against 23.976) from different ones; within
-# it a minute-long segment ends at most 6ms adrift, and the next segment
-# starts exact again.
+# and each segment's sound is measured from how many frames it kept, so a
+# source at another rate cannot simply be copied across: 25fps footage in a
+# 23.976 reel would play 4% slow and take the wrong length of sound with it.
+# Such a source is converted instead (`_write_segment`). One part in ten
+# thousand is what separates the same nominal rate written two ways
+# (24000/1001 against 23.976) from different ones, and within it frames are
+# copied one for one: a minute-long segment ends at most 6ms adrift, and
+# the next segment starts exact again.
 FRAME_RATE_TOLERANCE = 1e-4
+
+
+# Slivers of another shot at a segment's edges.
+#
+# A segment is an appearance padded at both ends, and the padding often
+# reaches across a camera cut: on the test episode 63-75% of segment edges
+# sat within half a second of one, leaving a median 7 frames of the
+# neighbouring shot -- a flash of somebody else as each clip opens or
+# closes. Up to this many frames past a cut at either edge are left out.
+SLIVER_FRAMES = 12
+# A cut is a spike: two frames' colour thumbnails (64x36) differ by at least
+# CUT_DIFFERENCE on average (0-255), and by CUT_RATIO times more than the
+# frames either side of them do. Relative, because a cut between two angles
+# of one set can change little -- 20 here, against 0-3 within a shot -- and
+# fast motion can change a lot without being one. The frames either side
+# must also be steady, which is what keeps a one-frame flash, white and
+# straight back, from reading as two cuts. Colour, because two shots of
+# similar brightness can differ by 24 in grey and 91 in colour.
+CUT_DIFFERENCE = 12.0
+CUT_RATIO = 4.0
+STEADY_DIFFERENCE = 12.0
+# A segment is never trimmed below this many frames.
+MIN_KEPT_FRAMES = 12
+
+
+def _thumb(frame) -> np.ndarray:
+    return frame.reformat(width=64, height=36, format="rgb24").to_ndarray().astype(np.float32)
+
+
+def _cuts(thumbs: list[np.ndarray]) -> list[int]:
+    """Indexes where a new shot starts: a big change, with steady frames around it."""
+    differences = [0.0] + [
+        float(np.abs(thumbs[i] - thumbs[i - 1]).mean()) for i in range(1, len(thumbs))
+    ]
+    cuts = []
+    for i in range(1, len(thumbs)):
+        if differences[i] < CUT_DIFFERENCE:
+            continue
+        before = differences[i - 1] if i >= 2 else 0.0
+        after = differences[i + 1] if i + 1 < len(thumbs) else 0.0
+        steady = max(before, after)
+        if steady <= STEADY_DIFFERENCE and differences[i] >= CUT_RATIO * max(steady, 1.0):
+            cuts.append(i)
+    return cuts
 
 
 # videotoolbox takes -q:v on a 0-100 scale where higher is better; x264 and
@@ -396,6 +441,7 @@ def cut_segments(
     quality: int = 20,
     include_audio: bool = True,
     on_segment: Callable[[int, int, AppearanceInterval], None] | None = None,
+    trim_slivers: bool = True,
 ) -> CutResult:
     """
     Cuts each segment out of the source and writes them as one reel.
@@ -432,6 +478,7 @@ def cut_segments(
         quality=quality,
         include_audio=include_audio,
         on_segment=on_segment,
+        trim_slivers=trim_slivers,
     )
 
 
@@ -480,10 +527,6 @@ def same_frame_rate(first: Fraction, second: Fraction) -> bool:
     return abs(float(first) - float(second)) <= FRAME_RATE_TOLERANCE * float(first)
 
 
-def _fmt_rate(rate: Fraction) -> str:
-    return f"{float(rate):.3f}".rstrip("0").rstrip(".") + "fps"
-
-
 def cut_clips(
     clips: list[Clip],
     output_path: Path,
@@ -493,15 +536,17 @@ def cut_clips(
     include_audio: bool = True,
     on_segment: Callable[[int, int, AppearanceInterval], None] | None = None,
     on_clip: Callable[[int, int, Path], None] | None = None,
+    trim_slivers: bool = True,
 ) -> CutResult:
     """Cuts spans out of one or more videos into a single joined reel.
 
     Every video is read before anything is written, because a reel that
     fails halfway through a season is minutes of encoding thrown away:
 
-    - **One frame rate.** The reel's timeline counts frames at a single
-      rate, so videos at different rates are refused, naming them, rather
-      than joined at the wrong speed. See FRAME_RATE_TOLERANCE.
+    - **One frame rate.** The reel takes the first video's. A video at
+      another rate is converted: each of its frames is shown for as many of
+      the reel's frames as it covers, repeated or dropped, so it plays at
+      its own speed with its own sound. See FRAME_RATE_TOLERANCE.
     - **One picture size.** The reel takes the first video's size. A video
       of another shape is scaled to fit inside it with black bars, never
       stretched; one of the same shape is simply scaled.
@@ -538,14 +583,6 @@ def cut_clips(
 
     profiles = [probe_clip(clip.video, include_audio) for clip in clips]
     picture = profiles[0]
-    for profile in profiles[1:]:
-        if not same_frame_rate(picture.frame_rate, profile.frame_rate):
-            raise CutterError(
-                "These videos cannot share one reel: "
-                f"{picture.path.name} is {_fmt_rate(picture.frame_rate)} but "
-                f"{profile.path.name} is {_fmt_rate(profile.frame_rate)}. "
-                "Joining different frame rates is not supported yet."
-            )
     sound = next((p for p in profiles if p.sample_rate is not None), None)
 
     output_path = Path(output_path)
@@ -581,6 +618,12 @@ def cut_clips(
                     else None
                 )
                 source_video.thread_type = "AUTO"
+                # None when this video's frames can be copied one for one.
+                source_rate = (
+                    None
+                    if same_frame_rate(frame_rate, profile.frame_rate)
+                    else profile.frame_rate
+                )
 
                 for segment in clip.segments:
                     written = _write_segment(
@@ -594,6 +637,8 @@ def cut_clips(
                         counters,
                         frame_rate,
                         segment,
+                        source_rate,
+                        trim_slivers,
                     )
                     exported_seconds += written
                     per_clip[id(clip)] += written
@@ -658,8 +703,20 @@ def _write_segment(
     counters,
     frame_rate,
     segment: AppearanceInterval,
+    source_rate: Fraction | None = None,
+    trim_slivers: bool = True,
 ) -> float:
-    """Encodes one segment into the open reel, returning its real duration."""
+    """Encodes one segment into the open reel, returning its real duration.
+
+    Args:
+        frame_rate: The reel's frame rate.
+        source_rate: This video's frame rate when it differs from the
+            reel's, in which case its frames are repeated or dropped to fit.
+        trim_slivers: Leave out up to SLIVER_FRAMES of another shot at
+            either edge. Frames are held back that many deep to decide the
+            end; the sound follows the frames kept, since it is taken from
+            the first one written for as long as they last.
+    """
     start = segment.start_time
     end = segment.end_time
 
@@ -678,7 +735,22 @@ def _write_segment(
     # which can be up to one frame past `end`. Audio is read that far so the
     # span can be taken exactly, rather than stopping at `end` and coming
     # up short of the picture.
-    audio_stop = end + 1.0 / float(frame_rate)
+    # With a converted source it is the longer of the two frames: the last
+    # source frame can cover more of the reel than one reel frame does, and
+    # sound read short of it would be padded with silence.
+    longest_frame = 1.0 / float(
+        min(frame_rate, source_rate) if source_rate is not None else frame_rate
+    )
+    audio_stop = end + longest_frame
+    # For a converted source: frames read this segment, and reel frames
+    # written for them.
+    read_here = 0
+    written_here = 0
+    # Frames decoded but not yet written, with their thumbnails, held back
+    # so a sliver of another shot can still be left out at either edge.
+    pending: list = []
+    start_settled = not trim_slivers
+    written_frames = 0
 
     # Decoding video and audio together yields them interleaved, and audio
     # runs ahead of video. Breaking the loop on the first frame to pass
@@ -688,6 +760,32 @@ def _write_segment(
     # and the loop stops only once both are done.
     video_done = False
     audio_done = source_audio is None
+
+    def emit(frame) -> int:
+        """Writes one source frame to the reel, as many times as it covers."""
+        nonlocal first_video_time, last_video_time, read_here, written_here
+        if first_video_time is None:
+            first_video_time = frame.time
+        last_video_time = frame.time
+        converted = _fit_frame(frame, out_video.width, out_video.height)
+        if source_rate is None:
+            copies = 1
+        else:
+            # The reel frames that start while this source frame is on
+            # screen: every k with k/reel < read/source. Counted in whole
+            # frames with exact fractions, so a long segment cannot
+            # drift the way summing float timestamps would.
+            read_here += 1
+            due = -(-(read_here * frame_rate) // source_rate)
+            copies = int(due) - written_here
+            written_here += copies
+        for _ in range(copies):
+            converted.pts = int(round(counters.video / frame_rate / VIDEO_TIME_BASE))
+            converted.time_base = VIDEO_TIME_BASE
+            counters.video += 1
+            for packet in out_video.encode(converted):
+                output.mux(packet)
+        return 1
 
     for frame in source.decode(*streams):
         if frame.time is None:
@@ -716,23 +814,43 @@ def _write_segment(
             continue
 
         if is_video:
-            if first_video_time is None:
-                first_video_time = frame.time
-            last_video_time = frame.time
-            converted = _fit_frame(frame, out_video.width, out_video.height)
-            converted.pts = int(
-                round(counters.video / frame_rate / VIDEO_TIME_BASE)
-            )
-            converted.time_base = VIDEO_TIME_BASE
-            counters.video += 1
-            for packet in out_video.encode(converted):
-                output.mux(packet)
+            if not trim_slivers:
+                written_frames += emit(frame)
+                continue
+            pending.append((frame, _thumb(frame)))
+            if not start_settled:
+                if len(pending) <= SLIVER_FRAMES + 1:
+                    continue
+                # The last cut among the opening frames: everything before it
+                # is the tail of the shot before.
+                opening = [c for c in _cuts([t for _, t in pending]) if c <= SLIVER_FRAMES]
+                if opening:
+                    del pending[: opening[-1]]
+                start_settled = True
+            while len(pending) > SLIVER_FRAMES + 1:
+                written_frames += emit(pending.pop(0)[0])
         elif out_audio is not None and isinstance(frame, av.AudioFrame):
             audio_state.write(frame)
+
+    if pending:
+        thumbs = [t for _, t in pending]
+        cuts = _cuts(thumbs)
+        if not start_settled:
+            opening = [c for c in cuts if c <= SLIVER_FRAMES]
+            if opening and len(pending) - opening[-1] >= MIN_KEPT_FRAMES:
+                del pending[: opening[-1]]
+                cuts = [c - opening[-1] for c in cuts if c > opening[-1]]
+        # The first cut among the closing frames: everything from it on is
+        # the head of the shot after.
+        closing = [c for c in cuts if len(pending) - c <= SLIVER_FRAMES]
+        if closing and written_frames + closing[0] >= MIN_KEPT_FRAMES:
+            del pending[closing[0] :]
+        for held, _ in pending:
+            written_frames += emit(held)
 
     if audio_state is not None:
         audio_state.finish(first_video_time, output, counters)
 
     # What was actually written, which is a frame or so short of the request
     # whenever the segment's end falls between frames.
-    return max(0.0, last_video_time - start)
+    return max(0.0, last_video_time - (first_video_time if first_video_time is not None else start))

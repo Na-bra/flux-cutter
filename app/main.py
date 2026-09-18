@@ -43,7 +43,6 @@ from app.video.cutter import (
     cut_clips,
     cut_segments,
     probe_clip,
-    same_frame_rate,
 )
 from app.video.export import merge_for_export
 from app.video.repeats import find_repeats, fingerprint_kept, without_repeats
@@ -1378,29 +1377,16 @@ def _run_combined(
         print(f"  {len(plan.segments)} segment(s), {plan.seconds:.1f}s\n")
         plans.append(plan)
 
-    # One reel has one frame rate. The first contributing video sets it,
-    # and a video at another rate is left out by name rather than taking
-    # the whole reel down with it.
+    # Every video is read once more before the cut, so one that cannot be
+    # is left out by name rather than taking the whole reel down with it.
+    # A different frame rate is no longer a reason: the cut converts it.
     usable: list[ExportPlan] = []
-    rate = None
     for plan in plans:
         try:
-            profile = probe_clip(plan.video_path)
+            probe_clip(plan.video_path)
         except CutterError as error:
             outcomes[plan.video_path] = BatchOutcome(
                 plan.video_path, skipped_because=str(error)
-            )
-            continue
-        if rate is None:
-            rate = profile.frame_rate
-        elif not same_frame_rate(rate, profile.frame_rate):
-            outcomes[plan.video_path] = BatchOutcome(
-                plan.video_path,
-                skipped_because=(
-                    f"it is {float(profile.frame_rate):.3f}fps and the reel is "
-                    f"{float(rate):.3f}fps; joining different frame rates is "
-                    "not supported yet"
-                ),
             )
             continue
         usable.append(plan)

@@ -339,9 +339,9 @@ photos/lead.jpg` matches a photograph instead. Folders, files, or a mix;
 anything is encoded, so a video that cannot contribute is found out before
 minutes of encoding depend on it. Videos of a different shape are fitted
 with black bars rather than stretched, and a different sample rate or a
-missing sound track is handled. A video at a different frame rate from the
-rest is left out by name — joining 25fps footage into a 24fps reel would
-play it at the wrong speed — and the reel is cut from the others.
+missing sound track is handled. A video at a different frame rate is
+converted to the reel's — frames repeated or dropped so it plays at its own
+speed — rather than left out.
 
 **Recaps and openings are shown once.** A later episode's "previously on"
 or title sequence repeats footage an earlier one already has, and cut

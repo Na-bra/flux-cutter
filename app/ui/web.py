@@ -45,16 +45,23 @@ from app.ui.worker import (
     quality_for,
     scan,
 )
-from app.faces.cast import Answers
+from app.faces.cast import Answers, CardRef
 from app.faces.edits import EditError
 from app.ui.folder import (
     CastPerson,
     FolderScan,
+    cards_of,
     cast_of,
+    detach_cards,
+    discard_people,
+    join_people,
+    together,
     cast_preview_frames,
     export_cast,
+    load_answers,
     name_cast_person,
     plan_cast_export,
+    remember_answer,
     repeated_seconds,
     scan_folder,
 )
@@ -186,7 +193,8 @@ class Bridge:
         self._answers = Answers()
         self._cast: list[CastPerson] = []
         self._questions: list = []
-        self._cast_selected: CastPerson | None = None
+        # A list, as in one video: a reel can be of several people.
+        self._cast_chosen: list[CastPerson] = []
 
     # ------------------------------------------------------------- helpers
 
@@ -726,22 +734,33 @@ class Bridge:
         if self._folder is not None:
             self._folder.close()
         self._folder = scanned
-        self._answers = Answers()
-        self._cast_selected = None
+        # Answers given the last time this folder was open still hold.
+        self._answers = load_answers(scanned)
+        self._cast_chosen = []
         self._rebuild_cast()
         self._emit("onFolderScanned", {**self._cast_payload(), "folderName": folder.name})
 
     def _rebuild_cast(self) -> None:
         assert self._folder is not None
         self._cast, self._questions = cast_of(self._folder, self._answers)
-        if self._cast_selected is not None:
-            # Keep the same person selected by what they are made of, since
-            # their position in the cast moves as answers change it.
-            wanted = {(v, c.index) for v, c in self._cast_selected.appearances}
-            self._cast_selected = next(
+        # Keep the same people chosen by what they are made of, since their
+        # positions in the cast move as answers change it. Two chosen people
+        # who have just been joined are one choice now.
+        chosen = []
+        for before in self._cast_chosen:
+            wanted = {(v, c.index) for v, c in before.appearances}
+            now = next(
                 (p for p in self._cast if wanted & {(v, c.index) for v, c in p.appearances}),
                 None,
             )
+            if now is not None and all(now.index != p.index for p in chosen):
+                chosen.append(now)
+        self._cast_chosen = sorted(chosen, key=lambda p: p.index)
+
+    @property
+    def _cast_selected(self) -> CastPerson | None:
+        """The chosen people as one, for a reel of every scene any is in."""
+        return together(self._cast_chosen) if self._cast_chosen else None
 
     def _cast_payload(self) -> dict:
         assert self._folder is not None
@@ -793,7 +812,7 @@ class Bridge:
             "skipped": [
                 {"video": path.name, "reason": reason} for path, reason in self._folder.skipped
             ],
-            "selected": self._cast_selected.index if self._cast_selected else None,
+            "selected": [p.index for p in self._cast_chosen],
         }
 
     def _person_at(self, ref) -> Person:
@@ -810,6 +829,7 @@ class Bridge:
             return {"applied": False, "reason": "That question has already been answered."}
 
         self._answers.record(asked.first, asked.second, same=bool(same))
+        remember_answer(self._folder, asked.first, asked.second, bool(same))
         self._rebuild_cast()
         return {
             "applied": True,
@@ -818,19 +838,26 @@ class Bridge:
         }
 
     def select_cast_person(self, index: int, current_filename: str = "") -> dict:
-        """Chooses one person from the folder's cast, and describes their reel."""
+        """Adds or removes one person, and describes the reel that results.
+
+        A toggle, as in one video: a second person joins the first, and the
+        reel is every scene either of them is in, across the folder.
+        """
         if self._busy() or self._folder is None:
             return {"accepted": False}
-        chosen = next((p for p in self._cast if p.index == int(index)), None)
-        if chosen is None:
+        clicked = next((p for p in self._cast if p.index == int(index)), None)
+        if clicked is None:
             return {"accepted": False}
 
         self._preview_token += 1
-        if self._cast_selected is not None and self._cast_selected.index == chosen.index:
-            self._cast_selected = None
-            return {"accepted": True, "index": None, "summary": "Choose a person to export."}
+        if any(p.index == clicked.index for p in self._cast_chosen):
+            self._cast_chosen = [p for p in self._cast_chosen if p.index != clicked.index]
+        else:
+            self._cast_chosen = sorted(self._cast_chosen + [clicked], key=lambda p: p.index)
+        if not self._cast_chosen:
+            return {"accepted": True, "indexes": [], "summary": "Choose a person to export."}
 
-        self._cast_selected = chosen
+        chosen = self._cast_selected
         plans = plan_cast_export(self._folder, chosen)
         cuts = sum(len(segments) for _, segments in plans)
         reel = sum(s.end_time - s.start_time for _, segments in plans for s in segments)
@@ -839,7 +866,7 @@ class Bridge:
 
         return {
             "accepted": True,
-            "index": chosen.index,
+            "indexes": [p.index for p in self._cast_chosen],
             "token": self._preview_token,
             "name": chosen.label,
             "cuts": cuts,
@@ -847,7 +874,7 @@ class Bridge:
             "onScreen": _clock(chosen.detection_count * self._folder.settings.sample_interval),
             "detections": chosen.detection_count,
             "videos": len(plans),
-            "filename": self._suggest_cast_filename(chosen, current_filename),
+            "filename": self._suggest_cast_filename(self._cast_chosen, current_filename),
             "repeated": _clock(repeated) if repeated >= 0.5 else None,
             "summary": (
                 f"{chosen.label} selected - {cuts} cuts from {len(plans)} "
@@ -855,13 +882,15 @@ class Bridge:
             ),
         }
 
-    def _suggest_cast_filename(self, person: CastPerson, current: str) -> str | None:
+    def _suggest_cast_filename(self, people: list[CastPerson], current: str) -> str | None:
         """`<folder>-<name>.mp4`, unless the box holds something typed by hand."""
         assert self._folder is not None
         stem = (
             self._folder.videos[0].video_path.parent.name if self._folder.videos else "reel"
         ) or "reel"
-        part = _filename_part(person.name) or f"person-{person.index + 1}"
+        part = "+".join(
+            _filename_part(person.name) or f"person-{person.index + 1}" for person in people
+        )
         suggestion = f"{stem}-{part}.mp4"
         hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
         self._suggested_filename = suggestion
@@ -907,10 +936,10 @@ class Bridge:
         """Names the chosen person in every video they are in."""
         if self._busy() or self._folder is None:
             return {"applied": False, "reason": "Not while a job is running."}
-        if self._cast_selected is None:
-            return {"applied": False, "reason": "Choose a person first."}
+        if len(self._cast_chosen) != 1:
+            return {"applied": False, "reason": "Choose one person to name."}
         try:
-            self._folder = name_cast_person(self._folder, self._cast_selected, name)
+            self._folder = name_cast_person(self._folder, self._cast_chosen[0], name)
         except EditError as error:
             return {"applied": False, "reason": str(error)}
 
@@ -921,6 +950,78 @@ class Bridge:
             if name.strip()
             else "Cleared their name."
         )
+        return {"applied": True, **self._cast_payload(), "note": note}
+
+    def cards_of_cast(self, index: int) -> dict:
+        """One face per card a person is made of, for choosing what to split off."""
+        if self._busy() or self._folder is None:
+            return {"cards": []}
+        person = next((p for p in self._cast if p.index == int(index)), None)
+        if person is None or len(person.appearances) < 2:
+            return {"cards": []}
+        return {
+            "index": person.index,
+            "cards": [
+                {
+                    "card": f"{video}:{card.index}",
+                    "video": self._folder.videos[video].video_path.name,
+                    "image": _data_uri(card.thumbnail),
+                    "onScreen": _clock(card.detection_count * self._folder.settings.sample_interval),
+                }
+                for video, card in person.appearances
+            ],
+        }
+
+    def edit_cast(self, operation: str, cards=None) -> dict:
+        """Merges, splits or discards people across the whole folder.
+
+        Merge and split are recorded as answers, and kept, so they hold the
+        next time the folder is opened. Discard removes the cards from each
+        video's kept scan, as it does in one video.
+        """
+        if self._busy() or self._folder is None:
+            return {"applied": False, "reason": "Not while a job is running."}
+        if not self._cast_chosen:
+            return {"applied": False, "reason": "Choose a person first."}
+
+        chosen = list(self._cast_chosen)
+        try:
+            if operation == "merge":
+                join_people(self._folder, self._answers, chosen)
+                note = f"Joined {len(chosen)} people into one."
+            elif operation == "split":
+                if len(chosen) != 1:
+                    return {"applied": False, "reason": "Choose one person to split."}
+                refs = []
+                for token in cards or []:
+                    video, _, card = str(token).partition(":")
+                    refs.append(CardRef(int(video), int(card)))
+                self._folder = detach_cards(self._folder, self._answers, chosen[0], refs)
+                note = f"Split {len(refs)} of their faces off as someone else."
+            elif operation == "discard":
+                self._folder, refused = discard_people(self._folder, chosen)
+                # Discarding renumbers each gallery it touched, so answers
+                # held by position are read again from what was kept.
+                self._answers = load_answers(self._folder)
+                self._cast_chosen = []
+                note = "Removed them from every video." + (
+                    f" Kept in {', '.join(refused)}: removing them would leave nobody."
+                    if refused else ""
+                )
+            else:
+                return {"applied": False, "reason": f"Unknown edit: {operation}"}
+        except (EditError, ValueError) as error:
+            return {"applied": False, "reason": str(error)}
+
+        self._rebuild_cast()
+        self._preview_token += 1
+        if operation == "merge" and len(self._cast_chosen) != 1:
+            # Never report a join the cast does not show.
+            return {
+                "applied": False,
+                "reason": "They could not be joined: something said about them earlier keeps them apart.",
+                **self._cast_payload(),
+            }
         return {"applied": True, **self._cast_payload(), "note": note}
 
     def start_folder_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
