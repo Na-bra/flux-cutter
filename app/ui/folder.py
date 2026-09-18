@@ -43,7 +43,6 @@ from app.video.cutter import (
     CutterError,
     cut_clips,
     probe_clip,
-    same_frame_rate,
 )
 from app.video.loader import VideoLoadError
 
@@ -410,8 +409,8 @@ def export_cast(
 ) -> tuple[CutResult, list[tuple[Path, str]]]:
     """Cuts one person out of every video they are in, into one reel.
 
-    A video at a different frame rate from the first one contributing is
-    left out and said so, rather than taking the whole reel down.
+    A video that cannot be read is left out and said so, rather than taking
+    the whole reel down. One at another frame rate is converted by the cut.
 
     Returns:
         The cut, and the videos left out with the reason for each.
@@ -424,24 +423,12 @@ def export_cast(
     plans = plan_cast_export(folder, person, settings)
 
     usable, left_out = [], []
-    rate = None
     for result, segments in plans:
         source = result.source or result.video_path
         try:
-            profile = probe_clip(source, include_audio=settings.include_audio)
+            probe_clip(source, include_audio=settings.include_audio)
         except CutterError as error:
             left_out.append((result.video_path, str(error)))
-            continue
-        if rate is None:
-            rate = profile.frame_rate
-        elif not same_frame_rate(rate, profile.frame_rate):
-            left_out.append(
-                (
-                    result.video_path,
-                    f"it is {float(profile.frame_rate):.3f}fps and the reel is "
-                    f"{float(rate):.3f}fps",
-                )
-            )
             continue
         usable.append(Clip(source, segments))
 

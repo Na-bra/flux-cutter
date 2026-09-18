@@ -219,15 +219,30 @@ def test_one_reel_is_cut_from_every_video_the_person_is_in(season, cutting, tmp_
     assert cut.output_path == tmp_path / "lead.mp4"
 
 
-def test_a_video_at_another_frame_rate_is_left_out_by_name(season, cutting, tmp_path):
+def test_a_video_at_another_frame_rate_is_in_the_reel(season, cutting, tmp_path):
+    """It used to be left out; the cut converts it now."""
     cutting.rates = {"e2.mp4": 25}
     cast, _ = cast_of(season)
 
     _, left_out = export_cast(season, cast[0], tmp_path / "lead.mp4")
 
+    assert [Path(c.video).name for c in cutting.clips] == ["e1.mp4", "e2.mp4"]
+    assert left_out == []
+
+
+def test_a_video_that_cannot_be_read_is_left_out_by_name(season, cutting, monkeypatch, tmp_path):
+    def probe(source, include_audio=True):
+        if Path(source).name == "e2.mp4":
+            raise CutterError("e2.mp4 has no video stream.")
+        return SimpleNamespace(frame_rate=24)
+
+    monkeypatch.setattr(folder_module, "probe_clip", probe)
+    cast, _ = cast_of(season)
+
+    _, left_out = export_cast(season, cast[0], tmp_path / "lead.mp4")
+
     assert [Path(c.video).name for c in cutting.clips] == ["e1.mp4"]
-    assert left_out[0][0].name == "e2.mp4"
-    assert "25.000fps" in left_out[0][1]
+    assert left_out == [(Path("/season/e2.mp4"), "e2.mp4 has no video stream.")]
 
 
 def test_cancelling_an_export_stops_it(season, cutting, tmp_path):
