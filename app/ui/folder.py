@@ -45,6 +45,7 @@ from app.video.cutter import (
     probe_clip,
 )
 from app.video.loader import VideoLoadError
+from app.video.repeats import Repeat, find_repeats, fingerprint_kept, without_repeats
 
 
 @dataclass
@@ -54,6 +55,9 @@ class FolderScan:
     videos: list[ScanResult]
     settings: ScanSettings
     skipped: list[tuple[Path, str]] = field(default_factory=list)
+    # (later video, earlier video) -> what the later one repeats of the
+    # earlier, found once when the folder is scanned (app/video/repeats.py).
+    repeats: dict[tuple[int, int], list[Repeat]] = field(default_factory=dict)
 
     def close(self) -> None:
         for result in self.videos:
@@ -87,6 +91,7 @@ def scan_folder(
     cancel: threading.Event | None = None,
     on_download=None,
     recursive: bool = False,
+    on_status=None,
 ) -> FolderScan:
     """Scans every video in a folder, reusing any scan already kept.
 
@@ -97,6 +102,7 @@ def scan_folder(
         paths: Folders, files, or a mix.
         on_video: Called as (index, total, path) as each video starts.
         on_progress: Called as (fraction of the whole folder, timestamp).
+        on_status: Called with a line of text while repeats are looked for.
 
     Raises:
         Cancelled: If `cancel` was set. Nothing scanned so far is kept open.
@@ -130,7 +136,51 @@ def scan_folder(
         except (VideoLoadError, CutterError, OSError) as error:
             skipped.append((path, str(error)))
 
-    return FolderScan(videos=results, settings=settings, skipped=skipped)
+    return FolderScan(
+        videos=results,
+        settings=settings,
+        skipped=skipped,
+        repeats=find_folder_repeats(results, on_status=on_status, cancel=cancel),
+    )
+
+
+def fingerprint_dir() -> Path:
+    return scan_cache_dir() / "fingerprints"
+
+
+def find_folder_repeats(
+    results: list[ScanResult], on_status=None, cancel: threading.Event | None = None
+) -> dict[tuple[int, int], list[Repeat]]:
+    """What each video repeats of every earlier one: recaps, openings.
+
+    Fingerprinting reads each video once more, about 13s for 11 minutes of
+    720p, and keeps the result, so a folder opened again pays nothing. A
+    video that cannot be fingerprinted is simply never taken for a repeat --
+    at worst its footage appears twice, as it did before this existed.
+    """
+    if len(results) < 2:
+        return {}
+    prints = {}
+    for position, result in enumerate(results):
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        if on_status is not None:
+            on_status(
+                f"Checking {result.video_path.name} for footage other videos repeat "
+                f"({position + 1} of {len(results)})…"
+            )
+        try:
+            prints[position] = fingerprint_kept(result.video_path, fingerprint_dir())
+        except Exception:
+            continue
+    found = {}
+    for later in prints:
+        for earlier in prints:
+            if earlier < later:
+                repeats = find_repeats(prints[later], prints[earlier])
+                if repeats:
+                    found[(later, earlier)] = repeats
+    return found
 
 
 def cast_of(
@@ -383,9 +433,24 @@ def plan_cast_export(
     person: CastPerson,
     settings: ExportSettings | None = None,
 ) -> list[tuple[ScanResult, list]]:
-    """Each video's segments for this person, in folder order."""
+    """Each video's segments for this person, in folder order.
+
+    Leaving out what an earlier video in the reel has already shown -- see
+    `repeated_seconds` for how much that is.
+    """
+    return _planned(folder, person, settings)[0]
+
+
+def repeated_seconds(
+    folder: FolderScan, person: CastPerson, settings: ExportSettings | None = None
+) -> float:
+    """How much of this person's reel was left out as already shown."""
+    return sum(_planned(folder, person, settings)[1].values())
+
+
+def _planned(folder, person, settings):
     settings = settings or ExportSettings()
-    plans = []
+    per_video = []
     for video, cards in _by_video(person).items():
         result = folder.videos[video]
         _, segments = plan_export(
@@ -394,9 +459,10 @@ def plan_cast_export(
             sample_interval=result.sample_interval,
             settings=settings,
         )
-        if segments:
-            plans.append((result, segments))
-    return plans
+        per_video.append((video, segments))
+    trimmed, removed = without_repeats(per_video, folder.repeats)
+    plans = [(folder.videos[video], segments) for video, segments in trimmed if segments]
+    return plans, removed
 
 
 def export_cast(

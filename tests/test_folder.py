@@ -309,6 +309,63 @@ def test_the_preview_draws_on_every_video(season, monkeypatch):
     assert [name for name, _, _ in frames] == ["e1.mp4"] * 3 + ["e2.mp4"] * 3
 
 
+# ------------------------------------------------------------------ repeats
+
+
+def test_a_person_s_reel_leaves_out_what_an_earlier_video_already_showed(season, monkeypatch):
+    from app.ui.folder import repeated_seconds
+    from app.video.repeats import Repeat
+
+    monkeypatch.setattr(
+        folder_module, "plan_export",
+        lambda cards, video_duration, **kwargs: ([], [AppearanceInterval(10.0, 20.0)]),
+    )
+    # e2 opens with e1's footage from 0s on, so e2's 10-20s is e1's 10-20s.
+    season.repeats = {(1, 0): [Repeat(0.0, 30.0, 0.0, 60)]}
+    lead = cast_of(season)[0][0]
+
+    plans = plan_cast_export(season, lead)
+
+    assert [r.video_path.name for r, _ in plans] == ["e1.mp4"]
+    assert repeated_seconds(season, lead) == pytest.approx(10.0)
+
+
+def test_repeats_are_looked_for_once_the_videos_are_scanned(tmp_path, monkeypatch):
+    from app.video.repeats import Repeat
+
+    for name in ("e1.mp4", "e2.mp4"):
+        (tmp_path / name).write_bytes(b"x")
+    monkeypatch.setattr(folder_module, "scan", lambda path, **kwargs: result(path.name))
+    monkeypatch.setattr(folder_module, "fingerprint_kept", lambda path, directory: path.name)
+    compared = []
+
+    def fake_find(later, earlier):
+        compared.append((later, earlier))
+        return [Repeat(0.0, 10.0, 0.0, 20)]
+
+    monkeypatch.setattr(folder_module, "find_repeats", fake_find)
+    statuses = []
+
+    scanned = scan_folder([tmp_path], SETTINGS, on_status=statuses.append)
+
+    assert compared == [("e2.mp4", "e1.mp4")]
+    assert list(scanned.repeats) == [(1, 0)]
+    assert len(statuses) == 2
+
+
+def test_a_video_that_cannot_be_fingerprinted_is_never_taken_for_a_repeat(tmp_path, monkeypatch):
+    for name in ("e1.mp4", "e2.mp4"):
+        (tmp_path / name).write_bytes(b"x")
+    monkeypatch.setattr(folder_module, "scan", lambda path, **kwargs: result(path.name))
+
+    def broken(path, directory):
+        raise RuntimeError("cannot decode")
+
+    monkeypatch.setattr(folder_module, "fingerprint_kept", broken)
+
+    assert scan_folder([tmp_path], SETTINGS).repeats == {}
+
+
 # ------------------------------------------------------- remembered answers
 
 

@@ -1270,6 +1270,19 @@ def test_a_folder_after_a_video_does_not_keep_the_video_s_file_name(bridge, monk
     assert bridge.select_cast_person(0, box)["filename"] == "season-1-person-1.mp4"
 
 
+def test_choosing_a_person_says_what_was_left_out_as_already_shown(with_folder, monkeypatch):
+    from app.video.repeats import Repeat
+
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    # e2's opening repeats e1's, where the lead is at 10-12s in both.
+    with_folder._folder.repeats = {(1, 0): [Repeat(0.0, 60.0, 0.0, 120)]}
+
+    chosen = with_folder.select_cast_person(0, "")
+
+    assert chosen["repeated"] is not None
+    assert chosen["videos"] == 1
+
+
 def test_an_answered_question_is_not_asked_again_after_reopening(bridge, monkeypatch, tmp_path):
     """Answers lasted only as long as the window. Now the folder remembers."""
     from app.ui.folder import FolderScan

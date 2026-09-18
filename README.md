@@ -343,6 +343,15 @@ missing sound track is handled. A video at a different frame rate is
 converted to the reel's — frames repeated or dropped so it plays at its own
 speed — rather than left out.
 
+**Recaps and openings are shown once.** A later episode's "previously on"
+or title sequence repeats footage an earlier one already has, and cut
+naively a character in it would be in the reel once per episode. Each video
+is fingerprinted once (about 13s per 11 minutes, kept after that), and
+footage a later video repeats of something already *in the reel* is left
+out; `--keep-repeats` keeps it. On the test episode and a re-encoded
+two-minute recap of it, the lead's 79.9s in the recap came down to 5.5s --
+the two moments the episode's own cut of them does not include.
+
 **Nothing aborts the run.** An episode that is unreadable, holds nobody who
 matches, or has nothing worth cutting is recorded and skipped, and the run
 carries on:

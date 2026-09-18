@@ -1,7 +1,7 @@
 import sys
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +45,7 @@ from app.video.cutter import (
     probe_clip,
 )
 from app.video.export import merge_for_export
+from app.video.repeats import find_repeats, fingerprint_kept, without_repeats
 from app.video.frames import extract_frames
 from app.video.loader import (
     SUPPORTED_EXTENSIONS,
@@ -1023,6 +1024,37 @@ def run_export(
 # ------------------------------------------------------------------- batch
 
 
+def _without_repeats(plans: list["ExportPlan"]) -> tuple[list["ExportPlan"], dict[Path, float]]:
+    """Leaves out what a later video repeats of footage already in the reel.
+
+    See app/video/repeats.py. Fingerprinting costs one more read of each
+    video the first time, and is kept beside the scans after that.
+    """
+    from app.scans import scan_cache_dir
+
+    directory = scan_cache_dir() / "fingerprints"
+    prints = {}
+    for position, plan in enumerate(plans):
+        print(f"  checking {plan.video_path.name} for repeated footage...")
+        try:
+            prints[position] = fingerprint_kept(plan.video_path, directory)
+        except Exception:
+            continue
+    repeats = {
+        (later, earlier): found
+        for later in prints
+        for earlier in prints
+        if earlier < later and (found := find_repeats(prints[later], prints[earlier]))
+    }
+    trimmed, removed = without_repeats(
+        [(position, plan.segments) for position, plan in enumerate(plans)], repeats
+    )
+    return (
+        [replace(plan, segments=segments) for plan, (_, segments) in zip(plans, trimmed)],
+        {plans[position].video_path: seconds for position, seconds in removed.items()},
+    )
+
+
 def collect_videos(paths: list[Path], recursive: bool = False) -> list[Path]:
     """Expands a mix of files and folders into a sorted list of videos.
 
@@ -1177,6 +1209,7 @@ def run_batch(
     person: str | None = None,
     combine_path: Path | None = None,
     use_cache: bool = True,
+    keep_repeats: bool = False,
 ) -> list[BatchOutcome]:
     """Cuts one person out of every video in a folder.
 
@@ -1223,7 +1256,7 @@ def run_batch(
     if combine_path is not None:
         return _run_combined(
             videos, target, person, combine_path, export_settings,
-            reference_threshold, use_cache,
+            reference_threshold, use_cache, keep_repeats,
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1302,6 +1335,7 @@ def _run_combined(
     export_settings: dict,
     reference_threshold: float | None,
     use_cache: bool,
+    keep_repeats: bool = False,
 ) -> list[BatchOutcome]:
     """Plans every video, then cuts what they hold into one reel."""
     print(
@@ -1357,6 +1391,16 @@ def _run_combined(
             continue
         usable.append(plan)
 
+    repeated: dict[Path, float] = {}
+    if not keep_repeats and len(usable) > 1:
+        usable, repeated = _without_repeats(usable)
+        for plan in [p for p in usable if not p.segments]:
+            outcomes[plan.video_path] = BatchOutcome(
+                plan.video_path,
+                skipped_because="everything in it is already in the reel from an earlier video",
+            )
+        usable = [plan for plan in usable if plan.segments]
+
     if usable:
         cut_settings = _share(export_settings, CUT_SETTINGS)
         print(f"Encoding {sum(p.seconds for p in usable):.1f}s from {len(usable)} video(s)...")
@@ -1386,7 +1430,9 @@ def _run_combined(
     print("--- Batch summary ---")
     for outcome in ordered:
         if outcome.succeeded:
-            print(f"  {outcome.video_path.name}  {outcome.reel_seconds:.1f}s")
+            left = repeated.get(outcome.video_path, 0.0)
+            note = f"  (left out {left:.1f}s already in the reel)" if left >= 0.5 else ""
+            print(f"  {outcome.video_path.name}  {outcome.reel_seconds:.1f}s{note}")
         else:
             print(f"  {outcome.video_path.name} -- {outcome.skipped_because}")
     contributed = [outcome for outcome in ordered if outcome.succeeded]
