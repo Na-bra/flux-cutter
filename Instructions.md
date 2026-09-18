@@ -2776,3 +2776,50 @@ Measured on real footage, 10 seconds of the 23.976fps episode followed by
 
 Batch and the folder view no longer leave a video out for its frame rate;
 only one that cannot be read.
+
+## 37. Slivers of another shot at the edges of a cut (`SLIVER_FRAMES`)
+
+The plan was to "snap cuts to shot boundaries" and, with it, stop reels
+showing the other side of conversations. Measuring first split that in two.
+
+### Dropping shots without the person: not worth it
+
+On the lead's reel from the first half of the test episode, 172 shots:
+
+    shots with the lead detected     93, 271.1s (90%)
+    shots with no detection          79,  30.8s (10%), none over 1.9s
+
+and looking at the twelve longest of the second kind, about half show the
+lead anyway -- from behind, or at the edge of an over-the-shoulder shot.
+Dropping them would cut real shots of the character to save some fifteen
+seconds of other people in five minutes. Not built.
+
+### Slivers at the edges: common, and visible
+
+A segment is an appearance padded at both ends, and the padding keeps
+reaching across a camera cut:
+
+    segment edges within half a second of a cut   63% (half 1), 75% (half 2)
+    frames of the neighbouring shot left there    median 7, about 0.3s
+
+-- a flash of somebody else as a clip opens or closes.
+
+### Trimming them in the cutter
+
+The cutter decodes every frame of a segment anyway, so it holds the last
+SLIVER_FRAMES (12, half a second at 24fps) back, and at either edge leaves
+out what lies across a cut within them. Sound needs nothing of its own: it
+is taken from the first frame written for as long as the frames written
+last, so it follows the trim.
+
+A cut is a spike in how much two frames' 64x36 colour thumbnails differ:
+at least 12 of 255 on average, four times what the frames either side
+change, with those frames steady. Relative, because a cut between two
+angles of one set can change by 20 while fast motion changes more; colour,
+because two shots differed by 24 in grey and 91 in colour; steady either
+side, because a one-frame white flash is two big changes that undo each
+other. On the real footage all twelve sampled detections were genuine cuts.
+
+The lead's reel: 301.9s -> 281.7s, 20.2s of slivers gone; picture and sound
+10ms apart at the end; 23.8s to cut against 23.6s. `trim_slivers=False`
+turns it off.
