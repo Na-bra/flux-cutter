@@ -2744,3 +2744,35 @@ Answers to "same person?" last for the session; a "yes" is kept beyond it
 only by naming the person, since cards with one name are one person. Merge,
 split and discard are single-video corrections and are hidden in folder
 view.
+
+## 35. Joining videos at different frame rates
+
+A reel counts its frames at one rate and measures each segment's sound from
+how many frames it kept, so a video at another rate could not be copied
+across: 25fps footage in a 24fps reel would play 4% slow with the wrong
+span of sound. Such videos were left out by name. They are now converted.
+
+Each source frame is written for as many reel frames as start while it is
+on screen -- every k with k/reel < n/source for the n-th frame read --
+counted in whole frames with exact fractions, so a long segment cannot drift
+the way summing float timestamps would. A faster source drops frames, a
+slower one repeats them. Rates within FRAME_RATE_TOLERANCE are still copied
+one for one.
+
+One more thing had to move: a segment's sound is read to one frame past its
+cut, and for a slower source that has to be one of *its* frames, which
+covers more of the reel. Read one reel frame instead, the shortfall was
+filled with silence -- but only visibly below about 20fps, because sound is
+decoded in ~21ms blocks and the last one read always overruns the cut. The
+test uses 10fps footage (58ms short) for that reason; at 20fps (8ms short)
+the overrun hid the bug.
+
+Measured on real footage, 10 seconds of the 23.976fps episode followed by
+10 seconds of the 30fps square clip:
+
+    reel         20.020s of picture, 20.032s of sound (the last AAC block)
+    30fps part   every checked frame matches the source frame at exactly
+                 the time it should, 1.0s to 9.0s in -- no drift
+
+Batch and the folder view no longer leave a video out for its frame rate;
+only one that cannot be read.
