@@ -13,6 +13,8 @@ without a window.
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -22,6 +24,7 @@ from PIL import Image
 from app.faces.cast import Answers, CardRef, CastCard, SamePersonQuestion, build_cast
 from app.main import collect_videos
 from app.modes import get_mode
+from app.scans import cache_key, scan_cache_dir
 from app.ui.worker import (
     Cancelled,
     ExportSettings,
@@ -164,6 +167,94 @@ def cast_of(
         for position, member in enumerate(members)
     ]
     return cast, questions
+
+
+# -------------------------------------------------- remembered answers
+
+# Beside the kept scans, because an answer is about cards in them.
+ANSWERS_FILE = "cast-answers.json"
+
+
+def card_key(folder: FolderScan, video: int, person_index: int) -> str | None:
+    """A name for one card that is the same next time the folder is opened.
+
+    Its position in the gallery is not: that moves with every correction.
+    The kept scan's key says which video under which settings, and the
+    card's first sighting and number of detections say which card in it.
+    A card that is merged or split afterwards gets a different key, and
+    answers about the card it used to be no longer apply to it -- which is
+    right, because it is no longer that card.
+    """
+    result = folder.videos[video]
+    person = next((p for p in result.people if p.index == person_index), None)
+    if person is None:
+        return None
+    try:
+        scan = cache_key(result.video_path, **dataclasses.asdict(folder.settings))
+    except OSError:
+        return None
+    timestamps = [o.source_timestamp for o in person.group.observations]
+    first = min(timestamps) if timestamps else person.first_seen
+    return f"{scan}:{first:.3f}:{person.detection_count}"
+
+
+def _answers_path() -> Path:
+    return scan_cache_dir() / ANSWERS_FILE
+
+
+def _stored() -> dict[str, bool]:
+    try:
+        data = json.loads(_answers_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    pairs = data.get("pairs") if isinstance(data, dict) else None
+    return {k: bool(v) for k, v in pairs.items()} if isinstance(pairs, dict) else {}
+
+
+def _pair(a: str, b: str) -> str:
+    return "|".join(sorted((a, b)))
+
+
+def load_answers(folder: FolderScan) -> Answers:
+    """Every answer given before about cards in this folder."""
+    answers = Answers()
+    stored = _stored()
+    if not stored:
+        return answers
+    keys = {}
+    for video, result in enumerate(folder.videos):
+        for person in result.people:
+            key = card_key(folder, video, person.index)
+            if key is not None:
+                keys[key] = CardRef(video, person.index)
+    for pair, same in stored.items():
+        first, _, second = pair.partition("|")
+        if first in keys and second in keys:
+            answers.record(keys[first], keys[second], same=same)
+    return answers
+
+
+def remember_answer(folder: FolderScan, first: CardRef, second: CardRef, same: bool) -> bool:
+    """Keeps one answer for next time. Best effort, like a kept edit.
+
+    Returns whether it was written: an answer the user can see must not fail
+    because the cache could not be, it would only have to be given again.
+    """
+    a = card_key(folder, first.video, first.person)
+    b = card_key(folder, second.video, second.person)
+    if a is None or b is None:
+        return False
+    stored = _stored()
+    stored[_pair(a, b)] = bool(same)
+    try:
+        path = _answers_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"version": 1, "pairs": stored}), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        return False
+    return True
 
 
 def _by_video(person: CastPerson) -> dict[int, list[Person]]:

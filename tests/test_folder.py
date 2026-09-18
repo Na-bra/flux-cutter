@@ -292,3 +292,90 @@ def test_the_preview_draws_on_every_video(season, monkeypatch):
     frames = cast_preview_frames(season, cast[0], limit=6)
 
     assert [name for name, _, _ in frames] == ["e1.mp4"] * 3 + ["e2.mp4"] * 3
+
+
+# ------------------------------------------------------- remembered answers
+
+
+@pytest.fixture
+def on_disk(tmp_path):
+    """The season fixture, with videos that exist so their scans have keys."""
+    folder = tmp_path / "season"
+    folder.mkdir()
+    videos = []
+    for name, people in (
+        ("e1.mp4", (person(0, LEAD, detections=40), person(1, FRIEND))),
+        ("e2.mp4", (person(0, FRIEND), person(1, LEAD, detections=30))),
+    ):
+        (folder / name).write_bytes(name.encode())
+        videos.append(ScanResult(video_path=folder / name, video_duration=60.0,
+                                 sample_interval=0.5, people=list(people)))
+    return FolderScan(videos=videos, settings=SETTINGS)
+
+
+def test_an_answer_holds_the_next_time_the_folder_is_opened(on_disk):
+    from app.ui.folder import load_answers, remember_answer
+
+    assert remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+
+    reopened = load_answers(on_disk)
+
+    assert frozenset({CardRef(0, 0), CardRef(1, 1)}) in reopened.different
+    cast, _ = cast_of(on_disk, reopened)
+    # The lead's two cards stay apart; the friend is still linked.
+    assert sorted(p.detection_count for p in cast) == [20, 30, 40]
+
+
+def test_changing_an_answer_replaces_the_one_kept(on_disk):
+    from app.ui.folder import load_answers, remember_answer
+
+    remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+    remember_answer(on_disk, CardRef(1, 1), CardRef(0, 0), same=True)
+
+    reopened = load_answers(on_disk)
+    assert frozenset({CardRef(0, 0), CardRef(1, 1)}) in reopened.same
+    assert not reopened.different
+
+
+def test_an_answer_follows_the_card_not_its_place_in_the_gallery(on_disk):
+    """A correction renumbers the gallery; the answer must stay with the
+    card it was about, not land on whichever card took its number."""
+    from app.ui.folder import load_answers, remember_answer
+
+    remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+    e2 = on_disk.videos[1]
+    renumbered = ScanResult(
+        **{**e2.__dict__, "people": [
+            Person(**{**e2.people[1].__dict__, "index": 0}),
+            Person(**{**e2.people[0].__dict__, "index": 1}),
+        ]}
+    )
+    moved = FolderScan(videos=[on_disk.videos[0], renumbered], settings=SETTINGS)
+
+    reopened = load_answers(moved)
+
+    assert frozenset({CardRef(0, 0), CardRef(1, 0)}) in reopened.different
+
+
+def test_an_answer_about_a_card_since_changed_no_longer_applies(on_disk):
+    from app.ui.folder import load_answers, remember_answer
+
+    remember_answer(on_disk, CardRef(0, 0), CardRef(1, 1), same=False)
+    e1 = on_disk.videos[0]
+    merged_since = ScanResult(**{**e1.__dict__, "people": [
+        Person(**{**e1.people[0].__dict__, "detection_count": 55}), e1.people[1],
+    ]})
+
+    reopened = load_answers(FolderScan(videos=[merged_since, on_disk.videos[1]], settings=SETTINGS))
+
+    assert not reopened.different
+
+
+def test_a_damaged_answers_file_is_ignored_not_fatal(on_disk):
+    from app.scans import scan_cache_dir
+    from app.ui.folder import ANSWERS_FILE, load_answers
+
+    scan_cache_dir().mkdir(parents=True, exist_ok=True)
+    (scan_cache_dir() / ANSWERS_FILE).write_text("{not json")
+
+    assert not load_answers(on_disk).same

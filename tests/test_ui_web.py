@@ -1268,3 +1268,30 @@ def test_a_folder_after_a_video_does_not_keep_the_video_s_file_name(bridge, monk
     bridge._folder_worker(tmp_path, ScanSettings.for_mode("live"))
 
     assert bridge.select_cast_person(0, box)["filename"] == "season-1-person-1.mp4"
+
+
+def test_an_answered_question_is_not_asked_again_after_reopening(bridge, monkeypatch, tmp_path):
+    """Answers lasted only as long as the window. Now the folder remembers."""
+    from app.ui.folder import FolderScan
+
+    folder = tmp_path / "season-1"
+    folder.mkdir()
+    made = make_folder()
+    videos = []
+    for result in made.videos:
+        path = folder / result.video_path.name
+        path.write_bytes(path.name.encode())
+        videos.append(ScanResult(**{**result.__dict__, "video_path": path}))
+    on_disk = FolderScan(videos=videos, settings=made.settings)
+
+    bridge.window = FakeWindow()
+    monkeypatch.setattr(web, "scan_folder", lambda *a, **k: on_disk)
+    bridge._folder_worker(folder, ScanSettings.for_mode("live"))
+    assert len(bridge.window.emitted("onFolderScanned")["questions"]) == 1
+    bridge.answer_question(0, False)
+
+    reopened = web.Bridge()
+    reopened.window = FakeWindow()
+    reopened._folder_worker(folder, ScanSettings.for_mode("live"))
+
+    assert reopened.window.emitted("onFolderScanned")["questions"] == []

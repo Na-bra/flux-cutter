@@ -53,8 +53,10 @@ from app.ui.folder import (
     cast_of,
     cast_preview_frames,
     export_cast,
+    load_answers,
     name_cast_person,
     plan_cast_export,
+    remember_answer,
     scan_folder,
 )
 from app.video.loader import VideoLoadError
@@ -724,7 +726,8 @@ class Bridge:
         if self._folder is not None:
             self._folder.close()
         self._folder = scanned
-        self._answers = Answers()
+        # Answers given the last time this folder was open still hold.
+        self._answers = load_answers(scanned)
         self._cast_selected = None
         self._rebuild_cast()
         self._emit("onFolderScanned", {**self._cast_payload(), "folderName": folder.name})
@@ -808,6 +811,7 @@ class Bridge:
             return {"applied": False, "reason": "That question has already been answered."}
 
         self._answers.record(asked.first, asked.second, same=bool(same))
+        remember_answer(self._folder, asked.first, asked.second, bool(same))
         self._rebuild_cast()
         return {
             "applied": True,
