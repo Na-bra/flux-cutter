@@ -268,6 +268,13 @@
      over the single-video gallery. */
   [hidden] { display: none !important; }
 
+  /* A name offered from earlier videos: a question until someone answers. */
+  .suggested { font-style: italic; color: var(--signal); font-weight: 500; }
+  .suggest { margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--signal); border-radius: 5px; font-size: .76rem; color: var(--muted); }
+  .suggest b { color: var(--ink); }
+  .suggest .buttons { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+  .suggest button { height: 26px; padding: 0 10px; font-size: .74rem; }
+
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
@@ -348,6 +355,7 @@
           <dt>detections</dt><dd id="pickedDet">—</dd>
           <dt id="pickedVideosLabel" hidden>videos</dt><dd id="pickedVideos" hidden>—</dd>
         </dl>
+        <div class="suggest" id="suggest" hidden></div>
         <div class="strip" id="strip" hidden></div>
       </div>
 
@@ -565,7 +573,7 @@
       <button class="card" aria-pressed="false" data-i="${p.index}">
         <img class="thumb" src="${p.thumbnail}" alt="Person ${i+1}">
         <span class="info">
-          <span class="who">${p.name ? esc(p.name) : "Person " + (i+1)} <span class="rank">#${i+1}</span></span>
+          <span class="who">${who(p, "Person " + (i+1))} <span class="rank">#${i+1}</span></span>
           <span class="stat">${p.detections} det</span>
         </span>
       </button>`).join("");
@@ -601,15 +609,14 @@
 
   // A name belongs to the person, not to the card's position: the gallery
   // renumbers itself after every correction, and "Person #2" moves.
-  $("renameBtn").addEventListener("click", async () => {
-    const person = state.people.find(p => p.index === state.selected[0]);
-    const typed = window.prompt(
-      state.view === "folder"
-        ? "What is this person called? The name is saved in every video they are in."
-        : "What is this person called? Leave it empty to clear the name.",
-      person && person.name ? person.name : ""
-    );
-    if (typed === null) return;
+  // A card's name, or the name the people library offers for it -- shown
+  // as a question, since nothing is named until someone says so.
+  const who = (p, fallback) => p.name ? esc(p.name)
+    : p.suggestion ? '<span class="suggested" title="Looks like someone named in an earlier video">' + esc(p.suggestion) + "?</span>"
+    : esc(fallback);
+
+  // Names the one chosen card or person, in whichever view is showing.
+  async function applyName(typed) {
     if (state.view === "folder") {
       const r = await pywebview.api.name_cast_person(typed);
       if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
@@ -621,15 +628,64 @@
     const r = await pywebview.api.edit_people("rename", [], typed);
     if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
     state.drawn.video = r;
+    keepSelection(r);
+    status("<b>" + r.note + "</b>");
+  }
+
+  // Redraws the gallery with the same cards still chosen: naming and
+  // declining a suggestion change no membership.
+  function keepSelection(r) {
     const keep = state.selected.slice();
     drawPeople(r);
-    // Renaming changes no membership, so the selection is put back.
     state.selected = keep;
     updateFixups();
     document.querySelectorAll("#grid .card").forEach(c =>
       c.setAttribute("aria-pressed", keep.includes(Number(c.dataset.i)))
     );
-    status("<b>" + r.note + "</b>");
+    showSuggestion();
+  }
+
+  $("renameBtn").addEventListener("click", async () => {
+    const person = state.people.find(p => p.index === state.selected[0]);
+    const typed = window.prompt(
+      state.view === "folder"
+        ? "What is this person called? The name is saved in every video they are in."
+        : "What is this person called? Leave it empty to clear the name.",
+      person && person.name ? person.name : (person && person.suggestion) || ""
+    );
+    if (typed === null) return;
+    await applyName(typed);
+  });
+
+  // "Looks like Jamie Lee": asked once one unnamed card with a suggestion
+  // is chosen. Yes names them the ordinary way, so the library learns from
+  // it; no keeps that name off that card for the rest of the session.
+  function showSuggestion() {
+    const box = $("suggest");
+    const person = state.selected.length === 1
+      ? state.people.find(p => p.index === state.selected[0]) : null;
+    if (!person || person.name || !person.suggestion) { box.hidden = true; box.innerHTML = ""; return; }
+    box.hidden = false;
+    box.innerHTML = `Looks like <b>${esc(person.suggestion)}</b>, named in an earlier video.
+      <div class="buttons">
+        <button class="primary" data-suggest="yes">That's them</button>
+        <button class="ghost" data-suggest="no">Not them</button>
+      </div>`;
+  }
+
+  $("suggest").addEventListener("click", async (e) => {
+    const button = e.target.closest("button[data-suggest]");
+    if (!button) return;
+    const person = state.people.find(p => p.index === state.selected[0]);
+    if (!person || !person.suggestion) return;
+    if (button.dataset.suggest === "yes") { await applyName(person.suggestion); return; }
+    const r = state.view === "folder"
+      ? await pywebview.api.decline_cast_suggestion(person.index, person.suggestion)
+      : await pywebview.api.decline_suggestion(person.index, person.suggestion);
+    if (!r.applied) return;
+    if (state.view === "folder") { state.drawn.folder = r; drawCast(r); }
+    else { state.drawn.video = r; keepSelection(r); }
+    status("<b>Not " + esc(person.suggestion) + ".</b> It will not be offered for them again this session.");
   });
 
   const esc = (text) => text.replace(/[&<>"']/g, c =>
@@ -711,6 +767,7 @@
     }
 
     drawQuestion(d.questions);
+    showSuggestion();
 
     if (!d.people.length) {
       $("grid").innerHTML = "<p>No one found in these videos. Try a finer sampling interval.</p>";
@@ -722,7 +779,7 @@
             `<img src="${f.thumbnail}" alt="In ${esc(f.video)}" title="${esc(f.video)}">`).join("")}
             ${p.faces.length > 4 ? `<span class="more">+${p.faces.length - 4}</span>` : ""}</span>
           <span class="info">
-            <span class="who">${esc(p.label)} <span class="rank">#${i+1}</span></span>
+            <span class="who">${who(p, p.label)} <span class="rank">#${i+1}</span></span>
             <span class="stat">in ${p.videos} of ${d.videoCount} · ${p.onScreen}</span>
           </span>
         </button>`).join("");
@@ -800,6 +857,7 @@
         return;
       }
       showPicked(r);
+      showSuggestion();
       $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
         " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file." +
         (r.indexes.length > 1 ? " Any scene with any of them." : "") +
@@ -837,6 +895,7 @@
       "Cuts " + r.cuts + " segments and joins them into one file." +
       (r.indexes.length > 1 ? " Any scene with any of them." : "");
     $("exportBtn").disabled = false;
+    showSuggestion();
 
     state.previewToken = r.token;
     const strip = $("strip");

@@ -551,6 +551,18 @@ def main():
         help="'show' lists what is kept, 'clear' deletes all of it.",
     )
 
+    people_parser = subparsers.add_parser(
+        "people", help="List or forget the people you have named."
+    )
+    people_parser.add_argument(
+        "action",
+        nargs="?",
+        default="show",
+        choices=["show", "forget"],
+        help="'show' lists everyone named so far, 'forget NAME' removes one.",
+    )
+    people_parser.add_argument("name", nargs="?", help="Who to forget.")
+
     # 'batch' command
     batch_parser = subparsers.add_parser(
         "batch",
@@ -720,6 +732,31 @@ def main():
             found = find_model(spec)
             where = str(found.parent) if found else "not present - will download on first use"
             print(f"  {spec.description} ({spec.size_label})\n    {where}")
+        return
+
+    if args.command == "people":
+        from app.faces import library
+
+        if args.action == "forget":
+            if not args.name:
+                parser.error("say who to forget: people forget NAME")
+            removed = library.forget(args.name)
+            print(
+                f"Forgot {args.name}." if removed
+                else f"Nobody called {args.name!r} is saved."
+            )
+            return
+        everyone = library.known()
+        print(f"People: {library.library_dir()}")
+        if not everyone:
+            print("  nobody named yet -- name someone on their card in the window")
+            return
+        for person in everyone:
+            mode = "animation" if person.space.startswith("ccip") else "live action"
+            print(
+                f"  {person.name:<24} {person.videos} video{'s' if person.videos != 1 else ''}"
+                f"  ({mode})"
+            )
         return
 
     if args.command == "scans":

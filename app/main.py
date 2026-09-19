@@ -1176,11 +1176,33 @@ def find_person(videos: list[Path], name: str, settings: dict) -> ReferenceFace:
             named_in.append(path)
 
     if not named:
+        # Named somewhere else -- another season, another folder -- counts:
+        # the people library keeps every face a name was given on.
+        from app.faces import library
+
+        mode = settings.get("mode") or DEFAULT_MODE
+        remembered = library.find(name, get_mode(mode).embedding_space)
+        if remembered is not None:
+            print(
+                f"{remembered.name} is not named in these videos; finding them "
+                f"by the face saved from {remembered.videos} earlier "
+                f"video{'s' if remembered.videos != 1 else ''}."
+            )
+            average = remembered.faces.mean(axis=0)
+            return ReferenceFace(
+                embedding=(average / np.linalg.norm(average)).astype(np.float32),
+                embedding_space=remembered.space,
+                detection=None,
+                source=None,
+                face_count=1,
+                label=remembered.name,
+            )
+        everyone = sorted(known | {p.name for p in library.known()})
         raise SelectionError(
-            f"Nobody is named {name!r} in these videos. Open one in the "
-            "window, click their card and give it that name, then run this "
-            "again."
-            + (f" Names so far: {', '.join(sorted(known))}." if known else "")
+            f"Nobody is named {name!r} in these videos or any other. Open one "
+            "in the window, click their card and give it that name, then run "
+            "this again."
+            + (f" Names so far: {', '.join(everyone)}." if everyone else "")
         )
 
     # Spelled the way it was saved, not the way it was typed.

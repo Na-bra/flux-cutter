@@ -374,6 +374,14 @@ the one failure that would make this unusable.
 `--interval`, `--mode`, `--encoder` and the editorial knobs all apply to
 every video in the run.
 
+**Names carry over.** Everyone you name is remembered, by face, across every
+video you open — so season 2 knows who you named in season 1. After any
+scan, a card that looks like someone named before shows their name with a
+question mark; choose it and answer **That's them** or **Not them**.
+`batch --person` finds a name the same way when nobody in the folder has
+been given it yet. `python -m app people` lists everyone named, and
+`python -m app people forget NAME` removes one.
+
 ### 11. Scans are kept, not thrown away
 
 A scan is the expensive part — minutes of detecting and embedding on a

@@ -81,3 +81,5 @@ def isolated_scan_cache(tmp_path_factory, monkeypatch):
     scan from it and pass without doing the work it meant to test.
     """
     monkeypatch.setenv("FLUXCUTTER_SCAN_DIR", str(tmp_path_factory.mktemp("scans")))
+    # And the people library, which every saved scan now updates.
+    monkeypatch.setenv("FLUXCUTTER_PEOPLE_DIR", str(tmp_path_factory.mktemp("people")))

@@ -358,6 +358,12 @@ def save(key: str, scan: CachedScan) -> Path:
         np.savez_compressed(handle, **arrays)
     os.replace(temporary, destination)
 
+    # Every name reaches the people library the moment it reaches a scan,
+    # so naming, renaming and clearing need nothing of their own there.
+    from app.faces import library
+
+    library.remember(key, scan.groups)
+
     prune()
     return destination
 
