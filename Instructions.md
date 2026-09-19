@@ -2921,3 +2921,48 @@ other. On the real footage all twelve sampled detections were genuine cuts.
 The lead's reel: 301.9s -> 281.7s, 20.2s of slivers gone; picture and sound
 10ms apart at the end; 23.8s to cut against 23.6s. `trim_slivers=False`
 turns it off.
+
+## 38. Remembering people across videos (`app/faces/library.py`)
+
+A name belonged to one video's kept scan. Naming someone in season 1 did
+nothing for season 2, and `batch --person` could only find a name in the
+folder it was given.
+
+### An index of the names already given
+
+The people library keeps every named card's face, by name and embedding
+space. It is written from `scans.save`, so naming, renaming and clearing a
+name reach it the moment they reach a scan, with nothing of their own to
+keep in step. Faces outlive the scan they came from -- a scan pruned for
+space still taught the library -- and it lives beside the scans, not in
+them, so clearing kept scans does not forget anybody. The first time it is
+used it fills itself from names already in kept scans.
+
+One face per person per video rather than one average: a character across
+a season changes lighting, costume and age, and each face they were named
+on is matched separately.
+
+Suggestions use the rule used everywhere else, both ways round: the
+person's best card clears the floor and the scan's other cards by the
+margin, and that card's best person clears the library's other people.
+Nothing is named until someone says yes.
+
+### Measured
+
+With four characters named in the first half of the test episode:
+
+    episode 2      Lead 0.97, Friend 0.96, Glasses 0.92 -- all right
+    the recap      Lead 0.98, Friend 0.97
+    test.mp4       nothing
+    test_2.MOV     nothing (other people entirely)
+
+Filling itself from the kept scans on first use found names the user had
+already given in the window -- Henry, Ray, Pheobe and others -- and offered
+"Ray" (0.74) for episode 2's masked hero, which is who Ray is. It also found
+names given while testing this project, which is how two names came to be
+offered for one face; those were cleared from the kept scans before this
+shipped, leaving only the user's own.
+
+In the real window, episode 2's gallery opened with Lead?, Friend?,
+Glasses? and Ray? on their cards; choosing Glasses? asked in the rail, and
+That's them named the card.

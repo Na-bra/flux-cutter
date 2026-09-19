@@ -464,3 +464,43 @@ def test_part_of_a_video_repeated_is_trimmed_and_the_summary_says_so(season, mon
     e5 = next(c for c in season.state.clips if Path(c.video).name == "e5.mp4")
     assert e5.segments == [span(5.0, 6.0)]
     assert "left out 2.0s already in the reel" in capsys.readouterr().out
+
+
+# ------------------------------------------------------- the people library
+
+
+def test_a_name_given_in_another_folder_is_found_by_face(tmp_path, monkeypatch, capsys):
+    """Season 2 knows who was named in season 1."""
+    from app.faces import library
+
+    library.remember("season-1-scan", [card([1.0, 0.0], "Jamie Lee")])
+    videos = [video(tmp_path, "s2e1.mp4")]
+    kept_scans(monkeypatch, {"s2e1.mp4": [card([0.9, 0.1])]})
+
+    reference = find_person(videos, "jamie lee", settings={"mode": "live"})
+
+    assert reference.name == "Jamie Lee"
+    np.testing.assert_allclose(reference.embedding, [1.0, 0.0], atol=1e-5)
+    assert "saved from 1 earlier video" in capsys.readouterr().out
+
+
+def test_a_name_from_another_mode_is_not_used(tmp_path, monkeypatch):
+    from app.faces import library
+
+    library.remember("anime-scan", [card([1.0, 0.0], "Jamie", space="ccip-caformer-24")])
+    kept_scans(monkeypatch, {})
+
+    with pytest.raises(SelectionError):
+        find_person([video(tmp_path, "e1.mp4")], "Jamie", settings={"mode": "live"})
+
+
+def test_the_error_lists_names_from_everywhere(tmp_path, monkeypatch):
+    from app.faces import library
+
+    library.remember("elsewhere", [card([1.0, 0.0], "Sam")])
+    kept_scans(monkeypatch, {"e1.mp4": [card([0.0, 1.0], "Alex")]})
+
+    with pytest.raises(SelectionError) as refused:
+        find_person([video(tmp_path, "e1.mp4")], "Jamie", settings={"mode": "live"})
+
+    assert "Alex, Sam" in str(refused.value)

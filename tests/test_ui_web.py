@@ -1013,6 +1013,9 @@ def folder_person(index: int, vector, name=None, detections=10) -> Person:
             ),
             face_crop=np.zeros((80, 80, 3), dtype=np.uint8),
             source_timestamp=10.0 + step,
+            # As every real face has: the people library keeps faces by
+            # the model that made them.
+            embedding_space="arcface-w600k-r50",
         )
         for step in range(3)
     ]
@@ -1396,3 +1399,70 @@ def test_discarding_removes_the_person_from_every_video(with_folder, monkeypatch
     assert discarded["applied"] is True
     assert calls == [("e1.mp4", "discard", [0]), ("e2.mp4", "discard", [0])]
     assert discarded["selected"] == []
+
+
+# -------------------------------------------------- names from earlier videos
+
+
+def _library_knows(name, vector):
+    from app.faces import library
+
+    group = folder_person(0, vector).group
+    group.name = name
+    library.remember("an-earlier-video", [group])
+
+
+def test_a_scan_offers_names_from_earlier_videos(bridge):
+    _library_knows("Jamie", [1, 0, 0])
+    result = ScanResult(
+        video_path=Path("/videos/s2e1.mp4"), video_duration=60.0, sample_interval=0.5,
+        people=[folder_person(0, [0, 1, 0]), folder_person(1, [0.95, 0.05, 0])],
+    )
+
+    drawn = bridge._scan_payload(result)
+
+    assert [p["suggestion"] for p in drawn["people"]] == [None, "Jamie"]
+    assert drawn["people"][1]["name"] is None
+
+
+def test_not_them_keeps_that_name_off_that_card(bridge):
+    _library_knows("Jamie", [1, 0, 0])
+    bridge._scan_result = ScanResult(
+        video_path=Path("/videos/s2e1.mp4"), video_duration=60.0, sample_interval=0.5,
+        people=[folder_person(0, [0.95, 0.05, 0])],
+    )
+
+    declined = bridge.decline_suggestion(0, "Jamie")
+
+    assert declined["applied"] is True
+    assert declined["people"][0]["suggestion"] is None
+
+
+def test_a_person_in_a_folder_is_offered_a_name_from_elsewhere(with_folder):
+    _library_knows("Lead", [1, 0, 0])
+
+    drawn = with_folder._cast_payload()
+
+    lead = next(p for p in drawn["people"] if p["detections"] == 75 or p["videos"] == 2 and p["detections"] >= 70)
+    assert lead["suggestion"] == "Lead"
+    assert all(p["suggestion"] is None for p in drawn["people"] if p is not lead)
+
+
+def test_not_them_in_a_folder_keeps_the_name_off_every_card_of_that_person(with_folder):
+    _library_knows("Lead", [1, 0, 0])
+    lead = with_folder._cast[0]
+
+    declined = with_folder.decline_cast_suggestion(lead.index, "Lead")
+
+    assert all(p["suggestion"] is None for p in declined["people"])
+
+
+def test_a_named_card_is_not_offered_a_name(bridge):
+    _library_knows("Jamie", [1, 0, 0])
+    result = ScanResult(
+        video_path=Path("/videos/s2e1.mp4"), video_duration=60.0, sample_interval=0.5,
+        people=[folder_person(0, [0.95, 0.05, 0], name="Someone")],
+    )
+    result.people[0].group.name = "Someone"
+
+    assert bridge._scan_payload(result)["people"][0]["suggestion"] is None

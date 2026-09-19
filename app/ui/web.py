@@ -27,7 +27,7 @@ from pathlib import Path
 
 import webview
 
-from app.modes import DEFAULT_MODE, MODES, availability, mode_ids
+from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
 from app.ui.macos import set_application_name
 from app.ui.worker import (
     apply_edit,
@@ -45,6 +45,7 @@ from app.ui.worker import (
     quality_for,
     scan,
 )
+from app.faces import library
 from app.faces.cast import Answers, CardRef
 from app.faces.edits import EditError
 from app.ui.folder import (
@@ -195,6 +196,9 @@ class Bridge:
         self._questions: list = []
         # A list, as in one video: a reel can be of several people.
         self._cast_chosen: list[CastPerson] = []
+        # "Not them" to a suggested name, for this session: which card, by
+        # what does not change when the gallery renumbers, and which name.
+        self._declined: set[tuple] = set()
 
     # ------------------------------------------------------------- helpers
 
@@ -332,13 +336,93 @@ class Bridge:
         # and a reel of this video was saved under the previous one's name.
         self._emit("onScanned", self._scan_payload(result))
 
+    # ------------------------------------------------------- suggestions
+
+    @staticmethod
+    def _card_identity(result: ScanResult, person: Person) -> tuple:
+        return (result.video_path.name, round(person.first_seen, 3), person.detection_count)
+
+    def _suggestions(self, result: ScanResult) -> dict[int, str]:
+        """Names from earlier videos for this scan's unnamed cards, by index.
+
+        From the people library (app/faces/library.py), with the matching
+        rule used everywhere else. A card someone said "not them" to keeps
+        quiet about that name for the rest of the session.
+        """
+        floor = get_mode(self._mode).grouping.similarity_threshold
+        try:
+            found = library.suggest([person.group for person in result.people], floor)
+        except Exception:
+            return {}
+        names = {}
+        for suggestion in found:
+            person = result.people[suggestion.card]
+            if (self._card_identity(result, person), suggestion.name) in self._declined:
+                continue
+            names[person.index] = suggestion.name
+        return names
+
+    def decline_suggestion(self, index: int, name: str) -> dict:
+        """Says a suggested name is wrong for one card in the video view."""
+        if self._busy() or self._scan_result is None:
+            return {"applied": False}
+        person = next((p for p in self._scan_result.people if p.index == int(index)), None)
+        if person is None:
+            return {"applied": False}
+        self._declined.add((self._card_identity(self._scan_result, person), name))
+        return {"applied": True, **self._scan_payload(self._scan_result)}
+
+    def decline_cast_suggestion(self, index: int, name: str) -> dict:
+        """Says a suggested name is wrong for one person in the folder view."""
+        if self._busy() or self._folder is None:
+            return {"applied": False}
+        member = next((p for p in self._cast if p.index == int(index)), None)
+        if member is None:
+            return {"applied": False}
+        for video, card in member.appearances:
+            self._declined.add((self._card_identity(self._folder.videos[video], card), name))
+        return {"applied": True, **self._cast_payload()}
+
+    def _cast_suggestions(self) -> dict[int, str]:
+        """A name from earlier videos for each unnamed person in the cast.
+
+        Suggested per video, and a person takes the name any of their cards
+        was given, the strongest if more than one. A name only goes to one
+        person: if two claim it, neither is sure enough to be offered it.
+        """
+        assert self._folder is not None
+        by_card: dict[tuple[int, int], tuple[str, float]] = {}
+        floor = get_mode(self._folder.settings.mode).grouping.similarity_threshold
+        for video, result in enumerate(self._folder.videos):
+            try:
+                found = library.suggest([p.group for p in result.people], floor)
+            except Exception:
+                continue
+            for suggestion in found:
+                person = result.people[suggestion.card]
+                if (self._card_identity(result, person), suggestion.name) in self._declined:
+                    continue
+                by_card[(video, person.index)] = (suggestion.name, suggestion.similarity)
+
+        claims: dict[str, list[tuple[float, int]]] = {}
+        for member in self._cast:
+            if member.name:
+                continue
+            offered = [by_card[(v, c.index)] for v, c in member.appearances if (v, c.index) in by_card]
+            if offered:
+                name, score = max(offered, key=lambda o: o[1])
+                claims.setdefault(name, []).append((score, member.index))
+        return {members[0][1]: name for name, members in claims.items() if len(members) == 1}
+
     def _scan_payload(self, result: ScanResult) -> dict:
+        suggested = self._suggestions(result)
         return {
             "people": [
                 {
                     "index": person.index,
                     "name": person.name,
                     "label": person.label,
+                    "suggestion": suggested.get(person.index),
                     "thumbnail": _data_uri(person.thumbnail),
                     "detections": person.detection_count,
                     "firstSeen": person.first_seen,
@@ -774,6 +858,7 @@ class Bridge:
                 "label": person.label,
             }
 
+        suggested = self._cast_suggestions()
         people = []
         for member in self._cast:
             # The face on the card is the one seen most; the strip beneath
@@ -789,6 +874,7 @@ class Bridge:
                     "index": member.index,
                     "name": member.name,
                     "label": member.label,
+                    "suggestion": suggested.get(member.index),
                     "thumbnail": _data_uri(best.thumbnail),
                     "faces": [card(v, seen[v]) for v in sorted(seen)],
                     "videos": len(seen),
