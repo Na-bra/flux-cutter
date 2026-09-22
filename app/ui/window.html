@@ -353,6 +353,7 @@
           <button class="ghost" id="splitBtn">Split…</button>
           <button class="ghost" id="renameBtn">Name…</button>
           <button class="ghost" id="discardBtn">Not a person</button>
+          <button class="ghost" id="reportBtn" hidden title="Who is in which video, and for how long">Report</button>
         </span>
       </div>
       <!-- Above the grid, next to the buttons that open it: below a cast of
@@ -649,6 +650,7 @@
   function drawPeople(d) {
     state.people = d.people;
     state.selected = [];
+    $("reportBtn").hidden = true;
     $("mergeBtn").hidden = $("splitBtn").hidden = $("discardBtn").hidden = false;
     $("question").hidden = true;
     $("pickedVideosLabel").hidden = $("pickedVideos").hidden = true;
@@ -786,6 +788,14 @@
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   $("mergeBtn").addEventListener("click", () => applyEdit("merge"));
+
+  // The season report: who is in which video, and for how long. Written
+  // beside the reels and opened, so it can be kept or sent on.
+  $("reportBtn").addEventListener("click", async () => {
+    const r = await pywebview.api.save_report($("folder").textContent);
+    if (!r.saved) { status("<b>" + esc(r.reason) + "</b>"); return; }
+    status("<b>Report saved.</b> " + r.people + " people across " + r.videos + " videos — " + esc(r.html));
+  });
   $("discardBtn").addEventListener("click", () => applyEdit("discard"));
 
   $("splitBtn").addEventListener("click", async () => {
@@ -853,6 +863,7 @@
     $("split").hidden = true;
     $("mergeBtn").hidden = $("splitBtn").hidden = $("discardBtn").hidden = false;
     $("fixups").hidden = !d.people.length;
+    $("reportBtn").hidden = false;
     updateFixups();
     $("galleryMeta").textContent = d.videoCount + " videos · sorted by screen time";
     if (!state.selected.length) {

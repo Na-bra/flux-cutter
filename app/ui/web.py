@@ -1143,6 +1143,41 @@ class Bridge:
             }
         return {"applied": True, **self._cast_payload(), "note": note}
 
+    def save_report(self, folder: str) -> dict:
+        """Writes the folder's season report beside the reels, and opens it.
+
+        Built from the cast as it stands -- names, merges and answers
+        included -- so it says what the window shows.
+        """
+        if self._busy() or self._folder is None:
+            return {"saved": False, "reason": "Scan a folder first."}
+        from app.report import season_report, write_csv, write_html
+
+        title = (
+            self._folder.videos[0].video_path.parent.name if self._folder.videos else "season"
+        ) or "season"
+        report = season_report(self._folder, self._answers, title=title)
+        directory = Path(folder.strip() or DEFAULT_OUTPUT_DIR).expanduser()
+        stem = _filename_part(title) or "season"
+        try:
+            csv_path = write_csv(report, directory / f"{stem}-report.csv")
+            html_path = write_html(report, directory / f"{stem}-report.html")
+        except OSError as error:
+            return {"saved": False, "reason": f"The report could not be written: {error}"}
+        try:
+            import webbrowser
+
+            webbrowser.open(html_path.resolve().as_uri())
+        except Exception:
+            pass
+        return {
+            "saved": True,
+            "html": str(html_path),
+            "csv": str(csv_path),
+            "people": len(report.rows),
+            "videos": len(report.videos),
+        }
+
     def start_folder_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
         if self._busy():
             return {"started": False, "reason": "already running"}
