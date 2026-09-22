@@ -3020,3 +3020,35 @@ until "Use Live Action's own values" put it back.
 
 Screen time left to the mode is worked out per video from its length, so
 it shows as Automatic, with the slider dimmed until someone sets a value.
+
+## 40. The season report (`app/report.py`)
+
+Once a folder is scanned, every episode's people are on disk and linked
+into one cast, so who is in which episode, and for how long, costs counting
+rather than scanning.
+
+**Screen time** in a video is the total of the person's appearance
+intervals there, built by the same function `timestamps` uses. Checked on
+the test season -- the 22-minute episode as two halves and a recap -- for
+the three biggest characters in both halves, against the real `timestamps`
+command on the same card:
+
+    report 239.90s   timestamps 239.91s      report 281.95s   timestamps 281.90s
+    report 136.48s   timestamps 136.47s      report 148.83s   timestamps 148.79s
+    report 143.58s   timestamps 143.60s      report  35.99s   timestamps  36.00s
+
+The largest difference, 0.05s, is `timestamps` rounding its printed times.
+
+**Repeats.** The backlog asked for both "matches timestamps" and "repeats
+count once", which disagree: a recap is real screen time in the episode
+that shows it. So each episode's figure includes it, and the total says how
+much of it repeats footage already counted earlier -- the lead's 9:43 with
+0:58 repeated, from the recap.
+
+From kept scans the whole report takes 0.6s for the three videos. It is a
+CSV (seconds to a tenth, for a spreadsheet) and a self-contained page --
+faces inlined, nothing fetched -- whose cells are shaded by each person's
+share of that episode's busiest, so each episode's leads stand out down its
+column. The name cell was first laid out as a flex box, which took it out
+of the table and let its row lines drift from the others'; it now wraps its
+contents instead.

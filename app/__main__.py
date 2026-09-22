@@ -551,6 +551,23 @@ def main():
         help="'show' lists what is kept, 'clear' deletes all of it.",
     )
 
+    report_parser = subparsers.add_parser(
+        "report", help="Who is in which video of a folder, and for how long."
+    )
+    report_parser.add_argument(
+        "video_paths", type=Path, nargs="+", help="A folder of videos, files, or a mix."
+    )
+    report_parser.add_argument("--mode", choices=mode_ids(), default=None)
+    report_parser.add_argument(
+        "--interval", type=float, default=0.5,
+        help="Seconds between sampled frames. 0.5, the window's own, reuses its scans.",
+    )
+    report_parser.add_argument("--recursive", action="store_true")
+    report_parser.add_argument(
+        "--output-dir", type=Path, default=Path("output/report"),
+        help="Where report.csv and report.html are written.",
+    )
+
     people_parser = subparsers.add_parser(
         "people", help="List or forget the people you have named."
     )
@@ -732,6 +749,41 @@ def main():
             found = find_model(spec)
             where = str(found.parent) if found else "not present - will download on first use"
             print(f"  {spec.description} ({spec.size_label})\n    {where}")
+        return
+
+    if args.command == "report":
+        from app.faces.cast import Answers
+        from app.report import clock, season_report, write_csv, write_html
+        from app.ui.folder import load_answers, scan_folder
+        from app.ui.worker import ScanSettings
+
+        settings = ScanSettings.for_mode(args.mode or DEFAULT_MODE, sample_interval=args.interval)
+        folder = scan_folder(
+            args.video_paths,
+            settings,
+            recursive=args.recursive,
+            on_video=lambda i, total, path: print(f"  [{i + 1}/{total}] {path.name}"),
+        )
+        try:
+            if not folder.videos:
+                print("No videos could be read.", file=sys.stderr)
+                sys.exit(1)
+            title = args.video_paths[0].name if len(args.video_paths) == 1 else ""
+            report = season_report(folder, load_answers(folder), title=title)
+            csv_path = write_csv(report, args.output_dir / "report.csv")
+            html_path = write_html(report, args.output_dir / "report.html")
+        finally:
+            folder.close()
+
+        print(f"\n{report.title}: {len(report.rows)} people across {len(report.videos)} videos")
+        for row in report.rows[:15]:
+            repeated = f"  ({clock(row.repeated)} repeated)" if row.repeated >= 0.5 else ""
+            print(f"  {row.label:<24} {clock(row.total):>8}  in {row.episodes} of {len(report.videos)}{repeated}")
+        if len(report.rows) > 15:
+            print(f"  ... and {len(report.rows) - 15} more")
+        for path, reason in folder.skipped:
+            print(f"  could not read {path.name}: {reason}")
+        print(f"\nWrote {csv_path} and {html_path}")
         return
 
     if args.command == "people":

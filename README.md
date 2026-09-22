@@ -501,6 +501,8 @@ python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
 
 Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid name people or merge, split and discard cards the grouping got wrong. Reference photos are command-line only for now, and a name you give a card here is what `batch --person` looks for across a folder. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
 
+**Season report.** In folder view, **Report** writes who is in which video, and for how long, beside your reels — a CSV and a page with each person's face — and opens the page. From the command line: `python -m app report season-1/`. Each figure is that person's screen time in that video as `timestamps` counts it; the total says how much of it is a recap of an earlier episode.
+
 **Advanced settings.** The **Advanced** button beside Sampling opens the three settings that change most what a scan finds — how alike two faces must be to count as one person, the least screen time worth a card, and the smallest face to look at — each described by what moving it does. They are kept per content type; the button shows how many you have changed, and one click puts them back. Left alone, the window scans exactly as the command line does and they share kept scans.
 
 **A whole folder.** Switch the source to **Folder**, pick a season, and scan: each episode is scanned (or its kept scan reused) and the window shows one card per person across all of them, with a strip of their face from each episode and how many they are in. Where two cards look alike but not clearly enough to join on their own, the window asks **Same person?** with the two faces side by side — nothing is guessed. Click a person to see their reel across the folder, name them once to name them in every episode, and export one reel. No photo of anyone is needed.
@@ -707,6 +709,10 @@ The next logical prototype milestones are:
 - ~~name the people, so a card is a person rather than a position~~
 - ~~cut one person out of a folder of videos into one reel, found by a name given in the window~~
 - ~~the same in the window: scan a folder, pick someone from one cast of face cards, answer "same person?" when a link is unclear~~
-- **next:** leave repeated footage (intros, recaps) out of a season reel, then snap cuts to shot boundaries so a reel holds the character's shots rather than both sides of every conversation
+- ~~leave repeated footage (recaps, openings) out of a season reel, and slivers of other shots off each cut~~
+- ~~remember the people you name, across every video~~
+- ~~tune detection in the window~~
+- ~~a season report: who is in which video, and for how long~~
+- **next:** look after named people in the window (rename, merge two names, forget one), then adjust or drop single cuts before exporting
 
 This roadmap may evolve as the prototype proves which stages need refinement.
