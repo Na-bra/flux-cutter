@@ -3052,3 +3052,97 @@ share of that episode's busiest, so each episode's leads stand out down its
 column. The name cell was first laid out as a flex box, which took it out
 of the table and let its row lines drift from the others'; it now wraps its
 contents instead.
+
+## 41. Reference moved out of the README
+
+The README had grown to 700 lines of this project's reasoning and
+measurements, most of it already here. What was only there is kept below,
+so the README can be about using FluxCutter.
+
+### Grouping's filters
+
+Three filters run after clustering, each added because of a failure on the
+22-minute test footage. A **consolidation pass** folds together groups whose
+centroids agree, which reunites one actor split across two clusters (there,
+the same character in and out of a costume mask). A **non-face filter**
+drops whole groups whose landmark geometry says they are not people --
+YuNet reports confident "faces" for backs of heads and for the show's logo,
+and because those fail the same way they cluster into a convincing phantom
+identity. A **minimum-screen-time cutoff** sets aside identities too brief to
+select. Together these took that video from 412 person cards to 165, then to
+about 40 once the cutoff applies. Every filter routes its rejects to the
+unassigned count rather than deleting them.
+
+Grouping depends on the sampling interval because tracking is what makes it
+work. On the 23-second test clip:
+
+| interval | detections | tracks | identity groups |
+| --- | --- | --- | --- |
+| 1.0s | 23 | 17 | 3 |
+| 0.5s | 49 | 33 | 4 |
+| 0.25s | 88 | 38 | 2 |
+
+At 1.0s, shots cut and faces jump between samples, so tracks mostly
+degenerate to length 1. The group counts stay in a small range because the
+screen-time cutoff scales with the interval; compare montages, not totals.
+
+### Tracking
+
+`app/faces/tracker.py` links each frame's detections to the previous
+frame's by box overlap (IoU >= 0.3): two faces at nearly the same place in
+consecutive samples are one person by continuity, a stronger signal than
+two single-frame embeddings. Each track is grouped as one unit by its
+averaged embedding. Two safeguards: a track survives one missed detection
+(`max_frame_gap`, default 1); and a candidate whose embedding is too unlike
+the track's *previous frame* breaks it even when the boxes overlap
+(`contradiction_floor`, 0.25), because a hard cut can put a different
+person in the same place. The previous frame rather than a running average,
+since an average is dominated by history once a track has run a second or
+two. When the veto misfires it errs cheaply: grouping can re-merge two split
+tracks, while a track that merged two people contaminates a centroid.
+
+### The detector
+
+YuNet at a 640x640 input, confidence 0.6, NMS 0.3, top_k 5000 -- the best
+precision and throughput seen on the 2160x2160 test clip. Frames are decoded
+as RGB but YuNet was trained on BGR, so `FaceDetector.detect` swaps
+channels. Feeding RGB straight through cost 7 of 23 detections on the test
+clip and degraded the landmarks that alignment depends on, dropping the best
+same-person similarity from 0.71 to 0.52. ArcFace is fed a crop warped onto a
+canonical 112x112 pose from those five landmarks, so this matters more now.
+
+Gallery thumbnails pad each detection by 0.08 on a 192x192 canvas, with a
+representative-sampling pass so adjacent samples do not flood the grid.
+
+### Why cuts are re-encoded
+
+A stream copy can only begin at a keyframe, and keyframes on real footage
+are far apart: on the 22-minute episode a median 2.67s (up to 7.84s), while
+the median appearance is 3.0s long, so a copied cut would open seconds early
+on somebody else. The 23-second clip is nearly all-intra (keyframes 0.03s
+apart) and hides this completely. On Apple silicon `h264_videotoolbox` ran
+about 3.6x faster than `libx264` for a whole reel, and about 5x on a
+12-second one (4.7s against 23.9s), which is why the window defaults to it
+there.
+
+A full run on that episode: 1057 detections for the lead, 173 appearance
+intervals (527.0s), 107 segments cut (662.2s), encoded in 180s at 3.67x
+realtime, peak memory 1.24 GB. The detect and embed pass (~7 minutes)
+dominated, not the cutting (~3 minutes).
+
+### Why Windows needs a Windows machine
+
+PyInstaller freezes the interpreter it runs on, so there is no
+cross-compiling. On an Apple silicon Mac, Wine would have to emulate x86 on
+ARM and host a PyInstaller run over OpenCV and PyAV; a Windows-on-ARM VM
+builds an ARM64 `.exe` most PCs cannot run; an x64 VM means whole-machine
+emulation. So the release workflow rents x64 Windows from GitHub.
+
+### The window's choices
+
+Folder and file name are separate fields because a folder is chosen once a
+session while the name follows the selected person; a name typed by hand
+survives clicking through the gallery. Quality is a named level because the
+two encoders' scales run opposite ways (`-crf` 0-51 lower is better, `-q:v`
+0-100 higher is better). Sampling defaults to 0.5s, as `export` does, since
+someone who opened a window wants a reel.
