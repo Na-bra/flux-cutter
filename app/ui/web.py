@@ -46,6 +46,7 @@ from app.ui.worker import (
     scan,
 )
 from app.faces import library
+from app.ui import tuning
 from app.faces.cast import Answers, CardRef
 from app.faces.edits import EditError
 from app.ui.folder import (
@@ -244,6 +245,7 @@ class Bridge:
             "folder": str(DEFAULT_OUTPUT_DIR),
             "filename": DEFAULT_FILENAME,
             "status": self._availability_text(self._mode),
+            "tuning": tuning.describe(self._mode),
         }
 
     def _availability_text(self, mode: str) -> str:
@@ -281,7 +283,38 @@ class Bridge:
         if mode not in MODES:
             return {"status": self._availability_text(self._mode)}
         self._mode = mode
-        return {"status": self._availability_text(mode)}
+        return {"status": self._availability_text(mode), "tuning": tuning.describe(mode)}
+
+    # ------------------------------------------------------------- tuning
+
+    def _tuned(self, interval: float) -> ScanSettings:
+        """The mode's settings, with whatever someone changed in Advanced."""
+        return tuning.apply(
+            ScanSettings.for_mode(self._mode, sample_interval=interval),
+            tuning.changed(self._mode),
+        )
+
+    def set_tuning(self, key: str, value=None) -> dict:
+        """Changes one Advanced setting for the current mode, or puts it back."""
+        if self._busy():
+            return {"applied": False, "reason": "Not while a job is running.", "tuning": tuning.describe(self._mode)}
+        try:
+            tuning.set_value(self._mode, key, value)
+        except (KeyError, ValueError, TypeError):
+            return {"applied": False, "reason": "That is not a setting.", "tuning": tuning.describe(self._mode)}
+        except OSError:
+            return {"applied": False, "reason": "The setting could not be saved.", "tuning": tuning.describe(self._mode)}
+        return {"applied": True, "tuning": tuning.describe(self._mode)}
+
+    def reset_tuning(self) -> dict:
+        """Puts every Advanced setting back to the current mode's own."""
+        if self._busy():
+            return {"applied": False, "reason": "Not while a job is running.", "tuning": tuning.describe(self._mode)}
+        try:
+            tuning.reset(self._mode)
+        except OSError:
+            return {"applied": False, "reason": "The settings could not be saved.", "tuning": tuning.describe(self._mode)}
+        return {"applied": True, "tuning": tuning.describe(self._mode)}
 
     # ---------------------------------------------------------------- scan
 
@@ -295,7 +328,7 @@ class Bridge:
 
         if mode in MODES:
             self._mode = mode
-        settings = ScanSettings.for_mode(self._mode, sample_interval=float(interval))
+        settings = self._tuned(float(interval))
         self._scan_settings = settings
         self._start(self._scan_worker, path, settings)
         return {"started": True}
@@ -614,7 +647,7 @@ class Bridge:
             if self._scan_result is not None
             else ScanSettings().sample_interval
         )
-        return ScanSettings.for_mode(self._mode, sample_interval=interval)
+        return self._tuned(interval)
 
     def edit_people(self, operation: str, tracks=None, name: str = "") -> dict:
         """Merges, splits or discards the chosen cards.
@@ -781,7 +814,7 @@ class Bridge:
 
         if mode in MODES:
             self._mode = mode
-        settings = ScanSettings.for_mode(self._mode, sample_interval=float(interval))
+        settings = self._tuned(float(interval))
         self._start(self._folder_worker, path, settings)
         return {"started": True}
 

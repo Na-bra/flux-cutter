@@ -2966,3 +2966,57 @@ shipped, leaving only the user's own.
 In the real window, episode 2's gallery opened with Lead?, Friend?,
 Glasses? and Ray? on their cards; choosing Glasses? asked in the rail, and
 That's them named the card.
+
+## 39. Detection settings in the window (`app/ui/tuning.py`)
+
+The window offered a mode and a sampling interval; every other setting was
+a command-line flag. The Advanced panel adds the three that change most
+what a scan finds, stores only what was changed, per mode, and applies it
+to every scan the window starts, one video or a folder.
+
+### What each does
+
+Measured on the 22-minute test episode at a 1s interval, every other
+setting at live action's own (38 people):
+
+    how alike (floor, merge moved with it)
+        0.25   38 people   lead's card 545 faces
+        0.35   38          538   (live action's own)
+        0.45   41          509
+        0.55   40          491
+    least screen time
+        1s    118 people   3s  48   automatic (7s here)  38
+        10s    35          30s 21   -- main cards identical at every value
+    smallest face
+        24px   41 people   lead's card 548
+        40px   38          538   (live action's own)
+        80px   18          442
+
+The descriptions in the panel were first written from what the settings
+are meant to do, and two were wrong. Lowering "how alike" did not reduce
+the number of cards here; it moved more of each person's faces onto their
+card. And a larger smallest face did not make anyone "recognised more
+reliably" -- it dropped people, and took the distant shots out of the
+cards that stayed. The panel now says what was measured.
+
+### How alike is two numbers
+
+The pipeline joins faces above a floor and later merges cards above a
+looser second threshold. Moved alone, the floor is partly undone:
+
+    floor 0.55, merge moved to 0.575   lead's card 491
+    floor 0.55, merge left at 0.375    lead's card 546
+
+so the one control moves both and keeps the gap each mode was tuned with.
+
+### Nothing changed means nothing changed
+
+Only changed values are stored, and a value set back to the mode's own
+counts as unchanged. With nothing changed the window builds exactly the
+settings the command line does, so the two still share kept scans --
+checked in the real window: the unchanged scan reused its kept one, the
+80px scan did not, and after a relaunch the 80px setting was still there
+until "Use Live Action's own values" put it back.
+
+Screen time left to the mode is worked out per video from its length, so
+it shows as Automatic, with the slider dimmed until someone sets a value.

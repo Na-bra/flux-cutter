@@ -268,6 +268,26 @@
      over the single-video gallery. */
   [hidden] { display: none !important; }
 
+  /* ---------------------------------------------------------- advanced */
+  .advanced-toggle { height: 18px; padding: 0 8px; font-size: .62rem; font-family: var(--mono); letter-spacing: .06em; text-transform: uppercase; font-weight: 500; margin-left: auto; }
+  .advanced-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+  .advanced-toggle .changed { color: var(--signal); }
+  .advanced { background: var(--surface); border-bottom: 1px solid var(--rule); padding: 12px 14px 14px; display: grid; gap: 10px; }
+  .advanced .knob { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 4px 16px; align-items: center; padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
+  @media (max-width: 860px) { .advanced .knob { grid-template-columns: minmax(0, 1fr) auto; } }
+  .advanced .knob .name { font-size: .84rem; font-weight: 600; }
+  .advanced .knob .name span { font-weight: 400; color: var(--muted); }
+  .advanced .knob .ways { grid-column: 1 / -1; font-size: .72rem; color: var(--faint); display: grid; gap: 1px; }
+  .advanced .knob input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .advanced .knob .value { font-family: var(--mono); font-size: .78rem; font-variant-numeric: tabular-nums; width: 17ch; display: flex; gap: 8px; align-items: baseline; justify-content: flex-end; }
+  /* Automatic screen time is worked out per video, so the handle's place
+     is not its value; dimmed until someone sets one. */
+  .advanced .knob input[type="range"].automatic { opacity: .45; }
+  .advanced .knob .value.changed b { color: var(--signal); }
+  .advanced .knob .value button { height: 20px; padding: 0 7px; font-size: .66rem; }
+  .advanced .foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: .74rem; color: var(--muted); }
+  .advanced .foot button { height: 24px; padding: 0 9px; font-size: .74rem; margin-left: auto; }
+
   /* A name offered from earlier videos: a question until someone answers. */
   .suggested { font-style: italic; color: var(--signal); font-weight: 500; }
   .suggest { margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--signal); border-radius: 5px; font-size: .76rem; color: var(--muted); }
@@ -301,7 +321,10 @@
       <select id="mode"></select>
     </div>
     <div class="field">
-      <label for="interval">Sampling</label>
+      <div class="labelrow">
+        <span><label for="interval">Sampling</label></span>
+        <button type="button" class="ghost advanced-toggle" id="advancedBtn" aria-expanded="false" aria-controls="advanced">Advanced</button>
+      </div>
       <select id="interval"></select>
     </div>
     <div class="field">
@@ -309,6 +332,10 @@
       <button class="primary" id="actionBtn">Scan for people</button>
     </div>
   </div>
+
+  <!-- The three settings that change most what a scan finds, for the
+       content type chosen, in the words of what they do. -->
+  <div class="advanced" id="advanced" hidden></div>
 
   <div class="status">
     <span class="msg" id="statusMsg">Starting…</span>
@@ -423,6 +450,7 @@
     $("folder").textContent = s.folder;
     $("fname").value = s.filename;
     status("<b>" + s.status + "</b>");
+    drawTuning(s.tuning);
     $("grid").innerHTML = "<p>Press Scan for people.</p>";
   });
 
@@ -478,6 +506,70 @@
   $("mode").addEventListener("change", async (e) => {
     const r = await pywebview.api.set_mode(e.target.value);
     status("<b>" + r.status + "</b>");
+    drawTuning(r.tuning);
+  });
+
+  // ------------------------------------------------------------ advanced
+
+  const modeName = () => $("mode").selectedOptions[0] ? $("mode").selectedOptions[0].textContent : "this mode";
+
+  function shown(row, value) {
+    if (value === null || value === undefined) return "Automatic";
+    const number = row.step < 1 ? Number(value).toFixed(2) : String(Math.round(value * 10) / 10);
+    return number + (row.unit ? " " + row.unit : "");
+  }
+
+  function drawTuning(rows) {
+    state.tuning = rows;
+    const changed = rows.filter(r => r.changed).length;
+    $("advancedBtn").innerHTML = "Advanced" + (changed ? ' <span class="changed">· ' + changed + "</span>" : "");
+    $("advanced").innerHTML = rows.map(r => `
+      <div class="knob" data-key="${r.key}">
+        <label class="name" for="tune-${r.key}">${esc(r.label)} <span>${esc(r.explains)}</span></label>
+        <input type="range" id="tune-${r.key}" min="${r.min}" max="${r.max}" step="${r.step}"
+          class="${r.value === null ? "automatic" : ""}"
+          value="${r.value === null ? 3 : r.value}" aria-describedby="ways-${r.key}">
+        <span class="value${r.changed ? " changed" : ""}">
+          <b id="shown-${r.key}">${shown(r, r.value)}</b>
+          ${r.changed ? `<button class="ghost" data-reset="${r.key}" title="Back to ${esc(modeName())}'s own: ${shown(r, r.own)}">Reset</button>` : ""}
+        </span>
+        <span class="ways" id="ways-${r.key}"><span>${esc(r.lower)}</span><span>${esc(r.higher)}</span></span>
+      </div>`).join("") + `
+      <div class="foot">
+        <span>For ${esc(modeName())}. The next scan uses these; a changed setting scans the video again rather than reusing a kept scan.</span>
+        <button class="ghost" id="tuneReset" ${changed ? "" : "disabled"}>Use ${esc(modeName())}'s own values</button>
+      </div>`;
+  }
+
+  $("advancedBtn").addEventListener("click", () => {
+    const open = $("advanced").hidden;
+    $("advanced").hidden = !open;
+    $("advancedBtn").setAttribute("aria-expanded", open);
+  });
+
+  // The readout follows the slider as it moves; the setting is kept when it is let go.
+  $("advanced").addEventListener("input", (e) => {
+    const knob = e.target.closest(".knob");
+    if (!knob || e.target.type !== "range") return;
+    const row = state.tuning.find(r => r.key === knob.dataset.key);
+    $("shown-" + row.key).textContent = shown(row, Number(e.target.value));
+  });
+
+  $("advanced").addEventListener("change", async (e) => {
+    const knob = e.target.closest(".knob");
+    if (!knob || e.target.type !== "range") return;
+    const r = await pywebview.api.set_tuning(knob.dataset.key, Number(e.target.value));
+    drawTuning(r.tuning);
+    if (!r.applied) status("<b>" + esc(r.reason) + "</b>");
+  });
+
+  $("advanced").addEventListener("click", async (e) => {
+    const one = e.target.closest("button[data-reset]");
+    const all = e.target.closest("#tuneReset");
+    if (!one && !all) return;
+    const r = one ? await pywebview.api.set_tuning(one.dataset.reset, null) : await pywebview.api.reset_tuning();
+    drawTuning(r.tuning);
+    if (!r.applied) status("<b>" + esc(r.reason) + "</b>");
   });
 
   $("actionBtn").addEventListener("click", async () => {
@@ -503,6 +595,7 @@
     $("actionBtn").textContent = "Cancel";
     $("exportBtn").disabled = true;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
+    document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
     document.querySelectorAll(".seg button").forEach(b => b.disabled = true);
   }
 
@@ -512,6 +605,7 @@
     $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
+    if (state.tuning) drawTuning(state.tuning);
     document.querySelectorAll(".seg button").forEach(b => b.disabled = false);
   }
 
