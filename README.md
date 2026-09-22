@@ -709,6 +709,10 @@ The next logical prototype milestones are:
 - ~~name the people, so a card is a person rather than a position~~
 - ~~cut one person out of a folder of videos into one reel, found by a name given in the window~~
 - ~~the same in the window: scan a folder, pick someone from one cast of face cards, answer "same person?" when a link is unclear~~
-- **next:** leave repeated footage (intros, recaps) out of a season reel, then snap cuts to shot boundaries so a reel holds the character's shots rather than both sides of every conversation
+- ~~leave repeated footage (recaps, openings) out of a season reel, and slivers of other shots off each cut~~
+- ~~remember the people you name, across every video~~
+- ~~tune detection in the window~~
+- ~~a season report: who is in which video, and for how long~~
+- **next:** look after named people in the window (rename, merge two names, forget one), then adjust or drop single cuts before exporting
 
 This roadmap may evolve as the prototype proves which stages need refinement.
