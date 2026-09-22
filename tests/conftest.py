@@ -83,3 +83,5 @@ def isolated_scan_cache(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("FLUXCUTTER_SCAN_DIR", str(tmp_path_factory.mktemp("scans")))
     # And the people library, which every saved scan now updates.
     monkeypatch.setenv("FLUXCUTTER_PEOPLE_DIR", str(tmp_path_factory.mktemp("people")))
+    # And the window's remembered detection settings.
+    monkeypatch.setenv("FLUXCUTTER_SETTINGS_DIR", str(tmp_path_factory.mktemp("settings")))
