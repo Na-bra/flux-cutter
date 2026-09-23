@@ -28,7 +28,7 @@ from pathlib import Path
 import webview
 
 from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
-from app.ui.macos import set_application_name
+from app.ui.macos import relaunch_from_bundle, set_application_icon, set_application_name
 from app.ui.worker import (
     apply_edit,
     frames_at,
@@ -87,6 +87,8 @@ QUALITY_LEVELS = ["Standard", "High", "Maximum"]
 SAMPLE_INTERVALS = [0.25, 0.5, 1.0, 2.0]
 
 WINDOW_TITLE = "FluxCutter"
+# The artwork the built app's icons are made from (packaging/make_icon.py).
+APP_ICON = Path(__file__).resolve().parents[2] / "packaging" / "icon.png"
 WINDOW_SIZE = (1120, 760)
 MINIMUM_SIZE = (900, 620)
 
@@ -1484,10 +1486,21 @@ class Bridge:
 
 def launch(video_path: Path | None = None) -> None:
     """Opens the FluxCutter window."""
+    # From a checkout on macOS, start again from a bundle named FluxCutter,
+    # or the Dock labels the icon "Python" whatever the process calls
+    # itself (app/ui/macos.py). Returns straight away everywhere else.
+    relaunch_from_bundle(
+        ["-m", "app", "ui", *([str(video_path)] if video_path else [])],
+        APP_ICON.with_suffix(".icns"),
+    )
     # Before the window exists: macOS reads the bundle name once, and an
     # unbundled Python process is called "Python" in the menu bar and the
     # Dock until told otherwise (app/ui/macos.py).
     set_application_name(WINDOW_TITLE)
+    # A built app's icon comes from its bundle; a checkout has no bundle of
+    # its own, so the Dock is handed the artwork directly.
+    if not getattr(sys, "frozen", False):
+        set_application_icon(APP_ICON)
 
     bridge = Bridge(video_path)
     window = webview.create_window(

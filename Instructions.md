@@ -3134,3 +3134,38 @@ Pressing "Back to the plan" returned 3 cuts and 1:23.
 Layout was measured in the window rather than eyeballed: at 1280 and at
 880 wide the rows neither overflow nor overlap, and the gallery never
 scrolls sideways.
+
+## 42. "Python" in the Dock, from a checkout
+
+Run from source, the window showed Python's rocket in the Dock and
+"Python" when the icon was hovered, though the menu bar already said
+FluxCutter (`app/ui/macos.py` renames the process for that).
+
+The icon was one call: `NSApplication.setApplicationIconImage_` with
+`packaging/icon.png`, read back after the window opened to make sure
+finishing the launch did not reset it (Python's rocket is a 256px image;
+ours came back at 1024 points).
+
+The label was not. `lsappinfo` showed macOS's own record of the process
+already saying FluxCutter everywhere -- display name, bundle name, even
+WebKit's helper as "FluxCutter Networking" -- and the process registers
+only once `NSApplication` exists, after the rename, so it was not a
+timing problem. What still said Python was the bundle on disk,
+`Python.app`, and the Dock names a tile after that. No running process can
+rename the file it was launched from.
+
+So a checkout now starts from a bundle that is called FluxCutter. On
+macOS, `launch()` builds `~/Library/Application Support/FluxCutter/dev/
+FluxCutter.app` once -- a copy of the interpreter stub from Python.app,
+FluxCutter's Info.plist and icon.icns, signed ad hoc because Apple silicon
+will not run the copy otherwise -- and re-executes itself through it with
+`__PYVENV_LAUNCHER__` set, which is how the stub learns which virtual
+environment it belongs to (the venv's own `python` sets the same
+variable). Framework Python finds its standard library through the
+framework it links to, not through where the stub sits, so the copy runs
+unchanged. The bundle is rebuilt only when the stub or the icon changes,
+which a Homebrew upgrade of Python does.
+
+Tried by hand before it was built in, and checked the only way the label
+can be without Accessibility permission: by hovering over it. It said
+FluxCutter. A built app is untouched; it has always been its own bundle.
