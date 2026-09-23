@@ -190,7 +190,11 @@ def pictured(vector, name, group_id=0, colour=(200, 120, 90)):
     crop[:] = colour
     from dataclasses import replace
 
-    group.representative_observation = replace(group.observations[0], face_crop=crop)
+    # One of the card's own observations, as a real scan's representative
+    # is: a kept scan saves the crop only for an observation it holds.
+    observation = replace(group.observations[0], face_crop=crop)
+    group.observations[0] = observation
+    group.representative_observation = observation
     return group
 
 
@@ -297,3 +301,30 @@ def test_not_them_is_kept_and_follows_the_person_through_a_rename():
 
     library.forget("Bald Man", from_scans=True)
     assert library.declined() == {}
+
+
+def test_people_named_before_pictures_were_kept_get_one_from_their_scan():
+    """Faceless in the panel otherwise, until each video was saved again."""
+    kept("s1", pictured(A, "Henry"))
+    people = library._read()
+    for entry in people.values():
+        entry.pop("pictures", None)
+    library._write(people)
+
+    henry = library.find("Henry")
+
+    assert len(henry.pictures) == 1
+
+
+def test_a_face_whose_scan_is_gone_is_looked_for_once():
+    library.remember("pruned", [card(A, "Henry")])
+    loads = []
+    real = scans.load
+    import unittest.mock as mock
+
+    with mock.patch.object(scans, "load", lambda key: loads.append(key) or real(key)):
+        library.known()
+        library.known()
+
+    assert loads == ["pruned"]
+    assert library.find("Henry").pictures == ()

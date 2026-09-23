@@ -222,10 +222,44 @@ def _without_empty(people: dict) -> dict:
     return {slot: entry for slot, entry in people.items() if entry.get("faces")}
 
 
+def _fill_in_pictures() -> None:
+    """Gives faces saved before pictures were kept a picture, once.
+
+    People named before 1.14 are in the library as vectors only, so the
+    People panel would list them faceless until each of their videos
+    happened to be saved again. Their kept scans still hold each card's
+    face, so the picture is read from there. A scan that is gone, or holds
+    no face for that name, is marked with an empty picture so it is not
+    looked for on every read.
+    """
+    from app import scans
+
+    people = _read()
+    changed = False
+    for entry in people.values():
+        pictures = entry.setdefault("pictures", {})
+        for key in entry.get("faces", {}):
+            if key in pictures:
+                continue
+            picture = ""
+            kept = scans.load(key)
+            if kept is not None:
+                named = [g for g in kept.groups if g.name and _is(entry, g.name)]
+                if named:
+                    picture = _picture(max(named, key=lambda g: len(g.observations))) or ""
+                if kept.video:
+                    entry.setdefault("videos", {}).setdefault(key, kept.video)
+            pictures[key] = picture
+            changed = True
+    if changed:
+        _write(people)
+
+
 def known(space: str | None = None) -> list[KnownPerson]:
     """Everyone named so far, in one embedding space or all of them."""
     try:
         _ensure()
+        _fill_in_pictures()
     except OSError:
         return []
     result = []
@@ -246,7 +280,7 @@ def known(space: str | None = None) -> list[KnownPerson]:
                 pictures=tuple(
                     (videos.get(key, ""), picture)
                     for key, picture in pictures.items()
-                    if key in entry.get("faces", {})
+                    if picture and key in entry.get("faces", {})
                 ),
                 video_names=tuple(videos[key] for key in entry["faces"] if videos.get(key)),
             )
