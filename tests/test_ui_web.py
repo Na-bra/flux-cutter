@@ -25,6 +25,7 @@ from PIL import Image
 
 from app.faces.detector import BoundingBox, FaceDetection
 from app.faces.grouper import FaceIdentityGroup, FaceObservation
+from app.video import cuts
 from app.ui.worker import (
     ExportSettings,
     Person,
@@ -43,7 +44,7 @@ from app.ui import web  # noqa: E402
 # ------------------------------------------------------------------ doubles
 
 
-def make_person(index: int) -> Person:
+def make_person(index: int, timestamps=(10.0, 10.5, 11.0)) -> Person:
     observations = [
         FaceObservation(
             embedding=np.ones(512, dtype=np.float32) / np.sqrt(512),
@@ -54,14 +55,14 @@ def make_person(index: int) -> Person:
             face_crop=np.zeros((80, 80, 3), dtype=np.uint8),
             source_timestamp=timestamp,
         )
-        for timestamp in (10.0, 10.5, 11.0)
+        for timestamp in timestamps
     ]
     return Person(
         index=index,
         thumbnail=Image.new("RGB", (32, 32)),
         detection_count=len(observations),
-        first_seen=10.0,
-        last_seen=11.0,
+        first_seen=min(timestamps),
+        last_seen=max(timestamps),
         group=FaceIdentityGroup(group_id=index, observations=observations),
     )
 
@@ -618,7 +619,9 @@ def test_pressing_export_builds_settings_the_worker_accepts(bridge, monkeypatch)
     answer = bridge.start_export("/tmp/reels", "out.mp4", "libx264", "Standard")
 
     assert answer == {"started": True}
-    path, settings = started[0]
+    path, settings, segments = started[0]
+    assert segments, "the reel's cuts go to the worker, not a re-plan"
+
     assert path == Path("/tmp/reels/out.mp4")
     assert settings.video_encoder == "libx264"
     assert isinstance(settings.quality, int)
@@ -877,7 +880,7 @@ def test_the_export_worker_makes_the_folder_and_reports_the_file(
     monkeypatch.setattr("app.ui.web.export", lambda *args, **kwargs: None)
     destination = tmp_path / "reels" / "out.mp4"
 
-    bridge._export_worker(destination, ExportSettings())
+    bridge._export_worker(destination, ExportSettings(), bridge._cut_segments())
 
     assert destination.parent.is_dir()
     assert window.emitted("onExported") is not None
@@ -894,7 +897,7 @@ def test_a_cancelled_export_says_so(bridge, tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.ui.web.export", cancelled)
 
-    bridge._export_worker(tmp_path / "out.mp4", ExportSettings())
+    bridge._export_worker(tmp_path / "out.mp4", ExportSettings(), bridge._cut_segments())
 
     assert window.emitted("onExportCancelled") is not None
     assert window.emitted("onExported") is None
@@ -911,7 +914,7 @@ def test_a_broken_export_reports_why(bridge, tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.ui.web.export", broken)
 
-    bridge._export_worker(tmp_path / "out.mp4", ExportSettings())
+    bridge._export_worker(tmp_path / "out.mp4", ExportSettings(), bridge._cut_segments())
 
     assert window.emitted("onFailed") is not None
     assert "the encoder is not available" in window.calls[-1]
@@ -1207,7 +1210,9 @@ def test_a_folder_export_reports_what_was_left_out(with_folder, monkeypatch, tmp
         lambda folder, person, output, **kwargs: (None, [(Path("/season-1/e2.mp4"), "it is 25.000fps")]),
     )
 
-    with_folder._folder_export_worker(tmp_path / "lead.mp4", ExportSettings())
+    with_folder._folder_export_worker(
+        tmp_path / "lead.mp4", ExportSettings(), cuts.plans_from_cuts(with_folder._cuts)
+    )
 
     exported = with_folder.window.emitted("onExported")
     assert exported["path"] == str(tmp_path / "lead.mp4")
@@ -1466,3 +1471,190 @@ def test_a_named_card_is_not_offered_a_name(bridge):
     result.people[0].group.name = "Someone"
 
     assert bridge._scan_payload(result)["people"][0]["suggestion"] is None
+
+
+# -------------------------------------------------------------- the cut list
+#
+# Selecting a card has always said "14 cuts, about 4:31" and then asked the
+# user to commit to all fourteen. These cover the third answer: the list
+# itself, edited, and cut as edited.
+
+
+# Four appearances far enough apart to stay four cuts, so dropping one
+# leaves a reel rather than nothing.
+APPEARANCES = [start + 0.5 * step for start in (10.0, 30.0, 50.0, 70.0) for step in range(5)]
+
+
+def picked(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    bridge._scan_result = ScanResult(
+        video_path=Path("/videos/episode.mp4"),
+        video_duration=120.0,
+        sample_interval=0.5,
+        people=[make_person(0, APPEARANCES), make_person(1, APPEARANCES)],
+    )
+    bridge.select_person(0, "")
+    return bridge
+
+
+def test_the_cut_list_is_the_reel_the_rail_just_described(bridge, monkeypatch):
+    chosen = picked(bridge, monkeypatch).select_person(1, "")
+    listed = bridge.cut_list()
+
+    assert listed["planned"] == chosen["cuts"] == len(listed["cuts"])
+    assert listed["kept"] == listed["planned"] and listed["dropped"] == 0
+    assert listed["reel"] == chosen["reel"]
+    assert listed["cuts"][0]["start"] < listed["cuts"][0]["end"]
+    assert listed["edited"] is False
+
+
+def test_dropping_a_cut_shortens_the_reel_without_losing_the_row(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    before = bridge.cut_list()
+
+    after = bridge.edit_cut(0, "drop")
+
+    assert after["kept"] == before["kept"] - 1
+    assert len(after["cuts"]) == len(before["cuts"])
+    assert after["cuts"][0]["dropped"] is True
+    assert after["reel"] != before["reel"] or before["planned"] == 1
+
+
+def test_the_export_cuts_what_is_left_rather_than_planning_again(bridge, monkeypatch):
+    """The whole point of the list: what was dropped does not come back
+    because the encoder asked the same question of the same people."""
+    picked(bridge, monkeypatch)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    planned = len(bridge._cuts)
+
+    bridge.edit_cut(0, "drop")
+    bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
+
+    _, _, segments = started[0]
+    assert len(segments) == planned - 1
+
+
+def test_a_reel_with_every_cut_dropped_does_not_start(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    for index in range(len(bridge._cuts)):
+        bridge.edit_cut(index, "drop")
+
+    answer = bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
+
+    assert answer["started"] is False
+    assert "dropped" in answer["reason"]
+
+
+def test_moving_an_end_moves_that_end_only(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    before = bridge._cuts[0]
+
+    bridge.edit_cut(0, "end+", "second")
+
+    assert bridge._cuts[0].start == before.start
+    assert bridge._cuts[0].end > before.end
+    assert bridge.cut_list()["cuts"][0]["changed"] is True
+
+
+def test_a_frame_is_a_smaller_step_than_a_second(bridge, monkeypatch):
+    """A frame is the video's own frame, so the page sends "frame" and the
+    bridge works out what that is worth."""
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(bridge, "_frame_of", lambda video: 1 / 24)
+    start = bridge._cuts[0].end
+
+    bridge.edit_cut(0, "end+", "frame")
+    by_frame = bridge._cuts[0].end - start
+    bridge.edit_cut(0, "end+", "second")
+    by_second = bridge._cuts[0].end - start - by_frame
+
+    assert 0 < by_frame < by_second
+
+
+def test_putting_one_cut_back(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    bridge.edit_cut(0, "end+", "second")
+    bridge.edit_cut(0, "drop")
+
+    restored = bridge.edit_cut(0, "restore")
+
+    assert restored["cuts"][0]["changed"] is False
+    assert restored["dropped"] == 0
+
+
+def test_starting_over_goes_back_to_the_plan(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    planned = bridge.cut_list()
+    bridge.edit_cut(0, "drop")
+    bridge.edit_cut(1, "start-", "second")
+
+    assert bridge.restore_cuts() == planned
+
+
+def test_choosing_someone_else_starts_from_their_own_plan(bridge, monkeypatch):
+    """Edits belong to the reel they were made on."""
+    picked(bridge, monkeypatch)
+    bridge.edit_cut(0, "drop")
+
+    bridge.select_person(0, "")
+    bridge.select_person(1, "")
+
+    assert bridge.cut_list()["dropped"] == 0
+
+
+def test_no_editing_while_an_export_runs(bridge, monkeypatch):
+    """The running job was handed its cuts when it started; accepting an
+    edit would say it had taken effect when it had not."""
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(bridge, "_busy", lambda: True)
+
+    assert bridge.edit_cut(0, "drop") == {"accepted": False}
+    assert bridge.cut_frames([0]) == {"frames": []}
+
+
+def test_a_nonsense_edit_is_refused(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+
+    assert bridge.edit_cut(99, "drop") == {"accepted": False}
+    assert bridge.edit_cut(0, "sideways") == {"accepted": False}
+
+
+def test_each_row_says_which_video_it_came_from(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    with_folder.select_cast_person(0, "")
+
+    listed = with_folder.cut_list()
+
+    assert {row["video"] for row in listed["cuts"]} <= {"e1.mp4", "e2.mp4"}
+    assert listed["planned"] == len(with_folder._cuts)
+
+
+def test_a_folder_export_cuts_the_edited_list(with_folder, monkeypatch):
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+    with_folder.select_cast_person(0, "")
+    started = []
+    monkeypatch.setattr(with_folder, "_start", lambda target, *args: started.append(args))
+    planned = len(with_folder._cuts)
+
+    with_folder.edit_cut(0, "drop")
+    with_folder.start_folder_export("/tmp", "lead.mp4", "libx264", "Standard")
+
+    _, _, plans = started[0]
+    assert sum(len(segments) for _, segments in plans) == planned - 1
+
+
+def test_frames_are_only_decoded_for_the_rows_asked_for(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    asked = []
+    monkeypatch.setattr(
+        web, "frames_at", lambda result, timestamps, width: asked.append(timestamps) or [None] * len(timestamps)
+    )
+
+    answer = bridge.cut_frames([0, 2])
+
+    assert [row["i"] for row in answer["frames"]] == [0, 2]
+    # Two per row: where it opens and where it ends.
+    assert len(asked[0]) == 4
