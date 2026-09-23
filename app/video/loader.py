@@ -3,7 +3,14 @@ from pathlib import Path
 import av
 
 
-SUPPORTED_EXTENSIONS = {".mp4", ".mov"}
+# What a video may be. MKV, WebM and AVI were held back until they could
+# be cut with the sound kept in step: WebM is often recorded at a variable
+# frame rate, which the cutter now places by timestamp (app/video/cutter.py).
+# Each is checked by cutting marked footage in tests/test_formats.py.
+SUPPORTED_EXTENSIONS = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".avi"}
+
+# The same list, for a file picker's filter.
+PICKER_PATTERN = ";".join(f"*{extension}" for extension in sorted(SUPPORTED_EXTENSIONS))
 
 
 class VideoLoadError(Exception):

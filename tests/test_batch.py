@@ -42,12 +42,16 @@ def reference(tmp_path):
 def test_a_folder_becomes_the_videos_inside_it(tmp_path):
     video(tmp_path, "b.mp4")
     video(tmp_path, "a.MOV")
+    video(tmp_path, "c.mkv")
+    video(tmp_path, "d.webm")
+    video(tmp_path, "e.avi")
     video(tmp_path, "notes.txt")
     video(tmp_path, "poster.jpg")
+    video(tmp_path, "old.flv")
 
     found = collect_videos([tmp_path])
 
-    assert [path.name for path in found] == ["a.MOV", "b.mp4"]
+    assert [path.name for path in found] == ["a.MOV", "b.mp4", "c.mkv", "d.webm", "e.avi"]
 
 
 def test_folders_are_searched_one_level_deep_unless_asked_otherwise(tmp_path):
@@ -70,7 +74,7 @@ def test_naming_a_folder_and_a_file_in_it_does_not_cut_the_reel_twice(tmp_path):
 def test_a_named_file_is_taken_as_given(tmp_path):
     """Even one this app would not open: refusing it belongs to the loader,
     which says why, rather than to a filter that drops it silently."""
-    odd = video(tmp_path, "episode.mkv")
+    odd = video(tmp_path, "episode.flv")
 
     assert collect_videos([odd]) == [odd]
 

@@ -87,6 +87,14 @@ class ClipProfile:
     height: int
     sample_rate: int | None
     layout: str | None
+    # True when the frames are not evenly spaced (see `_frame_spacing`).
+    # Such a video is placed on the reel by its frames' own timestamps
+    # rather than by counting them.
+    variable: bool = False
+    # The longest gap between two of its frames, in seconds: how long one
+    # of its frames can stay on screen, and so how far past a cut its
+    # sound has to be read.
+    longest_frame: float = 0.0
 
 
 # How far apart two frame rates may be and still count as one.
@@ -512,14 +520,107 @@ def probe_clip(video: Path | VideoSource, include_audio: bool = True) -> ClipPro
             if include_audio and source.streams.audio
             else None
         )
+        # Read before the stream is demuxed: the header's own figures.
+        width, height = picture.width, picture.height
+        declared = picture.average_rate
+        sample_rate = sound.rate if sound is not None else None
+        layout = sound.layout.name if sound is not None else None
+        variable, typical, longest = _frame_spacing(source, picture)
+        frame_rate = declared or Fraction(30, 1)
+        measured = _usual_rate(typical) if typical else None
+        if measured is not None and (
+            variable or abs(float(frame_rate) - float(measured)) > 0.05 * float(measured)
+        ):
+            # A variable video's declared rate is whatever its writer
+            # guessed, and a header can simply be wrong -- an AVI written
+            # with a millisecond clock declared 1000 fps. Where the header
+            # and the frames disagree, the frames win: the reel takes the
+            # rate the video mostly runs at.
+            frame_rate = measured
         return ClipProfile(
             path=path,
-            frame_rate=picture.average_rate or Fraction(30, 1),
-            width=picture.width,
-            height=picture.height,
-            sample_rate=sound.rate if sound is not None else None,
-            layout=sound.layout.name if sound is not None else None,
+            frame_rate=frame_rate,
+            width=width,
+            height=height,
+            sample_rate=sample_rate,
+            layout=layout,
+            variable=variable,
+            longest_frame=longest,
         )
+
+
+# A millisecond either way. Timestamps rounded to the millisecond are often
+# written into a far finer clock (the 22-minute test episode's are), so the
+# stream's own clock says nothing about how exact they are.
+ROUNDING_SECONDS = 0.0011
+
+# The rates video is made at. A variable video's usual rate is snapped to
+# the nearest of these when it is within half a percent of one: measured
+# from millisecond timestamps, 30 fps comes out a hair either side of it,
+# and a reel at 30.3 fps plays each cut 1% short.
+STANDARD_RATES = (
+    Fraction(24000, 1001), Fraction(24), Fraction(25), Fraction(30000, 1001),
+    Fraction(30), Fraction(48), Fraction(50), Fraction(60000, 1001), Fraction(60),
+)
+
+
+def _usual_rate(gap: float) -> Fraction:
+    rate = 1.0 / gap
+    nearest = min(STANDARD_RATES, key=lambda standard: abs(float(standard) - rate))
+    if abs(float(nearest) - rate) <= 0.005 * rate:
+        return nearest
+    return Fraction(rate).limit_denominator(1001)
+
+
+# Variable frame rate.
+#
+# The cutter copies frames one for one, or converts a constant rate by
+# counting (see `_write_segment`); both assume the frames are evenly
+# spaced. WebM from a browser or a screen recorder usually is not: thirty
+# frames a second while something moves, a handful while nothing does.
+# Counted as if even, the test file -- 30 fps and 10 fps in turns -- came
+# out at 9.6s of picture instead of 12, with its sound up to 1.5s adrift.
+#
+# So the spacing is read from the file first, which is cheap because it
+# only demuxes: every frame's timestamp, no pictures decoded -- 0.18s for
+# the 32,508 frames of the 22-minute test episode.
+#
+# The question is not whether the gaps are all equal but whether counting
+# would put a frame in the wrong place: a video is variable when some frame
+# sits more than half a frame from where even spacing, first frame to last,
+# says it should be. Gaps that merely wobble do not qualify. Millisecond
+# timestamps put 23.976 fps footage 41 and 42ms apart in turn (the test
+# episode, Matroska, WebM); the iPhone clip has one gap 1.7ms short in 981
+# frames. Neither is ever more than a millisecond or two off the grid, and
+# both keep the path they have always taken.
+def _frame_spacing(source, picture) -> tuple[bool, float, float]:
+    """(variable, usual gap, longest gap) between frames, in seconds.
+
+    The usual gap is the average of the gaps near the most common one --
+    not the most common gap itself, which millisecond rounding biases: at
+    30 fps the gaps are 33 and 34ms, and 33ms alone reads as 30.3 fps.
+    """
+    try:
+        stamps = sorted(
+            packet.pts for packet in source.demux(picture) if packet.pts is not None
+        )
+    except av.FFmpegError:
+        return False, 0.0, 0.0
+    finally:
+        source.seek(0)
+    if len(stamps) < 3:
+        return False, 0.0, 0.0
+    tick = float(picture.time_base)
+    times = [(stamp - stamps[0]) * tick for stamp in stamps]
+    gaps = [later - earlier for earlier, later in zip(times, times[1:])]
+    even = times[-1] / (len(times) - 1)
+    if even <= 0:
+        return False, 0.0, 0.0
+    off_grid = max(abs(moment - index * even) for index, moment in enumerate(times))
+    usual = sorted(gaps)[len(gaps) // 2]
+    regular = [gap for gap in gaps if abs(gap - usual) <= ROUNDING_SECONDS + usual / 100]
+    typical = sum(regular) / len(regular) if regular and usual > 0 else even
+    return off_grid > even / 2, typical, max(gaps)
 
 
 def same_frame_rate(first: Fraction, second: Fraction) -> bool:
@@ -618,10 +719,11 @@ def cut_clips(
                     else None
                 )
                 source_video.thread_type = "AUTO"
-                # None when this video's frames can be copied one for one.
+                # None when this video's frames can be copied one for one,
+                # or when they are placed by their timestamps instead.
                 source_rate = (
                     None
-                    if same_frame_rate(frame_rate, profile.frame_rate)
+                    if profile.variable or same_frame_rate(frame_rate, profile.frame_rate)
                     else profile.frame_rate
                 )
 
@@ -639,6 +741,7 @@ def cut_clips(
                         segment,
                         source_rate,
                         trim_slivers,
+                        profile.longest_frame if profile.variable else None,
                     )
                     exported_seconds += written
                     per_clip[id(clip)] += written
@@ -705,6 +808,7 @@ def _write_segment(
     segment: AppearanceInterval,
     source_rate: Fraction | None = None,
     trim_slivers: bool = True,
+    timed: float | None = None,
 ) -> float:
     """Encodes one segment into the open reel, returning its real duration.
 
@@ -712,6 +816,10 @@ def _write_segment(
         frame_rate: The reel's frame rate.
         source_rate: This video's frame rate when it differs from the
             reel's, in which case its frames are repeated or dropped to fit.
+        timed: Set for a video whose frames are unevenly spaced, to the
+            longest gap between two of them. Each frame then stays on
+            screen until the next one's timestamp, as a player shows it,
+            rather than for a counted share of the reel.
         trim_slivers: Leave out up to SLIVER_FRAMES of another shot at
             either edge. Frames are held back that many deep to decide the
             end; the sound follows the frames kept, since it is taken from
@@ -741,6 +849,8 @@ def _write_segment(
     longest_frame = 1.0 / float(
         min(frame_rate, source_rate) if source_rate is not None else frame_rate
     )
+    if timed is not None:
+        longest_frame = max(longest_frame, timed)
     audio_stop = end + longest_frame
     # For a converted source: frames read this segment, and reel frames
     # written for them.
@@ -761,11 +871,41 @@ def _write_segment(
     video_done = False
     audio_done = source_audio is None
 
+    # For a timed source: the frame decoded last, which cannot be written
+    # until the next one says how long it stays on screen.
+    held = None
+    last_gap = 1.0 / float(frame_rate)
+
+    def put(converted, copies: int) -> None:
+        nonlocal written_here
+        written_here += copies
+        for _ in range(copies):
+            converted.pts = int(round(counters.video / frame_rate / VIDEO_TIME_BASE))
+            converted.time_base = VIDEO_TIME_BASE
+            counters.video += 1
+            for packet in out_video.encode(converted):
+                output.mux(packet)
+
+    def slots_before(moment: float) -> int:
+        """Reel frames that start before `moment`, counted from the first."""
+        return int(round((moment - first_video_time) * float(frame_rate)))
+
     def emit(frame) -> int:
         """Writes one source frame to the reel, as many times as it covers."""
-        nonlocal first_video_time, last_video_time, read_here, written_here
+        nonlocal first_video_time, last_video_time, read_here, written_here, held, last_gap
         if first_video_time is None:
             first_video_time = frame.time
+        if timed is not None:
+            if frame.time > last_video_time:
+                last_gap = frame.time - last_video_time
+            last_video_time = frame.time
+            converted = _fit_frame(frame, out_video.width, out_video.height)
+            # The frame before this one was on screen until now. A frame
+            # due in the same reel slot as the one after it is dropped.
+            if held is not None:
+                put(held, max(0, slots_before(frame.time) - written_here))
+            held = converted
+            return 1
         last_video_time = frame.time
         converted = _fit_frame(frame, out_video.width, out_video.height)
         if source_rate is None:
@@ -845,8 +985,13 @@ def _write_segment(
         closing = [c for c in cuts if len(pending) - c <= SLIVER_FRAMES]
         if closing and written_frames + closing[0] >= MIN_KEPT_FRAMES:
             del pending[closing[0] :]
-        for held, _ in pending:
-            written_frames += emit(held)
+        for kept, _ in pending:
+            written_frames += emit(kept)
+
+    # A timed source's last frame lasts as long as the gap before it did:
+    # nothing after it in this segment says otherwise.
+    if held is not None:
+        put(held, max(0 if written_here else 1, slots_before(last_video_time + last_gap) - written_here))
 
     if audio_state is not None:
         audio_state.finish(first_video_time, output, counters)

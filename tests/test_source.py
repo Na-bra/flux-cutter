@@ -38,7 +38,7 @@ def fake_video(tmp_path):
 
 
 def test_an_unsupported_extension_is_refused(tmp_path):
-    path = tmp_path / "clip.mkv"
+    path = tmp_path / "clip.flv"
     path.write_bytes(b"x")
     with pytest.raises(VideoLoadError, match="Unsupported"):
         VideoSource(path)
