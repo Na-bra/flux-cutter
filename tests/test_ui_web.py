@@ -1658,3 +1658,122 @@ def test_frames_are_only_decoded_for_the_rows_asked_for(bridge, monkeypatch):
     assert [row["i"] for row in answer["frames"]] == [0, 2]
     # Two per row: where it opens and where it ends.
     assert len(asked[0]) == 4
+
+
+# ------------------------------------------------------ the People panel
+#
+# LIB-1: the people library, looked after from the window rather than only
+# from `people` and `people forget` on the command line.
+
+
+def _known(name, vector):
+    """Named in a video of their own, as two different people would be."""
+    from app.faces import library
+
+    group = folder_person(0, vector).group
+    group.name = name
+    library.remember(f"a-video-with-{name}", [group])
+
+
+def _named_scan(*people):
+    return ScanResult(
+        video_path=Path("/videos/s1e1.mp4"), video_duration=60.0, sample_interval=0.5,
+        people=list(people),
+    )
+
+
+def test_the_panel_lists_everyone_named_with_whom_they_can_merge_into(bridge):
+    _known("Coach", [1, 0, 0])
+    _known("Bald Man", [0.97, 0.1, 0])
+
+    listed = bridge.named_people()["people"]
+
+    assert [p["name"] for p in listed] == ["Bald Man", "Coach"]
+    coach = listed[1]
+    assert coach["mergeInto"] == ["Bald Man"]
+    assert coach["kind"] == "live action"
+
+
+def test_merging_two_names_asks_first_and_leaves_one(bridge):
+    window = FakeWindow(confirm=True)
+    bridge.window = window
+    _known("Coach", [1, 0, 0])
+    _known("Bald Man", [0.97, 0.1, 0])
+
+    answer = bridge.rename_named("Coach", "Bald Man")
+
+    assert answer["applied"] is True
+    assert answer["note"] == "Merged Coach into Bald Man."
+    assert [p["name"] for p in answer["people"]] == ["Bald Man"]
+
+
+def test_a_merge_turned_down_changes_nothing(bridge):
+    bridge.window = FakeWindow(confirm=False)
+    _known("Coach", [1, 0, 0])
+    _known("Bald Man", [0.97, 0.1, 0])
+
+    answer = bridge.rename_named("Coach", "Bald Man")
+
+    assert answer["applied"] is False
+    assert [p["name"] for p in bridge.named_people()["people"]] == ["Bald Man", "Coach"]
+
+
+def test_a_rename_reaches_the_cards_on_screen(bridge):
+    """The window's copy of the scan must say the new name too, or the next
+    correction saved from it writes the old one back."""
+    bridge.window = FakeWindow()
+    person = folder_person(0, [1, 0, 0], name="Coach")
+    person.group.name = "Coach"
+    bridge._scan_result = _named_scan(person, folder_person(1, [0, 1, 0]))
+    _known("Coach", [1, 0, 0])
+
+    answer = bridge.rename_named("Coach", "Mr Hale")
+
+    assert bridge._scan_result.people[0].name == "Mr Hale"
+    assert bridge._scan_result.people[0].group.name == "Mr Hale"
+    assert answer["video"]["people"][0]["name"] == "Mr Hale"
+
+
+def test_a_bad_name_is_explained(bridge):
+    bridge.window = FakeWindow()
+    _known("Coach", [1, 0, 0])
+
+    answer = bridge.rename_named("Coach", "")
+
+    assert answer["applied"] is False
+    assert answer["reason"]
+
+
+def test_forgetting_asks_then_clears_the_name_on_screen(bridge):
+    bridge.window = FakeWindow(confirm=True)
+    person = folder_person(0, [1, 0, 0], name="Coach")
+    person.group.name = "Coach"
+    bridge._scan_result = _named_scan(person)
+    _known("Coach", [1, 0, 0])
+
+    answer = bridge.forget_named("Coach")
+
+    assert answer["applied"] is True
+    assert answer["people"] == []
+    assert bridge._scan_result.people[0].name is None
+
+
+def test_not_them_is_still_respected_after_reopening(bridge):
+    """LIB-1's done-when: a "Not them" outlives the window."""
+    _known("Jamie", [1, 0, 0])
+    result = _named_scan(folder_person(0, [0.95, 0.05, 0]))
+    bridge._scan_result = result
+    assert bridge._scan_payload(result)["people"][0]["suggestion"] == "Jamie"
+
+    bridge.decline_suggestion(0, "Jamie")
+
+    reopened = web.Bridge()
+    assert reopened._scan_payload(result)["people"][0]["suggestion"] is None
+
+
+def test_nothing_is_renamed_while_a_job_runs(bridge, monkeypatch):
+    _known("Coach", [1, 0, 0])
+    monkeypatch.setattr(bridge, "_busy", lambda: True)
+
+    assert bridge.rename_named("Coach", "Mr Hale")["applied"] is False
+    assert bridge.forget_named("Coach")["applied"] is False

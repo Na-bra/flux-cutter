@@ -19,6 +19,7 @@ place rather than being re-implemented in JavaScript.
 """
 
 import base64
+import dataclasses
 import io
 import json
 import sys
@@ -210,8 +211,10 @@ class Bridge:
         self._questions: list = []
         # A list, as in one video: a reel can be of several people.
         self._cast_chosen: list[CastPerson] = []
-        # "Not them" to a suggested name, for this session: which card, by
-        # what does not change when the gallery renumbers, and which name.
+        # "Not them" to a suggested name: which card, by what does not
+        # change when the gallery renumbers, and which name. Saved in the
+        # people library so it holds after the window closes; this set is
+        # the fallback when the library cannot be written.
         self._declined: set[tuple] = set()
         # The reel the current selection would cut, as a list that can be
         # edited (app/video/cuts.py). Rebuilt whenever the selection
@@ -400,6 +403,20 @@ class Bridge:
     def _card_identity(result: ScanResult, person: Person) -> tuple:
         return (result.video_path.name, round(person.first_seen, 3), person.detection_count)
 
+    @classmethod
+    def _card_key(cls, result: ScanResult, person: Person) -> str:
+        """The same identity as a string, the form the library keeps."""
+        return "|".join(str(part) for part in cls._card_identity(result, person))
+
+    def _is_declined(self, result: ScanResult, person: Person, name: str, saved: dict) -> bool:
+        return (self._card_identity(result, person), name) in self._declined or (
+            self._card_key(result, person) in saved.get(name.casefold(), set())
+        )
+
+    def _decline(self, result: ScanResult, person: Person, name: str) -> None:
+        self._declined.add((self._card_identity(result, person), name))
+        library.decline(name, self._card_key(result, person))
+
     def _suggestions(self, result: ScanResult) -> dict[int, str]:
         """Names from earlier videos for this scan's unnamed cards, by index.
 
@@ -412,10 +429,11 @@ class Bridge:
             found = library.suggest([person.group for person in result.people], floor)
         except Exception:
             return {}
+        saved = library.declined()
         names = {}
         for suggestion in found:
             person = result.people[suggestion.card]
-            if (self._card_identity(result, person), suggestion.name) in self._declined:
+            if self._is_declined(result, person, suggestion.name, saved):
                 continue
             names[person.index] = suggestion.name
         return names
@@ -427,7 +445,7 @@ class Bridge:
         person = next((p for p in self._scan_result.people if p.index == int(index)), None)
         if person is None:
             return {"applied": False}
-        self._declined.add((self._card_identity(self._scan_result, person), name))
+        self._decline(self._scan_result, person, name)
         return {"applied": True, **self._scan_payload(self._scan_result)}
 
     def decline_cast_suggestion(self, index: int, name: str) -> dict:
@@ -438,7 +456,7 @@ class Bridge:
         if member is None:
             return {"applied": False}
         for video, card in member.appearances:
-            self._declined.add((self._card_identity(self._folder.videos[video], card), name))
+            self._decline(self._folder.videos[video], card, name)
         return {"applied": True, **self._cast_payload()}
 
     def _cast_suggestions(self) -> dict[int, str]:
@@ -450,6 +468,7 @@ class Bridge:
         """
         assert self._folder is not None
         by_card: dict[tuple[int, int], tuple[str, float]] = {}
+        saved = library.declined()
         floor = get_mode(self._folder.settings.mode).grouping.similarity_threshold
         for video, result in enumerate(self._folder.videos):
             try:
@@ -458,7 +477,7 @@ class Bridge:
                 continue
             for suggestion in found:
                 person = result.people[suggestion.card]
-                if (self._card_identity(result, person), suggestion.name) in self._declined:
+                if self._is_declined(result, person, suggestion.name, saved):
                     continue
                 by_card[(video, person.index)] = (suggestion.name, suggestion.similarity)
 
@@ -498,6 +517,130 @@ class Bridge:
             # saved rather than leaving the speed unexplained.
             "reused": result.reused,
             "originalSeconds": result.original_seconds,
+        }
+
+    # ---------------------------------------------------- the named people
+
+    def named_people(self) -> dict:
+        """Everyone named so far, for the People panel.
+
+        Each with a face from every video they were named in, so two
+        entries that are the same person look it -- which is how "Coach"
+        and "Bald Man" get noticed and merged.
+        """
+        try:
+            everyone = library.known()
+        except Exception:
+            everyone = []
+        return {
+            "people": [
+                {
+                    "name": person.name,
+                    "videos": person.videos,
+                    "kind": "animation" if person.space.startswith("ccip") else "live action",
+                    "faces": [
+                        {"video": video, "image": "data:image/jpeg;base64," + picture}
+                        for video, picture in person.pictures
+                    ],
+                    "videoNames": list(person.video_names),
+                    # Only someone in the same embedding space: a drawn face
+                    # and a filmed one are not comparable, so not mergeable.
+                    "mergeInto": [
+                        other.name
+                        for other in everyone
+                        if other.space == person.space and other.name != person.name
+                    ],
+                }
+                for person in everyone
+            ]
+        }
+
+    def rename_named(self, old: str, new: str) -> dict:
+        """Renames someone everywhere, or merges them into someone else.
+
+        A merge asks first, since two people made one cannot be told apart
+        again from here -- the faces are pooled under one name.
+        """
+        if self._busy():
+            return {"applied": False, "reason": "Not while a job is running."}
+        new = (new or "").strip()
+        existing = next(
+            (p for p in library.known() if p.name.casefold() == new.casefold()), None
+        )
+        merging = existing is not None and existing.name.casefold() != old.casefold()
+        if merging and self.window is not None:
+            if not self.window.create_confirmation_dialog(
+                f"Merge {old} into {existing.name}?",
+                f"Every face saved as {old} becomes {existing.name}, and the name "
+                f"changes on their cards in every video. Later scans will offer "
+                f"{existing.name} only.",
+            ):
+                return {"applied": False, "reason": None}
+        try:
+            count = library.rename(old, new)
+        except EditError as error:
+            return {"applied": False, "reason": str(error)}
+        if not count:
+            return {"applied": False, "reason": f"Nobody called {old} is saved."}
+        final = existing.name if merging else new
+        self._rename_on_screen(old, final)
+        note = f"Merged {old} into {final}." if merging else f"{old} is now {final}."
+        return {"applied": True, "note": note, **self.named_people(), **self._redraw()}
+
+    def forget_named(self, name: str) -> dict:
+        """Forgets someone, and takes the name off their cards so it stays forgotten."""
+        if self._busy():
+            return {"applied": False, "reason": "Not while a job is running."}
+        person = next((p for p in library.known() if p.name.casefold() == name.casefold()), None)
+        if person is None:
+            return {"applied": False, "reason": f"Nobody called {name} is saved."}
+        if self.window is not None and not self.window.create_confirmation_dialog(
+            f"Forget {person.name}?",
+            f"The name comes off their cards in {person.videos} "
+            f"video{'s' if person.videos != 1 else ''}, and later scans will not "
+            f"suggest it. The cards themselves stay.",
+        ):
+            return {"applied": False, "reason": None}
+        library.forget(person.name, from_scans=True)
+        self._rename_on_screen(person.name, None)
+        return {
+            "applied": True,
+            "note": f"Forgot {person.name}.",
+            **self.named_people(),
+            **self._redraw(),
+        }
+
+    def _rename_on_screen(self, old: str, new: str | None) -> None:
+        """The scans on screen, renamed as the kept ones just were.
+
+        The kept scans were rewritten on disk; these are the copies the
+        window drew from, and a correction or an export made next would
+        otherwise save the old name straight back.
+        """
+        def renamed(result: ScanResult) -> ScanResult:
+            people = []
+            for person in result.people:
+                if person.name and person.name.casefold() == old.casefold():
+                    person.group.name = new
+                    person = dataclasses.replace(person, name=new)
+                people.append(person)
+            return dataclasses.replace(result, people=people)
+
+        if self._scan_result is not None:
+            chosen = {p.index for p in self._selected}
+            self._scan_result = renamed(self._scan_result)
+            self._selected = [p for p in self._scan_result.people if p.index in chosen]
+        if self._folder is not None:
+            self._folder = dataclasses.replace(
+                self._folder, videos=[renamed(result) for result in self._folder.videos]
+            )
+            self._rebuild_cast()
+
+    def _redraw(self) -> dict:
+        """What each view should now draw, for whichever has something."""
+        return {
+            "video": self._scan_payload(self._scan_result) if self._scan_result is not None else None,
+            "folder": self._cast_payload() if self._folder is not None else None,
         }
 
     # ----------------------------------------------------------- selection
