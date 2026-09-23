@@ -602,6 +602,7 @@ def scan_or_reuse(
         min_detections=resolved_min_detections,
         created_at=time.time(),
         scan_seconds=scan_seconds,
+        video=Path(video_path).name,
     )
 
     # Only worth keeping if there is something in it. A scan that found no

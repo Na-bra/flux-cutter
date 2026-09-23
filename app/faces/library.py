@@ -26,6 +26,8 @@ names nothing until someone says yes.
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 from dataclasses import dataclass
@@ -56,6 +58,13 @@ def _path() -> Path:
     return library_dir() / "people.json"
 
 
+# A picture per person per video, for the window's People panel: small,
+# because it sits in a JSON file beside everyone else's and is drawn at
+# the size of a fingernail, and JPEG because a face crop is a photograph.
+PICTURE_SIZE = 72
+PICTURE_QUALITY = 82
+
+
 @dataclass(frozen=True)
 class KnownPerson:
     """Someone named in at least one video, with each face they were named on."""
@@ -64,6 +73,12 @@ class KnownPerson:
     space: str
     faces: np.ndarray  # (videos, dimensions), unit vectors
     videos: int
+    # (video file name, JPEG as base64) for each video that has a picture,
+    # in the order they were named. Empty for faces saved before pictures
+    # were kept, until that video is next saved.
+    pictures: tuple[tuple[str, str], ...] = ()
+    # Every video named in, by file name where it is known.
+    video_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -81,6 +96,24 @@ def _unit(vector) -> np.ndarray | None:
     vector = np.asarray(vector, dtype=np.float32).reshape(-1)
     norm = float(np.linalg.norm(vector))
     return vector / norm if norm > 0 else None
+
+
+def _picture(group) -> str | None:
+    """The card's own face, small, as base64 JPEG. None when there is none."""
+    representative = getattr(group, "representative_observation", None)
+    crop = getattr(representative, "face_crop", None)
+    if crop is None:
+        return None
+    try:
+        from PIL import Image
+
+        image = Image.fromarray(np.asarray(crop, dtype=np.uint8)).convert("RGB")
+        image.thumbnail((PICTURE_SIZE, PICTURE_SIZE))
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG", quality=PICTURE_QUALITY)
+        return base64.b64encode(buffer.getvalue()).decode("ascii")
+    except (ValueError, OSError, TypeError):
+        return None
 
 
 def _space_of(group) -> str | None:
@@ -130,17 +163,26 @@ def _write(people: dict) -> None:
     os.replace(temporary, path)
 
 
-def remember(scan_key: str, groups) -> None:
+def remember(scan_key: str, groups, video: str = "") -> None:
     """Records a kept scan's named cards, replacing what it said before.
 
     Called whenever a scan is saved. Best effort: a library that cannot be
     written only means a suggestion missed, never a scan lost.
+
+    Args:
+        video: The video's file name, for the People panel to show beside
+            the face. A save that does not know it keeps the one an
+            earlier save of the same scan recorded.
     """
     try:
         _ensure()
         people = _read()
+        known_as = video
         for entry in people.values():
             entry.get("faces", {}).pop(scan_key, None)
+            entry.get("pictures", {}).pop(scan_key, None)
+            known_as = known_as or entry.get("videos", {}).get(scan_key, "")
+            entry.get("videos", {}).pop(scan_key, None)
 
         named: dict[str, list] = {}
         for group in groups:
@@ -151,19 +193,33 @@ def remember(scan_key: str, groups) -> None:
             if face is None or space is None:
                 continue
             named.setdefault(f"{space}\n{group.name.casefold()}", []).append(
-                (group.name, space, face)
+                (group.name, space, face, group)
             )
         for slot, faces in named.items():
-            name, space, _ = faces[-1]
-            average = _unit(np.mean([f for _, _, f in faces], axis=0))
+            name, space, _, _ = faces[-1]
+            average = _unit(np.mean([f for _, _, f, _ in faces], axis=0))
             entry = people.setdefault(slot, {"name": name, "space": space, "faces": {}})
             entry["name"] = name
             entry["faces"][scan_key] = [round(float(x), 6) for x in average]
+            # The biggest card of that name in this video is the face most
+            # people would recognise them by.
+            largest = max((g for _, _, _, g in faces), key=lambda g: len(g.observations))
+            picture = _picture(largest)
+            if picture is not None:
+                entry.setdefault("pictures", {})[scan_key] = picture
+            if known_as:
+                entry.setdefault("videos", {})[scan_key] = known_as
 
-        people = {slot: entry for slot, entry in people.items() if entry.get("faces")}
+        people = _without_empty(people)
         _write(people)
     except OSError:
         pass
+
+
+def _without_empty(people: dict) -> dict:
+    """Drops people with no face left. Their "not them" answers go too,
+    because a name that is nobody's cannot be suggested to anybody."""
+    return {slot: entry for slot, entry in people.items() if entry.get("faces")}
 
 
 def known(space: str | None = None) -> list[KnownPerson]:
@@ -179,37 +235,171 @@ def known(space: str | None = None) -> list[KnownPerson]:
         faces = [np.asarray(f, dtype=np.float32) for f in entry.get("faces", {}).values()]
         if not faces:
             continue
+        videos = entry.get("videos", {})
+        pictures = entry.get("pictures", {})
         result.append(
             KnownPerson(
                 name=entry["name"],
                 space=entry["space"],
                 faces=np.stack(faces),
                 videos=len(faces),
+                pictures=tuple(
+                    (videos.get(key, ""), picture)
+                    for key, picture in pictures.items()
+                    if key in entry.get("faces", {})
+                ),
+                video_names=tuple(videos[key] for key in entry["faces"] if videos.get(key)),
             )
         )
     return sorted(result, key=lambda p: p.name.casefold())
 
 
-def forget(name: str) -> int:
+def forget(name: str, from_scans: bool = False) -> int:
     """Removes a name and every face saved under it. Returns how many went.
 
-    Only from the library: a card still carrying the name in a kept scan
-    keeps it, and naming someone again teaches the library afresh.
+    By default only from the library: a card still carrying the name in a
+    kept scan keeps it, and the next time that scan is saved the library
+    learns the name again. That is what `people forget` on the command
+    line has always done.
+
+    `from_scans` makes it stick, which is what the window wants: the name
+    comes off every card in every kept scan it was saved from, so nothing
+    teaches it back. The cards stay, unnamed.
+    """
+    try:
+        _ensure()
+        # Counted first: unnaming the cards re-indexes their scans, which
+        # already takes the person out of the library.
+        found = sum(1 for entry in _read().values() if _is(entry, name))
+        if from_scans:
+            _rename_in_scans(name, None)
+        people = _read()
+        remaining = {slot: entry for slot, entry in people.items() if not _is(entry, name)}
+        if len(remaining) != len(people):
+            _write(remaining)
+        return found
+    except OSError:
+        return 0
+
+
+def rename(old: str, new: str) -> int:
+    """Calls someone by another name, everywhere they were named.
+
+    If the new name is already somebody's, the two become one: their faces
+    are pooled, and every later scan offers the one name. That is the fix
+    for one face saved under two names -- "Coach" and "Bald Man" -- which
+    until now could only be undone by forgetting one of them.
+
+    The names on the cards are rewritten too, in every kept scan the person
+    was named in. The library is an index of those scans (see `remember`),
+    so renaming only here would last until one of them was next saved and
+    taught it the old name back. Faces whose scan has since been pruned are
+    moved by hand, since there is no card left to rename.
+
+    Returns:
+        How many videos the person was named in.
+
+    Raises:
+        app.faces.edits.EditError: If the new name cannot be used.
+    """
+    from app.faces.edits import EditError, clean_name
+
+    cleaned = clean_name(new)
+    if cleaned is None:
+        raise EditError("Give them a name, or use Forget to remove it.")
+    _ensure()
+    before = [entry for entry in _read().values() if _is(entry, old)]
+    if not before:
+        return 0
+    answered = {key for entry in before for key in entry.get("declined", [])}
+    videos = {key for entry in before for key in entry.get("faces", {})}
+
+    _rename_in_scans(old, cleaned)
+
+    # What is left under the old name came from scans that are no longer
+    # kept; the saves above re-indexed everything else.
+    people = _read()
+    for slot in [slot for slot, entry in people.items() if _is(entry, old)]:
+        entry = people.pop(slot)
+        target = people.setdefault(
+            f"{entry['space']}\n{cleaned.casefold()}",
+            {"name": cleaned, "space": entry["space"], "faces": {}},
+        )
+        for field in ("faces", "pictures", "videos"):
+            for key, value in entry.get(field, {}).items():
+                target.setdefault(field, {}).setdefault(key, value)
+    # "Not them" was said about the person, whatever they are called now.
+    for entry in people.values():
+        if _is(entry, cleaned):
+            entry["name"] = cleaned
+            entry["declined"] = sorted(set(entry.get("declined", [])) | answered)
+    _write(_without_empty(people))
+    return len(videos)
+
+
+def _is(entry: dict, name: str) -> bool:
+    return entry.get("name", "").casefold() == name.casefold()
+
+
+def _rename_in_scans(old: str, new: str | None) -> None:
+    """Renames (or, with None, unnames) every card called `old` in the
+    kept scans the library says it was named in. Saving each one
+    re-indexes it here through `remember`."""
+    from dataclasses import replace
+
+    from app import scans
+
+    keys = {
+        key
+        for entry in _read().values()
+        if _is(entry, old)
+        for key in entry.get("faces", {})
+    }
+    for key in sorted(keys):
+        kept = scans.load(key)
+        if kept is None:
+            continue
+        changed = False
+        for group in kept.groups:
+            if group.name and group.name.casefold() == old.casefold():
+                group.name = new
+                changed = True
+        if changed:
+            scans.save(key, replace(kept, groups=kept.groups))
+
+
+def decline(name: str, card: str) -> None:
+    """Remembers that one card is not this person, across sessions.
+
+    `card` is whatever the caller uses to tell a card apart from one run
+    of the app to the next. Kept with the person, so it follows them
+    through a rename or a merge and goes when they are forgotten.
     """
     try:
         _ensure()
         people = _read()
-        wanted = name.casefold()
-        remaining = {
-            slot: entry
-            for slot, entry in people.items()
-            if entry.get("name", "").casefold() != wanted
-        }
-        if len(remaining) != len(people):
-            _write(remaining)
-        return len(people) - len(remaining)
+        changed = False
+        for entry in people.values():
+            if _is(entry, name) and card not in entry.setdefault("declined", []):
+                entry["declined"].append(card)
+                changed = True
+        if changed:
+            _write(people)
     except OSError:
-        return 0
+        pass
+
+
+def declined() -> dict[str, set[str]]:
+    """Every "not them", as lowercased name -> the cards it was said of."""
+    try:
+        _ensure()
+    except OSError:
+        return {}
+    answers: dict[str, set[str]] = {}
+    for entry in _read().values():
+        if entry.get("declined"):
+            answers.setdefault(entry["name"].casefold(), set()).update(entry["declined"])
+    return answers
 
 
 def find(name: str, space: str | None = None) -> KnownPerson | None:

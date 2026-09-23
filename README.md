@@ -377,10 +377,25 @@ every video in the run.
 **Names carry over.** Everyone you name is remembered, by face, across every
 video you open — so season 2 knows who you named in season 1. After any
 scan, a card that looks like someone named before shows their name with a
-question mark; choose it and answer **That's them** or **Not them**.
+question mark; choose it and answer **That's them** or **Not them** — a
+"Not them" is kept, so that card is not asked about that name again.
 `batch --person` finds a name the same way when nobody in the folder has
-been given it yet. `python -m app people` lists everyone named, and
-`python -m app people forget NAME` removes one.
+been given it yet.
+
+**Looking after the names.** **People**, beside Content type in the window,
+lists everyone you have named with a face from each video they were named
+in, so two names that are one person look it. **Rename…** renames someone
+everywhere; **Merge into…** makes two names one person, pooling their faces
+so later scans offer only the one name; **Forget…** takes a name off every
+card it is on. Each change reaches the cards in every kept scan, not only
+the list, so saving a scan later cannot teach the old name back. From the
+command line:
+
+```bash
+python -m app people                          # everyone named, and in how many videos
+python -m app people rename Coach "Mr Hale"   # or into a saved name, to merge them
+python -m app people forget NAME              # from the list only; cards keep the name
+```
 
 ### 11. Scans are kept, not thrown away
 
@@ -718,6 +733,6 @@ The next logical prototype milestones are:
 - ~~tune detection in the window~~
 - ~~a season report: who is in which video, and for how long~~
 - ~~adjust or drop single cuts before exporting~~
-- **next:** look after named people in the window (rename, merge two names, forget one)
+- ~~look after named people in the window (rename, merge two names, forget one)~~
 
 This roadmap may evolve as the prototype proves which stages need refinement.

@@ -174,3 +174,126 @@ def test_the_people_command_lists_and_forgets(monkeypatch, capsys):
     cli.main()
     assert "Forgot Jamie Lee." in capsys.readouterr().out
     assert known() == []
+
+
+# ------------------------------------------------- looking after the names
+#
+# LIB-1. The library could only be seen and tidied from the command line,
+# and one face ended up saved as both "Coach" and "Bald Man" with no way
+# to make them one person but to forget one.
+
+
+def pictured(vector, name, group_id=0, colour=(200, 120, 90)):
+    """A card whose representative carries a face crop, as a real scan's does."""
+    group = card(vector, name, group_id=group_id)
+    crop = np.zeros((40, 32, 3), dtype=np.uint8)
+    crop[:] = colour
+    from dataclasses import replace
+
+    group.representative_observation = replace(group.observations[0], face_crop=crop)
+    return group
+
+
+def kept(key, *groups, video=""):
+    scans.save(key, CachedScan(groups=list(groups), frame_count=1, video=video))
+
+
+def test_each_face_comes_with_its_picture_and_its_video():
+    kept("s1", pictured(A, "Jamie"), video="s01e01.mp4")
+    kept("s2", pictured(face(1, 0.1, 0, 0), "Jamie"), video="s01e02.mp4")
+
+    jamie = library.find("Jamie")
+    assert [video for video, _ in jamie.pictures] == ["s01e01.mp4", "s01e02.mp4"]
+    assert jamie.video_names == ("s01e01.mp4", "s01e02.mp4")
+    import base64
+
+    assert base64.b64decode(jamie.pictures[0][1])[:2] == b"\xff\xd8"  # a JPEG
+
+
+def test_a_save_that_does_not_know_the_video_keeps_the_name_it_had():
+    """An edit to a scan kept before video names were recorded fills it in
+    once; later saves that pass nothing must not blank it again."""
+    kept("s1", pictured(A, "Jamie"), video="s01e01.mp4")
+    library.remember("s1", [pictured(A, "Jamie")])
+
+    assert library.find("Jamie").video_names == ("s01e01.mp4",)
+
+
+def test_renaming_renames_the_cards_so_it_lasts():
+    kept("s1", pictured(A, "Coach"), pictured(B, "Sam", group_id=1), video="e1.mp4")
+
+    assert library.rename("Coach", "Mr Hale") == 1
+
+    assert [p.name for p in known()] == ["Mr Hale", "Sam"]
+    names = [g.name for g in scans.load("s1").groups]
+    assert "Mr Hale" in names and "Coach" not in names
+    # Saving the scan again teaches nothing old back.
+    kept("s1", *scans.load("s1").groups, video="e1.mp4")
+    assert library.find("Coach") is None
+
+
+def test_two_names_for_one_face_become_one_person():
+    """The case this was built for, and its done-when: after the merge every
+    later scan is offered the one name."""
+    kept("s1", pictured(A, "Coach"), video="e1.mp4")
+    kept("s2", pictured(face(1, 0.05, 0, 0), "Bald Man"), video="e2.mp4")
+
+    library.rename("Coach", "Bald Man")
+
+    assert [p.name for p in known()] == ["Bald Man"]
+    assert library.find("Bald Man").videos == 2
+    offered = suggest([card(face(1, 0.02, 0, 0))], FLOOR)
+    assert [s.name for s in offered] == ["Bald Man"]
+
+
+def test_a_face_whose_scan_is_gone_still_moves_with_the_name():
+    library.remember("pruned", [card(A, "Coach")], video="old.mp4")
+
+    library.rename("Coach", "Mr Hale")
+
+    assert library.find("Mr Hale").video_names == ("old.mp4",)
+    assert library.find("Coach") is None
+
+
+def test_a_rename_needs_a_usable_name():
+    from app.faces.edits import EditError
+
+    kept("s1", pictured(A, "Coach"))
+    with pytest.raises(EditError):
+        library.rename("Coach", "   ")
+    with pytest.raises(EditError):
+        library.rename("Coach", "x" * 200)
+    assert library.find("Coach") is not None
+
+
+def test_forgetting_from_the_scans_takes_the_name_off_the_cards():
+    kept("s1", pictured(A, "Coach"), pictured(B, "Sam", group_id=1))
+
+    assert library.forget("Coach", from_scans=True) == 1
+
+    assert [g.name for g in scans.load("s1").groups].count("Coach") == 0
+    kept("s1", *scans.load("s1").groups)
+    assert library.find("Coach") is None
+    assert library.find("Sam") is not None
+
+
+def test_forgetting_only_the_library_is_what_the_command_line_does():
+    kept("s1", pictured(A, "Coach"))
+
+    library.forget("Coach")
+
+    assert library.find("Coach") is None
+    assert [g.name for g in scans.load("s1").groups] == ["Coach"]
+
+
+def test_not_them_is_kept_and_follows_the_person_through_a_rename():
+    kept("s1", pictured(A, "Coach"))
+
+    library.decline("Coach", "e2.mp4|10.0|40")
+    assert library.declined() == {"coach": {"e2.mp4|10.0|40"}}
+
+    library.rename("Coach", "Bald Man")
+    assert library.declined() == {"bald man": {"e2.mp4|10.0|40"}}
+
+    library.forget("Bald Man", from_scans=True)
+    assert library.declined() == {}

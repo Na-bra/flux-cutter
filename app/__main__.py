@@ -569,16 +569,21 @@ def main():
     )
 
     people_parser = subparsers.add_parser(
-        "people", help="List or forget the people you have named."
+        "people", help="List, rename or forget the people you have named."
     )
     people_parser.add_argument(
         "action",
         nargs="?",
         default="show",
-        choices=["show", "forget"],
-        help="'show' lists everyone named so far, 'forget NAME' removes one.",
+        choices=["show", "rename", "forget"],
+        help=(
+            "'show' lists everyone named so far; 'rename OLD NEW' renames one "
+            "everywhere, or makes them one person if NEW is already saved; "
+            "'forget NAME' removes one."
+        ),
     )
-    people_parser.add_argument("name", nargs="?", help="Who to forget.")
+    people_parser.add_argument("name", nargs="?", help="Who to rename or forget.")
+    people_parser.add_argument("new_name", nargs="?", help="Their new name, for rename.")
 
     # 'batch' command
     batch_parser = subparsers.add_parser(
@@ -789,6 +794,21 @@ def main():
     if args.command == "people":
         from app.faces import library
 
+        if args.action == "rename":
+            from app.faces.edits import EditError
+
+            if not args.name or not args.new_name:
+                parser.error('say who and what to: people rename OLD "NEW NAME"')
+            try:
+                videos = library.rename(args.name, args.new_name)
+            except EditError as error:
+                parser.error(str(error))
+            print(
+                f"{args.name} is now {args.new_name}, in {videos} video{'s' if videos != 1 else ''}."
+                if videos
+                else f"Nobody called {args.name!r} is saved."
+            )
+            return
         if args.action == "forget":
             if not args.name:
                 parser.error("say who to forget: people forget NAME")

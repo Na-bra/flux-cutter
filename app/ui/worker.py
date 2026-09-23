@@ -414,6 +414,7 @@ def scan(
             min_detections=resolved_min_detections,
             created_at=time.time(),
             scan_seconds=time.monotonic() - started,
+            video=video_path.name,
         )
         # A cancelled scan raises out of _scan_footage above, so anything
         # reaching here ran to the end of the footage and is complete.
@@ -558,6 +559,7 @@ def _keep_edited(scan_result: "ScanResult", settings: ScanSettings, gallery) -> 
                 existing,
                 groups=gallery.groups,
                 edited=True,
+                video=existing.video or scan_result.video_path.name,
             ),
         )
     except OSError:

@@ -320,6 +320,23 @@
   .cutrow.changed { border-color: var(--signal); }
   .cutrow.changed .len { color: var(--signal); }
 
+  /* --------------------------------------------------------- people */
+  .library { background: var(--surface); border-bottom: 1px solid var(--rule); padding: 12px 14px 14px; display: grid; gap: 8px; max-height: 42vh; overflow-y: auto; }
+  .library .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: .76rem; color: var(--muted); }
+  .library .head b { color: var(--ink); font-size: .84rem; }
+  .library .empty { font-size: .8rem; color: var(--muted); margin: 0; }
+  .known { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 14px; align-items: center; padding: 8px 0; border-top: 1px solid var(--rule); }
+  .known .faces { display: flex; gap: 3px; }
+  .known .faces img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; background: var(--sunk); display: block; }
+  .known .faces .more { font-family: var(--mono); font-size: .66rem; color: var(--faint); align-self: center; padding-left: 3px; }
+  .known .nameplate { display: grid; gap: 1px; min-width: 0; }
+  .known .nameplate b { font-size: .86rem; }
+  .known .nameplate span { font-size: .7rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .known .acts { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+  .known .acts button { height: 24px; padding: 0 9px; font-size: .74rem; }
+  .known .acts select { height: 24px; font-size: .74rem; padding: 0 6px; width: auto; }
+  @media (max-width: 860px) { .known { grid-template-columns: auto minmax(0, 1fr); } .known .acts { grid-column: 1 / -1; justify-content: flex-start; } }
+
   /* A name offered from earlier videos: a question until someone answers. */
   .suggested { font-style: italic; color: var(--signal); font-weight: 500; }
   .suggest { margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--signal); border-radius: 5px; font-size: .76rem; color: var(--muted); }
@@ -349,7 +366,10 @@
       </div>
     </div>
     <div class="field">
-      <label for="mode">Content type</label>
+      <div class="labelrow">
+        <span><label for="mode">Content type</label></span>
+        <button type="button" class="ghost advanced-toggle" id="libraryBtn" aria-expanded="false" aria-controls="library" title="Everyone you have named, across every video">People</button>
+      </div>
       <select id="mode"></select>
     </div>
     <div class="field">
@@ -368,6 +388,11 @@
   <!-- The three settings that change most what a scan finds, for the
        content type chosen, in the words of what they do. -->
   <div class="advanced" id="advanced" hidden></div>
+
+  <!-- Everyone named so far, across every video. Where two names that are
+       one person get noticed -- a face from each video sits beside each
+       name -- and made one. -->
+  <div class="library" id="library" hidden></div>
 
   <div class="status">
     <span class="msg" id="statusMsg">Starting…</span>
@@ -500,6 +525,8 @@
     $("fname").value = s.filename;
     status("<b>" + s.status + "</b>");
     drawTuning(s.tuning);
+    // Drawn hidden, so the button says how many are saved before it is opened.
+    drawLibrary(await pywebview.api.named_people());
     $("grid").innerHTML = "<p>Press Scan for people.</p>";
   });
 
@@ -646,7 +673,7 @@
     $("exportBtn").disabled = true;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
     document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
-    document.querySelectorAll(".seg button, #cuts button").forEach(b => b.disabled = true);
+    document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = true);
   }
 
   function idle() {
@@ -656,7 +683,7 @@
     $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
-    document.querySelectorAll(".seg button, #cuts button").forEach(b => b.disabled = false);
+    document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = false);
   }
 
   window.onStatus = (d) => status("<b>" + d.text + "</b>");
@@ -769,6 +796,7 @@
       state.drawn.folder = r;
       drawCast(r);
       status("<b>" + esc(r.note) + "</b>");
+      drawLibrary(await pywebview.api.named_people());
       return;
     }
     const r = await pywebview.api.edit_people("rename", [], typed);
@@ -776,6 +804,8 @@
     state.drawn.video = r;
     keepSelection(r);
     status("<b>" + r.note + "</b>");
+    // A name given on a card is a name saved: the panel says so at once.
+    drawLibrary(await pywebview.api.named_people());
   }
 
   // Redraws the gallery with the same cards still chosen: naming and
@@ -1232,5 +1262,89 @@
     const row = button.closest(".cutrow");
     const d = await pywebview.api.edit_cut(Number(row.dataset.i), button.dataset.act, stepOf());
     if (d.accepted) updateCuts(d);
+  });
+
+  // ------------------------------------------------------ named people
+  //
+  // The people library, looked after from here rather than only from the
+  // command line. A face from each video sits beside each name, so two
+  // names that are one person look it; Merge makes them one.
+
+  function drawLibrary(d) {
+    const people = d.people || [];
+    $("libraryBtn").innerHTML = "People" + (people.length ? ' <span class="changed">· ' + people.length + "</span>" : "");
+    if (!people.length) {
+      $("library").innerHTML = '<p class="empty">Nobody named yet. Choose a card and press <b>Name…</b> — the name is remembered here, and offered when they turn up in another video.</p>';
+      return;
+    }
+    $("library").innerHTML =
+      `<div class="head"><b>People you have named</b><span>Rename them, make two names one person, or forget a name. Changes reach their cards in every video.</span></div>` +
+      people.map(p => `
+      <div class="known" data-name="${esc(p.name)}">
+        <span class="faces">${p.faces.slice(0, 5).map(f =>
+          `<img src="${f.image}" alt="${esc(p.name)}${f.video ? " in " + esc(f.video) : ""}" title="${esc(f.video || p.name)}">`).join("")}
+          ${p.faces.length > 5 ? `<span class="more">+${p.faces.length - 5}</span>` : ""}</span>
+        <span class="nameplate">
+          <b>${esc(p.name)}</b>
+          <span>${p.videos} video${p.videos === 1 ? "" : "s"} · ${esc(p.kind)}${p.videoNames.length ? " · " + p.videoNames.map(esc).join(", ") : ""}</span>
+        </span>
+        <span class="acts">
+          <button type="button" class="ghost" data-act="rename">Rename…</button>
+          ${p.mergeInto.length ? `<select data-act="merge" aria-label="Merge ${esc(p.name)} into">
+            <option value="">Merge into…</option>
+            ${p.mergeInto.map(n => `<option value="${esc(n)}">${esc(n)}</option>`).join("")}
+          </select>` : ""}
+          <button type="button" class="ghost" data-act="forget">Forget…</button>
+        </span>
+      </div>`).join("");
+  }
+
+  async function openLibrary() {
+    drawLibrary(await pywebview.api.named_people());
+    $("library").hidden = false;
+    $("libraryBtn").setAttribute("aria-expanded", "true");
+  }
+
+  $("libraryBtn").addEventListener("click", () => {
+    if ($("library").hidden) { openLibrary(); return; }
+    $("library").hidden = true;
+    $("libraryBtn").setAttribute("aria-expanded", "false");
+  });
+
+  // Every change here can rename cards already drawn, in either view.
+  function afterLibrary(r) {
+    if (!r.applied) {
+      if (r.reason) status("<b>" + esc(r.reason) + "</b>");
+      return;
+    }
+    drawLibrary(r);
+    if (r.video) state.drawn.video = r.video;
+    if (r.folder) state.drawn.folder = r.folder;
+    if (state.view === "folder" && r.folder) drawCast(r.folder);
+    if (state.view === "video" && r.video) keepSelection(r.video);
+    status("<b>" + esc(r.note) + "</b>");
+  }
+
+  $("library").addEventListener("click", async (e) => {
+    const button = e.target.closest("button[data-act]");
+    if (!button) return;
+    const name = button.closest(".known").dataset.name;
+    if (button.dataset.act === "rename") {
+      const typed = window.prompt(
+        "What should " + name + " be called? Type another saved name to make them one person.", name);
+      if (typed === null || typed.trim() === name) return;
+      afterLibrary(await pywebview.api.rename_named(name, typed));
+    } else if (button.dataset.act === "forget") {
+      afterLibrary(await pywebview.api.forget_named(name));
+    }
+  });
+
+  $("library").addEventListener("change", async (e) => {
+    const select = e.target.closest("select[data-act=merge]");
+    if (!select || !select.value) return;
+    const name = select.closest(".known").dataset.name;
+    const into = select.value;
+    select.value = "";
+    afterLibrary(await pywebview.api.rename_named(name, into));
   });
 </script>

@@ -223,6 +223,11 @@ class CachedScan:
     # are no longer only what the clustering said -- and that is the
     # point: a correction the user made must outlive the window.
     edited: bool = False
+    # The video's file name when it was scanned. The key is a hash and says
+    # nothing a person could read; this is what the people library shows
+    # beside a face to say which video it was named in. Empty for scans
+    # kept before it was recorded.
+    video: str = ""
 
 
 # ------------------------------------------------------------- writing it
@@ -345,6 +350,7 @@ def save(key: str, scan: CachedScan) -> Path:
         ),
         "min_detections": int(scan.min_detections),
         "edited": bool(scan.edited),
+        "video": str(scan.video),
         "groups": manifest_groups,
     }
 
@@ -362,7 +368,7 @@ def save(key: str, scan: CachedScan) -> Path:
     # so naming, renaming and clearing need nothing of their own there.
     from app.faces import library
 
-    library.remember(key, scan.groups)
+    library.remember(key, scan.groups, video=scan.video)
 
     prune()
     return destination
@@ -457,6 +463,7 @@ def load(key: str) -> CachedScan | None:
         video_duration=manifest["video_duration"],
         min_detections=manifest.get("min_detections", 0),
         edited=manifest.get("edited", False),
+        video=manifest.get("video", ""),
         created_at=manifest["created_at"],
         scan_seconds=manifest["scan_seconds"],
     )

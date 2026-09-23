@@ -3169,3 +3169,70 @@ which a Homebrew upgrade of Python does.
 Tried by hand before it was built in, and checked the only way the label
 can be without Accessibility permission: by hovering over it. It said
 FluxCutter. A built app is untouched; it has always been its own bundle.
+
+## 43. Looking after the named people (`app/faces/library.py`)
+
+The people library (§38) could only be seen and tidied from the command
+line, and testing it had already shown why that mattered: one face ended
+up saved as both "Coach" and "Bald Man", and the only fix was to forget
+one. "Not them" to a suggested name also lasted only as long as the window
+was open. The window now has a **People** panel, beside Content type the
+way Advanced sits beside Sampling.
+
+### Changes reach the cards, not only the list
+
+The library is an index of the kept scans: every save of a scan re-derives
+that scan's names in it (`remember`). So a rename made only in the library
+lasts until one of those scans is next saved -- by the next merge, split or
+naming in that video -- and then the old name is taught straight back.
+`rename` and the window's `forget` therefore rewrite the names on the cards
+in every kept scan the person was named in, and let the saves re-index;
+faces whose scan has since been pruned are moved by hand, since there is
+no card left to rename. The window's own copies of the scans on screen are
+renamed too, or the next correction saved from them would write the old
+name back from memory.
+
+`people forget` on the command line keeps its old meaning -- the list
+only, cards keep the name -- because that is what it has always said it
+does. The window's Forget asks first and says the name comes off the cards.
+
+### Merge is a rename into a name already saved
+
+Two people become one by renaming one of them to the other's name: the
+faces pool under that name (one per video, as before), and every later
+scan is offered only it -- LIB-1's done-when. Only people in the same
+embedding space are offered as merge targets, since a drawn face and a
+filmed one are not comparable. Merging asks first; there is no unmerging
+from the list, only from the cards.
+
+### Pictures, and where they were named
+
+The library held faces as vectors, which nobody can recognise. It now
+keeps a 72px JPEG of each named card's representative face per video
+(about 2 KB), and the video's file name. Kept scans record that name now
+(`CachedScan.video`); the key is a hash and says nothing a person could
+read. Scans kept before this fill it in on their next save, and a save
+that does not know the name keeps the one recorded earlier.
+
+### "Not them" is kept with the person
+
+A declined suggestion is stored under the person it was declined for,
+keyed by the card's video name, first appearance and detection count -- the
+identity the window already used within a session. Kept with the person
+rather than beside them, so it follows a rename or a merge and goes when
+they are forgotten.
+
+### Driven
+
+In the real window, against scratch folders so the real library was never
+touched (checked by its checksum afterwards): two cards on test.mp4 named
+Coach and Bald Man; the panel showed both with their pictures and
+"1 video · live action · test.mp4"; Merge into asked "Merge Coach into Bald
+Man?", after which the panel, both cards and the kept scan on disk said
+Bald Man; Rename made all three say Mr Hale; Forget asked, then emptied the
+panel and took the name off both cards and out of the kept scan. Layout was
+measured at 1280 and 880 wide: no row overflows or overlaps.
+
+The first run found a race in the driving script rather than the window:
+it pressed Scan before the page had finished setting itself up, and the
+press was ignored. It now waits for the page to say it is ready.
