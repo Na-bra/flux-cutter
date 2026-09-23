@@ -499,6 +499,8 @@ python -m app ui                                  # or: python -m app.ui
 python -m app ui assets/test-videos/test_3.mp4    # with a video preloaded
 ```
 
+On macOS a run from a checkout restarts itself once from a small `FluxCutter.app` it keeps in `~/Library/Application Support/FluxCutter/dev`, so the Dock shows FluxCutter's icon and name rather than Python's; a built app is its own bundle already.
+
 Pick a video, press **Scan for people**, click a face, press **Export reel**. Clicking a second face adds it to the reel rather than replacing the first, and the buttons above the grid name people or merge, split and discard cards the grouping got wrong. Reference photos are command-line only for now, and a name you give a card here is what `batch --person` looks for across a folder. The card grid is the same identity gallery the `group` command writes to a montage, and selecting a card tells you what you are about to get — `Person #2 selected - 14 cuts, about 4:31 of footage` — before you commit to an encode that runs for minutes.
 
 **Season report.** In folder view, **Report** writes who is in which video, and for how long, beside your reels — a CSV and a page with each person's face — and opens the page. From the command line: `python -m app report season-1/`. Each figure is that person's screen time in that video as `timestamps` counts it; the total says how much of it is a recap of an earlier episode.
