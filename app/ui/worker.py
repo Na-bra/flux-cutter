@@ -780,34 +780,54 @@ def _preview_container(scan_result: "ScanResult"):
 
 def _frames_at(scan_result: "ScanResult", timestamps: list[float], width: int):
     """Decodes one frame at each timestamp, by seeking to each in turn."""
-    frames = []
+    return [found for found in _sought(scan_result, timestamps, width) if found]
+
+
+def frames_at(
+    scan_result: "ScanResult", timestamps: list[float], width: int
+) -> list["Image.Image | None"]:
+    """One picture per timestamp, keeping its place when there is none.
+
+    The filmstrip can drop a frame it failed to decode, because it shows
+    whatever it got. A cut list cannot: each picture belongs to the row
+    that asked for it, and a dropped one would shift every picture after
+    it up a row and show the wrong footage beside the wrong times.
+    """
+    return [None if found is None else found[1] for found in _sought(scan_result, timestamps, width)]
+
+
+def _sought(scan_result: "ScanResult", timestamps: list[float], width: int):
+    """(time, picture) for each timestamp, or None where nothing decoded."""
     container = _preview_container(scan_result)
     if container is None:
-        return []
+        return [None] * len(timestamps)
     with container:
         stream = next(
             (s for s in container.streams if s.type == "video"), None
         )
         if stream is None:
-            return []
+            return [None] * len(timestamps)
         time_base = stream.time_base
 
+        found = []
         for wanted in timestamps:
             container.seek(int(wanted / time_base), stream=stream)
-            for frame in container.decode(stream):
-                if frame.time is None:
-                    continue
-                # The first frame at or after the target. Seeking lands on
-                # the keyframe before it, so this decodes forward.
-                if frame.time + 1e-6 < wanted:
-                    continue
-                image = Image.fromarray(frame.to_ndarray(format="rgb24"))
-                height = max(1, round(image.height * width / image.width))
-                frames.append(
-                    (float(frame.time), image.resize((width, height)))
-                )
-                break
-    return frames
+            found.append(_decode_from(container, stream, wanted, width))
+    return found
+
+
+def _decode_from(container, stream, wanted: float, width: int):
+    for frame in container.decode(stream):
+        if frame.time is None:
+            continue
+        # The first frame at or after the target. Seeking lands on the
+        # keyframe before it, so this decodes forward.
+        if frame.time + 1e-6 < wanted:
+            continue
+        image = Image.fromarray(frame.to_ndarray(format="rgb24"))
+        height = max(1, round(image.height * width / image.width))
+        return float(frame.time), image.resize((width, height))
+    return None
 
 
 # How many tracks a split picker shows at once. A person on a 22-minute
@@ -877,6 +897,7 @@ def export(
     settings: ExportSettings | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
+    segments: list | None = None,
 ):
     """Cuts one or more people's appearances into a single reel.
 
@@ -890,6 +911,12 @@ def export(
         on_progress: Called as (fraction, cuts_done, cuts_total) after
             each segment is encoded.
         cancel: Set it to stop after the current segment finishes.
+        segments: Cut these instead of planning from `person`. This is how
+            an edited cut list (app/video/cuts.py) reaches the encoder:
+            the window hands back the plan it showed, minus what was
+            dropped and with whatever ends were moved, rather than having
+            the plan derived a second time from people it no longer
+            matches.
 
     Raises:
         Cancelled: If `cancel` was set during the encode.
@@ -900,12 +927,13 @@ def export(
     """
     settings = settings or ExportSettings()
 
-    _, segments = plan_export(
-        person,
-        video_duration=scan_result.video_duration,
-        sample_interval=scan_result.sample_interval,
-        settings=settings,
-    )
+    if segments is None:
+        _, segments = plan_export(
+            person,
+            video_duration=scan_result.video_duration,
+            sample_interval=scan_result.sample_interval,
+            settings=settings,
+        )
 
     def report(index: int, total: int, _segment) -> None:
         if cancel is not None and cancel.is_set():

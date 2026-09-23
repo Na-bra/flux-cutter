@@ -438,6 +438,21 @@ def plan_cast_export(
     Leaving out what an earlier video in the reel has already shown -- see
     `repeated_seconds` for how much that is.
     """
+    plans, _ = _planned(folder, person, settings)
+    return [(folder.videos[video], segments) for video, segments in plans]
+
+
+def plan_cast_by_video(
+    folder: FolderScan,
+    person: CastPerson,
+    settings: ExportSettings | None = None,
+) -> list[tuple[int, list]]:
+    """The same plan, by folder position rather than by scan.
+
+    A cut list holds a number, not a ScanResult: the window sends one back
+    with every edit, and a ScanResult is neither hashable nor cheap to
+    compare (its people carry embeddings). See app/video/cuts.py.
+    """
     return _planned(folder, person, settings)[0]
 
 
@@ -461,8 +476,7 @@ def _planned(folder, person, settings):
         )
         per_video.append((video, segments))
     trimmed, removed = without_repeats(per_video, folder.repeats)
-    plans = [(folder.videos[video], segments) for video, segments in trimmed if segments]
-    return plans, removed
+    return [(video, segments) for video, segments in trimmed if segments], removed
 
 
 def export_cast(
@@ -472,11 +486,17 @@ def export_cast(
     settings: ExportSettings | None = None,
     on_progress=None,
     cancel: threading.Event | None = None,
+    plans: list[tuple[int, list]] | None = None,
 ) -> tuple[CutResult, list[tuple[Path, str]]]:
     """Cuts one person out of every video they are in, into one reel.
 
     A video that cannot be read is left out and said so, rather than taking
     the whole reel down. One at another frame rate is converted by the cut.
+
+    Args:
+        plans: Cut these (video position, segments) instead of planning
+            for `person` again -- how an edited cut list reaches the
+            encoder. See app/video/cuts.py.
 
     Returns:
         The cut, and the videos left out with the reason for each.
@@ -486,7 +506,11 @@ def export_cast(
         CutterError: If nothing is left to cut, or the cut fails.
     """
     settings = settings or ExportSettings()
-    plans = plan_cast_export(folder, person, settings)
+    plans = (
+        [(folder.videos[video], segments) for video, segments in plans]
+        if plans is not None
+        else plan_cast_export(folder, person, settings)
+    )
 
     usable, left_out = [], []
     for result, segments in plans:

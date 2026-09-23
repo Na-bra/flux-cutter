@@ -3052,3 +3052,85 @@ share of that episode's busiest, so each episode's leads stand out down its
 column. The name cell was first laid out as a flex box, which took it out
 of the table and let its row lines drift from the others'; it now wraps its
 contents instead.
+
+## 41. Editing the cuts before exporting (`app/video/cuts.py`)
+
+Everything upstream decides what a reel *should* contain, and the chain is
+long: `build_appearance_intervals` says when the person was on screen,
+`merge_for_export` widens and bridges that into segments worth cutting,
+`without_repeats` drops what an earlier episode already showed, and the
+cut itself trims slivers of the neighbouring shot off each edge. Each of
+those is a rule, and each was measured. They are still rules, and a reel
+of a 22-minute episode is a hundred cuts or more: a handful are wrong in
+ways no threshold can know -- the cut that opens on the back of a head,
+the one that runs past the line, the one that caught the wrong person.
+
+Until now the only answers were to correct the gallery and scan again, or
+to live with it. The third answer is to hand the plan over: the window
+lists the cuts, and the export cuts the list rather than deriving it a
+second time.
+
+### The list is the plan, not a new one
+
+`cuts_from_plans` numbers the segments the rail already summarised, and
+`plans_from_cuts` hands them back. Nothing re-plans in between, so the
+cuts shown are the cuts encoded; `export(segments=...)` and
+`export_cast(plans=...)` exist for exactly that, and the window reads the
+list *before* starting the job so an edit made during an encode cannot
+change what that encode is cutting.
+
+A dropped cut keeps its row, greyed. Deleting the row would mean dropping
+the wrong one and having no way back to it.
+
+### What stops an edge being moved
+
+Moving is clamped rather than refused -- a press that does nothing and a
+press that does half of what was asked are indistinguishable otherwise,
+and the end that stops against something is the useful thing to see. The
+stops are the video's own bounds, the other end of the same cut (never
+closer than 0.5s: below about half a second a cut is a flash, and wanting
+less than that is wanting the cut gone), and the nearest **kept**
+neighbour in the same video. Touching is allowed, overlapping is not,
+because `cut_clips` is promised non-overlapping segments in order.
+
+The neighbour rule says *kept* deliberately: a dropped cut is not in the
+reel, so its footage is free to take back. That is how a shot split in
+two is repaired -- drop one half, grow the other across it.
+
+A "frame" is the video's own frame, read from `probe_clip` once per video
+and cached; the page sends "frame" or "second" and the bridge works out
+what that is worth, because how long a frame lasts is a property of the
+footage rather than something a window gets to choose. Footage that will
+not probe falls back to 1/25s.
+
+### Pictures, and why they are fetched a screenful at a time
+
+A row shows the frame the cut opens on and the frame it ends on -- the
+two ends are what the buttons beside them move, and the middle of a cut
+answers a different question. That is two seeks a row, and a season reel
+is hundreds of rows, so an eager pass would be a minute of decoding
+nobody asked for. The page asks for rows as they come into view
+(`IntersectionObserver`, batched at 60ms) and re-asks for one row after
+an edit moves its ends. The end frame is taken one frame back from the
+cut's end, because the frame *at* the end is the first frame of what
+comes next.
+
+`frames_at` keeps a place for a frame it could not decode where the
+filmstrip's own helper drops it: a missing picture in a list would
+otherwise shift every picture after it up a row, putting the wrong
+footage beside the wrong times.
+
+### Driven, not only tested
+
+On test.mp4, Person #1's reel is 3 cuts and 1:23. Moving the second cut's
+end +1s took it from 01:18.50 to 01:19.50, and one frame back from there
+to 01:19.48 -- the footage is ~48fps, and the 0.02s step is that frame.
+Dropping the first cut (19.1s) left "2 cuts, 1:05", which is what the
+rail, the footnote and the panel all then said, and the exported file
+came out at 64.80s of picture against the 65s promised -- the difference
+being the sliver trimming that runs during the encode, as it always has.
+Pressing "Back to the plan" returned 3 cuts and 1:23.
+
+Layout was measured in the window rather than eyeballed: at 1280 and at
+880 wide the rows neither overflow nor overlap, and the gallery never
+scrolls sideways.

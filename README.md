@@ -503,6 +503,8 @@ Pick a video, press **Scan for people**, click a face, press **Export reel**. Cl
 
 **Season report.** In folder view, **Report** writes who is in which video, and for how long, beside your reels — a CSV and a page with each person's face — and opens the page. From the command line: `python -m app report season-1/`. Each figure is that person's screen time in that video as `timestamps` counts it; the total says how much of it is a recap of an earlier episode.
 
+**Editing the cuts.** Selecting a person says what the reel will be — `Person #2 selected - 14 cuts, about 4:31` — and **Edit cuts…** in the rail opens those fourteen as a list: each one with the frame it opens on, the frame it ends on, how long it runs, and which video it came from in folder view. Drop a cut you do not want, or move either end by a frame or a second; an end stops at the video's bounds and at its neighbour, so cuts never overlap. A dropped cut stays in the list, greyed, and its footage is free for a neighbour to grow across — which is how a shot split in two is repaired. The export cuts the list as you left it, and **Back to the plan** undoes the lot.
+
 **Advanced settings.** The **Advanced** button beside Sampling opens the three settings that change most what a scan finds — how alike two faces must be to count as one person, the least screen time worth a card, and the smallest face to look at — each described by what moving it does. They are kept per content type; the button shows how many you have changed, and one click puts them back. Left alone, the window scans exactly as the command line does and they share kept scans.
 
 **A whole folder.** Switch the source to **Folder**, pick a season, and scan: each episode is scanned (or its kept scan reused) and the window shows one card per person across all of them, with a strip of their face from each episode and how many they are in. Where two cards look alike but not clearly enough to join on their own, the window asks **Same person?** with the two faces side by side — nothing is guessed. Click a person to see their reel across the folder, name them once to name them in every episode, and export one reel. No photo of anyone is needed.
@@ -713,6 +715,7 @@ The next logical prototype milestones are:
 - ~~remember the people you name, across every video~~
 - ~~tune detection in the window~~
 - ~~a season report: who is in which video, and for how long~~
-- **next:** look after named people in the window (rename, merge two names, forget one), then adjust or drop single cuts before exporting
+- ~~adjust or drop single cuts before exporting~~
+- **next:** look after named people in the window (rename, merge two names, forget one)
 
 This roadmap may evolve as the prototype proves which stages need refinement.

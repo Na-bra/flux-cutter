@@ -31,6 +31,7 @@ from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
 from app.ui.macos import set_application_name
 from app.ui.worker import (
     apply_edit,
+    frames_at,
     preview_frames,
     track_previews,
     Cancelled,
@@ -62,16 +63,26 @@ from app.ui.folder import (
     export_cast,
     load_answers,
     name_cast_person,
-    plan_cast_export,
+    plan_cast_by_video,
     remember_answer,
     repeated_seconds,
     scan_folder,
 )
+from app.video import cuts
+from app.video.cutter import CutterError, probe_clip
 from app.video.loader import VideoLoadError
 from app.video.source import SourceMismatch
+from app.video.timeline import format_timestamp
 
 DEFAULT_OUTPUT_DIR = Path.home() / "Movies"
 DEFAULT_FILENAME = "reel.mp4"
+# A cut list's pictures. Small: there are two per row and a season reel
+# has hundreds of rows, and the question a row answers -- is this the
+# right person, does it open mid-turn -- is answerable at this size.
+CUT_FRAME_WIDTH = 128
+# What a "frame" nudge is worth when the footage will not say. Between
+# 24 and 30 fps, so it is a nudge rather than a jump whatever the rate.
+FALLBACK_FRAME_SECONDS = 1.0 / 25.0
 QUALITY_LEVELS = ["Standard", "High", "Maximum"]
 SAMPLE_INTERVALS = [0.25, 0.5, 1.0, 2.0]
 
@@ -200,6 +211,18 @@ class Bridge:
         # "Not them" to a suggested name, for this session: which card, by
         # what does not change when the gallery renumbers, and which name.
         self._declined: set[tuple] = set()
+        # The reel the current selection would cut, as a list that can be
+        # edited (app/video/cuts.py). Rebuilt whenever the selection
+        # changes, because it describes that selection's reel and nothing
+        # else; an export cuts this rather than planning again.
+        self._cuts: list[cuts.Cut] = []
+        # Which selection the list belongs to: a cut's video number means
+        # a position in the folder in one view and nothing at all in the
+        # other, and both views can hold a selection at once.
+        self._cuts_view = "video"
+        # video position -> how long one frame of it lasts, since probing
+        # opens the file and the answer cannot change under us.
+        self._frame_seconds: dict[int, float] = {}
 
     # ------------------------------------------------------------- helpers
 
@@ -508,7 +531,9 @@ class Bridge:
             )
 
         self._preview_token += 1
+        self._cuts_view = "video"
         if not self._selected:
+            self._cuts = []
             return {
                 "accepted": True,
                 "indexes": [],
@@ -520,6 +545,10 @@ class Bridge:
             video_duration=self._scan_result.video_duration,
             sample_interval=self._scan_result.sample_interval,
         )
+        # Edits belong to the reel they were made on, so a new selection
+        # starts from the plan rather than carrying the last one's
+        # dropped rows onto cuts that have nothing to do with them.
+        self._cuts = cuts.cuts_from_plans([(0, segments)])
         reel_seconds = sum(s.end_time - s.start_time for s in segments)
         detections = sum(chosen.detection_count for chosen in self._selected)
 
@@ -686,6 +715,10 @@ class Bridge:
             self._selected = [p for p in updated.people if p.index in chosen]
         else:
             self._selected = []
+        # Whoever is selected now is made of different cards than a moment
+        # ago, so their reel is a different reel: the cut list is rebuilt
+        # rather than left describing the one before the correction.
+        self._rebuild_cuts()
         self._preview_token += 1
         return {"applied": True, **self._scan_payload(updated), "note": _edit_note(operation, indexes, name)}
 
@@ -714,6 +747,204 @@ class Bridge:
             ],
         }
 
+    # ------------------------------------------------------------ the cuts
+
+    def cut_list(self) -> dict:
+        """Every cut the reel is made of, in the order it plays.
+
+        The list is the plan the rail already summarised -- the same cuts
+        behind "14 cuts, about 4:31" -- only itemised, so the one that
+        opens on the back of someone's head can be found and dropped
+        rather than corrected for in the gallery.
+        """
+        return self._cut_payload()
+
+    def edit_cut(self, index: int, action: str, step: str = "second") -> dict:
+        """Drops one cut, puts it back, or moves one of its ends.
+
+        `action` is one of drop, restore, start-, start+, end- and end+;
+        `step` is "frame" or "second". The page sends which button was
+        pressed and Python works out what that means in seconds, because
+        a frame is the video's own frame and the page has no business
+        knowing how long one lasts.
+
+        Refused while an export runs: that job was handed its cuts when it
+        started, so accepting an edit would change a list the encode is
+        not using and say it had taken effect.
+        """
+        if self._busy() or not self._cuts:
+            return {"accepted": False}
+        index = int(index)
+        if index < 0 or index >= len(self._cuts):
+            return {"accepted": False}
+
+        video = self._cuts[index].video
+        result = self._scan_for(video)
+        if result is None:
+            return {"accepted": False}
+        delta = self._frame_of(video) if step == "frame" else cuts.STEP_SECONDS
+
+        if action == "drop":
+            self._cuts = cuts.drop(self._cuts, index)
+        elif action == "restore":
+            self._cuts = cuts.restore(self._cuts, index)
+        elif action in ("start-", "start+", "end-", "end+"):
+            edge = cuts.START if action.startswith("start") else cuts.END
+            self._cuts = cuts.move(
+                self._cuts,
+                index,
+                edge,
+                delta if action.endswith("+") else -delta,
+                video_duration=result.video_duration,
+            )
+        else:
+            return {"accepted": False}
+
+        return self._cut_payload()
+
+    def restore_cuts(self) -> dict:
+        """Back to the plan: nothing dropped, no end moved."""
+        if self._busy():
+            return {"accepted": False}
+        self._rebuild_cuts()
+        return self._cut_payload()
+
+    def cut_frames(self, indexes=None) -> dict:
+        """The first and last frame of each of these cuts.
+
+        Asked for a handful of rows at a time, as they come into view: a
+        season reel is hundreds of cuts and two seeks each, which is a
+        minute of decoding nobody asked for if it is done up front. The
+        ends rather than the middle, because the ends are what the buttons
+        beside them move.
+        """
+        if self._busy() or not self._cuts:
+            return {"frames": []}
+        wanted = [
+            position
+            for position in {int(i) for i in (indexes or [])}
+            if 0 <= position < len(self._cuts)
+        ]
+        by_video: dict[int, list[int]] = {}
+        for position in sorted(wanted):
+            by_video.setdefault(self._cuts[position].video, []).append(position)
+
+        frames = []
+        for video, positions in by_video.items():
+            result = self._scan_for(video)
+            if result is None:
+                continue
+            asked = []
+            for position in positions:
+                cut = self._cuts[position]
+                # A frame at the very end of a cut is the first frame of
+                # what comes next; step back one so the picture is of
+                # footage the cut actually contains.
+                asked += [cut.start, max(cut.start, cut.end - self._frame_of(video))]
+            pictures = frames_at(result, asked, width=CUT_FRAME_WIDTH)
+            for position, first, last in zip(positions, pictures[::2], pictures[1::2]):
+                frames.append(
+                    {
+                        "i": position,
+                        "start": _data_uri(first) if first is not None else None,
+                        "end": _data_uri(last) if last is not None else None,
+                    }
+                )
+        return {"frames": frames}
+
+    def _cut_payload(self) -> dict:
+        """The cut list as the page draws it."""
+        kept = cuts.kept(self._cuts)
+        folder = self._cuts_view == "folder"
+        return {
+            "accepted": True,
+            "cuts": [
+                {
+                    "i": position,
+                    "video": self._video_name(cut.video) if folder else None,
+                    "start": format_timestamp(cut.start),
+                    "end": format_timestamp(cut.end),
+                    "length": f"{cut.seconds:.1f}s",
+                    "dropped": cut.dropped,
+                    "changed": cut.changed,
+                }
+                for position, cut in enumerate(self._cuts)
+            ],
+            "kept": len(kept),
+            "dropped": len(self._cuts) - len(kept),
+            "planned": len(self._cuts),
+            "reel": _clock(cuts.reel_seconds(self._cuts)),
+            "edited": any(cut.changed for cut in self._cuts),
+        }
+
+    def _rebuild_cuts(self) -> None:
+        """The plan for whatever is selected now, with nothing edited."""
+        if self._cuts_view == "folder":
+            chosen = self._cast_selected
+            self._cuts = (
+                cuts.cuts_from_plans(plan_cast_by_video(self._folder, chosen))
+                if chosen is not None and self._folder is not None
+                else []
+            )
+            return
+        if self._scan_result is None or not self._selected:
+            self._cuts = []
+            return
+        _, segments = plan_export(
+            self._selected,
+            video_duration=self._scan_result.video_duration,
+            sample_interval=self._scan_result.sample_interval,
+        )
+        self._cuts = cuts.cuts_from_plans([(0, segments)])
+
+    def _cut_segments(self) -> list:
+        """One video's cut list as segments to encode.
+
+        What the window last showed: untouched this is the plan itself,
+        edited it is the plan minus the dropped rows and with the ends
+        where they were left. Read before an export starts rather than
+        inside the worker, so an edit made while it runs cannot change
+        what that run is cutting halfway through.
+        """
+        return [
+            interval
+            for _, segments in cuts.plans_from_cuts(self._cuts)
+            for interval in segments
+        ]
+
+    def _scan_for(self, video: int) -> ScanResult | None:
+        """The scan a cut's video position refers to."""
+        if self._cuts_view == "folder":
+            if self._folder is None or not 0 <= video < len(self._folder.videos):
+                return None
+            return self._folder.videos[video]
+        return self._scan_result
+
+    def _video_name(self, video: int) -> str:
+        result = self._scan_for(video)
+        return result.video_path.name if result is not None else ""
+
+    def _frame_of(self, video: int) -> float:
+        """How long one frame of this video lasts.
+
+        Asked of the footage once and kept: a frame is the smallest useful
+        nudge, and what it is worth in seconds is a property of the video,
+        not a number this window gets to choose. Footage that cannot be
+        probed falls back to a step small enough to be a nudge on any
+        ordinary rate.
+        """
+        if video not in self._frame_seconds:
+            result = self._scan_for(video)
+            seconds = FALLBACK_FRAME_SECONDS
+            if result is not None:
+                try:
+                    profile = probe_clip(result.source or result.video_path, include_audio=False)
+                    seconds = 1.0 / float(profile.frame_rate)
+                except (CutterError, ZeroDivisionError):
+                    pass
+            self._frame_seconds[video] = seconds
+        return self._frame_seconds[video]
+
     # -------------------------------------------------------------- export
 
     def start_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
@@ -724,11 +955,15 @@ class Bridge:
         if not self._ensure_source_available():
             return {"started": False, "reason": None}
 
+        segments = self._cut_segments()
+        if not segments:
+            return {"started": False, "reason": "Every cut has been dropped."}
+
         settings = ExportSettings(
             video_encoder=encoder,
             quality=quality_for(encoder, quality),
         )
-        self._start(self._export_worker, output_path(folder, filename), settings)
+        self._start(self._export_worker, output_path(folder, filename), settings, segments)
         return {"started": True}
 
     def _ensure_source_available(self) -> bool:
@@ -776,7 +1011,7 @@ class Bridge:
         self._emit("onRelocated", {"path": str(source.path)})
         return True
 
-    def _export_worker(self, output_path: Path, settings: ExportSettings) -> None:
+    def _export_worker(self, output_path: Path, settings: ExportSettings, segments) -> None:
         def report(fraction: float, done: int, total: int) -> None:
             self._emit(
                 "onExportProgress", {"fraction": fraction, "done": done, "total": total}
@@ -791,6 +1026,7 @@ class Bridge:
                 settings=settings,
                 on_progress=report,
                 cancel=self._cancel,
+                segments=segments,
             )
         except Cancelled:
             self._emit("onExportCancelled")
@@ -873,6 +1109,8 @@ class Bridge:
             if now is not None and all(now.index != p.index for p in chosen):
                 chosen.append(now)
         self._cast_chosen = sorted(chosen, key=lambda p: p.index)
+        if self._cuts_view == "folder":
+            self._rebuild_cuts()
 
     @property
     def _cast_selected(self) -> CastPerson | None:
@@ -969,17 +1207,20 @@ class Bridge:
             return {"accepted": False}
 
         self._preview_token += 1
+        self._cuts_view = "folder"
         if any(p.index == clicked.index for p in self._cast_chosen):
             self._cast_chosen = [p for p in self._cast_chosen if p.index != clicked.index]
         else:
             self._cast_chosen = sorted(self._cast_chosen + [clicked], key=lambda p: p.index)
         if not self._cast_chosen:
+            self._cuts = []
             return {"accepted": True, "indexes": [], "summary": "Choose a person to export."}
 
         chosen = self._cast_selected
-        plans = plan_cast_export(self._folder, chosen)
-        cuts = sum(len(segments) for _, segments in plans)
-        reel = sum(s.end_time - s.start_time for _, segments in plans for s in segments)
+        plans = plan_cast_by_video(self._folder, chosen)
+        self._cuts = cuts.cuts_from_plans(plans)
+        planned = len(self._cuts)
+        reel = cuts.reel_seconds(self._cuts)
         repeated = repeated_seconds(self._folder, chosen)
         self._start_cast_preview()
 
@@ -988,7 +1229,7 @@ class Bridge:
             "indexes": [p.index for p in self._cast_chosen],
             "token": self._preview_token,
             "name": chosen.label,
-            "cuts": cuts,
+            "cuts": planned,
             "reel": _clock(reel),
             "onScreen": _clock(chosen.detection_count * self._folder.settings.sample_interval),
             "detections": chosen.detection_count,
@@ -996,7 +1237,7 @@ class Bridge:
             "filename": self._suggest_cast_filename(self._cast_chosen, current_filename),
             "repeated": _clock(repeated) if repeated >= 0.5 else None,
             "summary": (
-                f"{chosen.label} selected - {cuts} cuts from {len(plans)} "
+                f"{chosen.label} selected - {planned} cuts from {len(plans)} "
                 f"video{'s' if len(plans) != 1 else ''}, about {_clock(reel)} of footage."
             ),
         }
@@ -1184,14 +1425,18 @@ class Bridge:
         if self._folder is None or self._cast_selected is None:
             return {"started": False, "reason": "Choose a person first."}
 
+        plans = cuts.plans_from_cuts(self._cuts)
+        if not plans:
+            return {"started": False, "reason": "Every cut has been dropped."}
+
         settings = ExportSettings(
             video_encoder=encoder,
             quality=quality_for(encoder, quality),
         )
-        self._start(self._folder_export_worker, output_path(folder, filename), settings)
+        self._start(self._folder_export_worker, output_path(folder, filename), settings, plans)
         return {"started": True}
 
-    def _folder_export_worker(self, output: Path, settings: ExportSettings) -> None:
+    def _folder_export_worker(self, output: Path, settings: ExportSettings, plans) -> None:
         def report(fraction: float, done: int, total: int) -> None:
             self._emit("onExportProgress", {"fraction": fraction, "done": done, "total": total})
 
@@ -1204,6 +1449,7 @@ class Bridge:
                 settings=settings,
                 on_progress=report,
                 cancel=self._cancel,
+                plans=plans,
             )
         except Cancelled:
             self._emit("onExportCancelled")

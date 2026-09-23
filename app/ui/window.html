@@ -288,6 +288,38 @@
   .advanced .foot { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: .74rem; color: var(--muted); }
   .advanced .foot button { height: 24px; padding: 0 9px; font-size: .74rem; margin-left: auto; }
 
+  /* ---------------------------------------------------------- cut list */
+  /* The reel itself, cut by cut. Wide rather than in the rail: a row has
+     to show the frame a cut opens on and the frame it ends on, or moving
+     an end is guesswork. */
+  .cuts { margin-bottom: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 11px; }
+  .cuts-head { margin: 0 0 9px; font-size: .78rem; color: var(--faint); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cuts-head b { color: var(--ink); }
+  .cuts-head .seg { margin-left: auto; }
+  .cuts-head button { height: 24px; padding: 0 9px; font-size: .74rem; }
+  .cutrows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 46vh; overflow-y: auto; }
+  .cutrow {
+    display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 5px;
+  }
+  .cutrow .num { font-family: var(--mono); font-size: .68rem; color: var(--faint); width: 3ch; text-align: right; }
+  .cutrow figure { margin: 0; width: 84px; flex: none; }
+  .cutrow img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; border-radius: 3px; background: var(--sunk); }
+  .cutrow figcaption { font-family: var(--mono); font-size: .64rem; color: var(--muted); text-align: center; padding-top: 2px; font-variant-numeric: tabular-nums; }
+  .cutrow .nudge { display: inline-flex; border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+  .cutrow .nudge button { height: 22px; width: 24px; padding: 0; font-size: .8rem; border: 0; border-radius: 0; background: transparent; color: var(--muted); }
+  .cutrow .nudge button:hover { background: var(--sunk); color: var(--ink); }
+  .cutrow .middle { flex: 1; min-width: 0; text-align: center; display: grid; gap: 1px; }
+  .cutrow .len { font-family: var(--mono); font-size: .74rem; font-variant-numeric: tabular-nums; }
+  .cutrow .vid { font-family: var(--mono); font-size: .64rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cutrow .drop { height: 22px; padding: 0 8px; font-size: .68rem; font-weight: 500; }
+  /* A dropped cut keeps its row -- dropping the wrong one and not being
+     able to find it again is worse than the row being there. */
+  .cutrow.dropped { opacity: .5; }
+  .cutrow.dropped .len { text-decoration: line-through; }
+  .cutrow.changed { border-color: var(--signal); }
+  .cutrow.changed .len { color: var(--signal); }
+
   /* A name offered from earlier videos: a question until someone answers. */
   .suggested { font-style: italic; color: var(--signal); font-weight: 500; }
   .suggest { margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--signal); border-radius: 5px; font-size: .76rem; color: var(--muted); }
@@ -306,7 +338,7 @@
     <div class="field">
       <div class="labelrow">
         <span id="sourceLabel">Source video</span>
-        <span class="seg" role="group" aria-label="What to scan">
+        <span class="seg" id="viewSeg" role="group" aria-label="What to scan">
           <button type="button" data-view="video" aria-pressed="true">Video</button>
           <button type="button" data-view="folder" aria-pressed="false">Folder</button>
         </span>
@@ -367,6 +399,21 @@
         </p>
         <div class="grid tracks" id="tracks"></div>
       </div>
+      <!-- The reel as the cuts it is made of. The rules get most of them
+           right; this is for the handful they cannot know about. -->
+      <div class="cuts" id="cuts" hidden>
+        <p class="cuts-head">
+          <b>The cuts in this reel</b>
+          <span id="cutsSummary"></span>
+          <span class="seg" role="group" aria-label="Move an end by">
+            <button type="button" data-step="frame" aria-pressed="false">frame</button>
+            <button type="button" data-step="second" aria-pressed="true">1s</button>
+          </span>
+          <button class="ghost" id="cutsReset">Back to the plan</button>
+          <button class="ghost" id="cutsDone">Done</button>
+        </p>
+        <ol class="cutrows" id="cutRows"></ol>
+      </div>
       <div class="question" id="question" hidden></div>
       <div class="grid" id="grid" role="group" aria-label="People found"></div>
       <p class="unassigned" id="unassigned" hidden></p>
@@ -385,6 +432,7 @@
         </dl>
         <div class="suggest" id="suggest" hidden></div>
         <div class="strip" id="strip" hidden></div>
+        <button class="ghost" id="cutsBtn" style="height:26px;padding:0 10px;font-size:.74rem;margin-top:10px;width:100%">Edit cuts…</button>
       </div>
 
       <div class="field">
@@ -468,11 +516,12 @@
   function setView(view) {
     if (state.busy || view === state.view) return;
     state.view = view;
-    document.querySelectorAll(".seg button").forEach(b =>
+    document.querySelectorAll("#viewSeg button").forEach(b =>
       b.setAttribute("aria-pressed", b.dataset.view === view));
     showSource();
     $("galleryTitle").textContent = view === "folder" ? "Who's in this folder" : "Who's in this video";
     const drawn = state.drawn[view];
+    closeCuts();
     $("question").hidden = true;
     $("unassigned").hidden = true;
     $("galleryMeta").textContent = "";
@@ -486,7 +535,7 @@
     if (view === "folder") drawCast(drawn); else drawPeople(drawn);
   }
 
-  document.querySelectorAll(".seg button").forEach(b =>
+  document.querySelectorAll("#viewSeg button").forEach(b =>
     b.addEventListener("click", () => setView(b.dataset.view)));
 
   $("chooseVideo").addEventListener("click", async () => {
@@ -597,7 +646,7 @@
     $("exportBtn").disabled = true;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
     document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
-    document.querySelectorAll(".seg button").forEach(b => b.disabled = true);
+    document.querySelectorAll(".seg button, #cuts button").forEach(b => b.disabled = true);
   }
 
   function idle() {
@@ -607,7 +656,7 @@
     $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
-    document.querySelectorAll(".seg button").forEach(b => b.disabled = false);
+    document.querySelectorAll(".seg button, #cuts button").forEach(b => b.disabled = false);
   }
 
   window.onStatus = (d) => status("<b>" + d.text + "</b>");
@@ -658,6 +707,7 @@
     $("picked").hidden = true;
     $("strip").hidden = true;
     $("split").hidden = true;
+    closeCuts();
     $("fixups").hidden = !d.people.length;
     updateFixups();
 
@@ -869,6 +919,7 @@
     if (!state.selected.length) {
       $("picked").hidden = true; $("exportBtn").disabled = true;
       $("foot").textContent = "Choose a person to export.";
+      closeCuts();
     }
 
     drawQuestion(d.questions);
@@ -959,9 +1010,11 @@
       if (!r.indexes.length) {
         $("picked").hidden = true; $("strip").hidden = true; $("exportBtn").disabled = true;
         $("foot").textContent = "Choose a person to export.";
+        closeCuts();
         return;
       }
       showPicked(r);
+      refreshCuts();
       showSuggestion();
       $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
         " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file." +
@@ -986,6 +1039,7 @@
       $("strip").hidden = true;
       $("foot").textContent = "Choose a person to export.";
       $("exportBtn").disabled = true;
+      closeCuts();
       return;
     }
 
@@ -1001,6 +1055,7 @@
       (r.indexes.length > 1 ? " Any scene with any of them." : "");
     $("exportBtn").disabled = false;
     showSuggestion();
+    refreshCuts();
 
     state.previewToken = r.token;
     const strip = $("strip");
@@ -1024,4 +1079,158 @@
         <figcaption>${f.at}</figcaption>
       </figure>`).join("");
   };
+
+  // ---------------------------------------------------------- the cuts
+  //
+  // The rail says "14 cuts, about 4:31". This is those fourteen, each
+  // with the frame it opens on and the frame it ends on, so the one that
+  // opens on the back of someone's head can be dropped instead of being
+  // corrected for in the gallery or lived with.
+
+  let cutRows = [];            // the row element for each cut, by position
+  const cutAsked = new Set();  // rows whose pictures have been sent for
+  let cutWanted = [];          // rows waiting to be asked about, batched
+  let cutTimer = null;
+
+  const stepOf = () =>
+    document.querySelector("#cuts .seg button[aria-pressed=\"true\"]").dataset.step;
+
+  function nudge(action, label) {
+    return `<span class="nudge">
+      <button type="button" data-act="${action}-" title="${label} earlier" aria-label="${label} earlier">−</button>
+      <button type="button" data-act="${action}+" title="${label} later" aria-label="${label} later">+</button>
+    </span>`;
+  }
+
+  function rowHtml(c) {
+    return `<span class="num">${c.i + 1}</span>
+      <figure><img data-edge="start" alt="Where cut ${c.i + 1} opens"><figcaption>${c.start}</figcaption></figure>
+      ${nudge("start", "Opens")}
+      <span class="middle">
+        <span class="len">${c.length}</span>
+        ${c.video ? `<span class="vid">${esc(c.video)}</span>` : ""}
+      </span>
+      ${nudge("end", "Ends")}
+      <figure><img data-edge="end" alt="Where cut ${c.i + 1} ends"><figcaption>${c.end}</figcaption></figure>
+      <button type="button" class="ghost drop" data-act="drop">${c.dropped ? "Keep" : "Drop"}</button>`;
+  }
+
+  // Pictures are two seeks a row and a season reel is hundreds of rows,
+  // so they are fetched for what is on screen rather than up front.
+  const cutWatcher = new IntersectionObserver((entries) => {
+    const wanted = entries.filter(e => e.isIntersecting)
+      .map(e => Number(e.target.dataset.i)).filter(i => !cutAsked.has(i));
+    if (wanted.length) askForPictures(wanted);
+  }, { root: $("cutRows"), rootMargin: "240px" });
+
+  function askForPictures(indexes) {
+    indexes.forEach(i => { cutAsked.add(i); cutWanted.push(i); });
+    clearTimeout(cutTimer);
+    cutTimer = setTimeout(async () => {
+      const batch = cutWanted.splice(0, cutWanted.length);
+      if (!batch.length) return;
+      const r = await pywebview.api.cut_frames(batch);
+      (r.frames || []).forEach(f => {
+        const row = cutRows[f.i];
+        if (!row) return;
+        ["start", "end"].forEach(edge => {
+          const img = row.querySelector(`img[data-edge="${edge}"]`);
+          if (img && f[edge]) img.src = f[edge];
+        });
+      });
+    }, 60);
+  }
+
+  function drawCuts(d) {
+    const list = $("cutRows");
+    cutWatcher.disconnect();
+    cutAsked.clear();
+    cutWanted = [];
+    list.innerHTML = d.cuts.map(c =>
+      `<li class="cutrow${c.dropped ? " dropped" : ""}${c.changed && !c.dropped ? " changed" : ""}" data-i="${c.i}">${rowHtml(c)}</li>`
+    ).join("");
+    cutRows = Array.from(list.children);
+    cutRows.forEach(row => cutWatcher.observe(row));
+    showCutSummary(d);
+  }
+
+  // One edit changes one row, and redrawing the list would throw away
+  // every picture already decoded for the others.
+  function updateCuts(d) {
+    d.cuts.forEach(c => {
+      const row = cutRows[c.i];
+      if (!row) return;
+      row.classList.toggle("dropped", c.dropped);
+      row.classList.toggle("changed", c.changed && !c.dropped);
+      row.querySelector(".len").textContent = c.length;
+      row.querySelector(".drop").textContent = c.dropped ? "Keep" : "Drop";
+      const captions = row.querySelectorAll("figcaption");
+      if (captions[0].textContent !== c.start || captions[1].textContent !== c.end) {
+        captions[0].textContent = c.start;
+        captions[1].textContent = c.end;
+        cutAsked.delete(c.i);
+        askForPictures([c.i]);
+      }
+    });
+    showCutSummary(d);
+  }
+
+  function showCutSummary(d) {
+    $("cutsSummary").textContent =
+      d.kept + (d.kept === 1 ? " cut, " : " cuts, ") + d.reel +
+      (d.dropped ? " · " + d.dropped + " dropped" : "");
+    $("cutsReset").disabled = !d.dropped && !d.edited;
+    $("pickedCuts").textContent = d.kept;
+    $("pickedLen").textContent = d.reel;
+    // The footnote describes the plan; once the list has been edited it
+    // is the list that gets cut, and saying so is the difference between
+    // trusting the reel and checking it afterwards.
+    if (d.dropped || d.edited) {
+      $("foot").textContent = "Cuts the list as you edited it — " + d.kept +
+        " cut" + (d.kept === 1 ? "" : "s") + ", about " + d.reel + " of footage.";
+    }
+    // Nothing left to cut is not an export.
+    $("exportBtn").disabled = !d.kept || !!state.busy;
+  }
+
+  async function openCuts() {
+    const d = await pywebview.api.cut_list();
+    if (!d.accepted) return;
+    drawCuts(d);
+    $("cuts").hidden = false;
+    $("cutsBtn").textContent = "Hide the cuts";
+  }
+
+  function closeCuts() {
+    $("cuts").hidden = true;
+    $("cutsBtn").textContent = "Edit cuts…";
+  }
+
+  // A new selection is a different reel, so the open list is redrawn for
+  // it rather than left showing the last one's rows.
+  function refreshCuts() {
+    if (!$("cuts").hidden) openCuts();
+  }
+
+  $("cutsBtn").addEventListener("click", () => {
+    if ($("cuts").hidden) openCuts(); else closeCuts();
+  });
+  $("cutsDone").addEventListener("click", closeCuts);
+  $("cutsReset").addEventListener("click", async () => {
+    const d = await pywebview.api.restore_cuts();
+    if (d.accepted) drawCuts(d);
+  });
+  document.querySelectorAll("#cuts .seg button").forEach(b =>
+    b.addEventListener("click", () => {
+      document.querySelectorAll("#cuts .seg button").forEach(other =>
+        other.setAttribute("aria-pressed", other === b));
+    }));
+
+  $("cutRows").addEventListener("click", async (e) => {
+    const button = e.target.closest("button[data-act]");
+    if (!button) return;
+    const row = button.closest(".cutrow");
+    const d = await pywebview.api.edit_cut(Number(row.dataset.i), button.dataset.act, stepOf());
+    if (d.accepted) updateCuts(d);
+  });
 </script>
