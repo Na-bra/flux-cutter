@@ -3242,3 +3242,95 @@ measured at 1280 and 880 wide: no row overflows or overlaps.
 The first run found a race in the driving script rather than the window:
 it pressed Scan before the page had finished setting itself up, and the
 press was ignored. It now waits for the page to say it is ready.
+
+## 44. MKV, WebM and AVI (`SUPPORTED_EXTENSIONS`, `_frame_spacing`)
+
+Only `.mp4` and `.mov` were accepted, though the decoder has always read
+the rest. The backlog held them back for one stated reason: WebM from a
+browser or a screen recorder has a variable frame rate, and the cutter
+counts frames.
+
+### Measured before changing anything
+
+The sync tests' marked footage (a white frame and a tone burst on every
+whole second) was written into each container and cut into eight
+one-flash segments:
+
+| footage | flashes / bursts | offset spread | picture |
+| --- | --- | --- | --- |
+| mp4 (baseline) | 8 / 8 | 16.0 ms | 12.00 s |
+| mkv, h264 + aac | 8 / 8 | 16.0 ms | 12.00 s |
+| mkv, h264 + opus | 8 / 8 | 16.0 ms | 12.00 s |
+| webm, vp9 + opus, constant | 8 / 8 | 16.0 ms | 12.00 s |
+| **webm, vp9 + opus, variable** | **8 / 10** | **1546.7 ms** | **9.60 s** |
+| avi, mpeg4 + mp3 | 8 / 8 | 16.0 ms | 12.00 s |
+
+So the containers were never the problem. The variable file -- 30 fps and
+10 fps in turns -- was: its frames were copied one for one onto a 30 fps
+reel, so every slow stretch played three times too fast. (The AVI's sound
+sits ~30ms early, but so does the source's: that is the MP3 encoder's
+start-up delay, and the cut keeps it as a player would.)
+
+### Placing frames by timestamp
+
+A variable video's frames now stay on screen until the next frame's
+timestamp, as a player shows them: each frame is held until the next one
+arrives, then written for as many reel frames as fall between the two.
+The last frame of a cut lasts as long as the gap before it. Sound needs
+nothing new -- it already follows the reel frames written.
+
+Everything else keeps the path it had, which the sync tests have covered
+for a long time. That makes telling the two apart the delicate part.
+
+### Telling variable from rounded
+
+Every frame's timestamp is read first by demuxing, which decodes no
+pictures: 0.18s for the 22-minute episode's 32,508 frames.
+
+The first rule -- any gap off the usual one by more than a tick of the
+stream's clock -- flagged the 22-minute episode itself. Its timestamps
+are rounded to the millisecond but written into a far finer clock, so its
+23.976 fps gaps alternate 41 and 42ms. A flat millisecond of tolerance
+fixed that, and then flagged the iPhone clip, for one gap 1.7ms short in
+981 frames.
+
+The rule that stuck asks the question that matters: would counting put a
+frame in the wrong place? A video is variable when some frame sits more
+than half a frame from where even spacing, first frame to last, puts it.
+Rounding and a stray short gap never come close; a rate that changes, or
+dropped frames that accumulate, do. All four test videos keep their old
+path; the variable WebM and an AVI whose first frame is held for two
+frames' time take the new one.
+
+### The rate of a variable reel
+
+A variable video's declared rate is whatever its writer guessed. Its
+usual gap is measured instead -- the average of the gaps near the most
+common one, because the most common gap alone is biased by rounding (33ms
+of 30 fps's 33/34 reads as 30.3 fps, and a reel at that rate played each
+cut 1% short, 11.88s instead of 12). It is snapped to the nearest standard
+rate within half a percent.
+
+Writing the tests turned up a header that lied outright: an AVI written
+with a millisecond clock declared 1000 fps, which would have made a
+1000 fps reel. Where a constant video's header and its frames disagree by
+more than 5%, the frames win.
+
+### Real footage
+
+test.mp4 remuxed to MKV, re-encoded to WebM (constant, and variable by
+dropping two frames in three for two seconds in every six) and to AVI,
+then scanned and exported as the window does:
+
+| file | people | lead | cuts | reel picture | sound - picture |
+| --- | --- | --- | --- | --- | --- |
+| test.mp4 | 2 | 17 | 3 | 13.47 s | +16 ms |
+| test.mkv | 2 | 17 | 3 | 13.47 s | +16 ms |
+| test.webm | 2 | 10 | 2 | 8.57 s | +9 ms |
+| test-variable.webm | 2 | 10 | 2 | 9.87 s | +11 ms |
+| test.avi | 2 | 15 | 2 | 9.53 s | +3 ms |
+
+The MKV is the MP4, as a remux should be. The WebM's lead was found less
+often, and that was the encode, not the format: it was VP9's real-time
+mode at 2 Mb/s, and the detector found 39 faces where the MP4 gave 49. At
+ordinary quality (CRF 24) it found 48, sampling the same 47 frames.

@@ -703,7 +703,7 @@ The gallery stage uses the same real sample video and the already-validated dete
 
 ## Notes
 
-- Supported video formats are currently limited to `.mp4` and `.mov`.
+- Videos can be `.mp4`, `.m4v`, `.mov`, `.mkv`, `.webm` or `.avi`. WebM recorded at a variable frame rate (a browser or screen recorder's, typically) is cut by each frame's own timestamp, so its sound stays in step; every format is checked by cutting marked footage in `tests/test_formats.py`.
 - The loader raises a `VideoLoadError` when the file is missing, not a regular file, wrongly formatted, or unreadable.
 - This project is intended as a working prototype for validating the core concept before expanding into a more polished application.
 
@@ -734,5 +734,6 @@ The next logical prototype milestones are:
 - ~~a season report: who is in which video, and for how long~~
 - ~~adjust or drop single cuts before exporting~~
 - ~~look after named people in the window (rename, merge two names, forget one)~~
+- ~~accept MKV, WebM and AVI, including WebM at a variable frame rate~~
 
 This roadmap may evolve as the prototype proves which stages need refinement.

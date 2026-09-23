@@ -71,7 +71,7 @@ from app.ui.folder import (
 )
 from app.video import cuts
 from app.video.cutter import CutterError, probe_clip
-from app.video.loader import VideoLoadError
+from app.video.loader import PICKER_PATTERN, VideoLoadError
 from app.video.source import SourceMismatch
 from app.video.timeline import format_timestamp
 
@@ -289,7 +289,7 @@ class Bridge:
         chosen = self.window.create_file_dialog(
             webview.FileDialog.OPEN,
             allow_multiple=False,
-            file_types=("Video files (*.mp4;*.mov)", "All files (*.*)"),
+            file_types=(f"Video files ({PICKER_PATTERN})", "All files (*.*)"),
         )
         if not chosen:
             return {"path": None}
@@ -1139,7 +1139,7 @@ class Bridge:
         chosen = self.window.create_file_dialog(
             webview.FileDialog.OPEN,
             allow_multiple=False,
-            file_types=("Video files (*.mp4;*.mov)", "All files (*.*)"),
+            file_types=(f"Video files ({PICKER_PATTERN})", "All files (*.*)"),
         )
         if not chosen:
             return False
