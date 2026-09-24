@@ -246,3 +246,44 @@ def test_a_header_that_lies_about_the_rate_is_not_believed(tmp_path):
     profile = probe_clip(path)
 
     assert profile.frame_rate == 24
+
+
+# ------------------------------------------------------ what a reel is saved as
+
+
+@pytest.mark.parametrize("extension, container", [("mkv", "matroska"), ("mov", "mov")])
+def test_a_reel_can_be_saved_as_mkv_or_mov_and_keeps_its_sound_in_step(made, tmp_path, extension, container):
+    """The same H.264 and AAC, in another wrapper: nothing else changes."""
+    output = tmp_path / f"reel.{extension}"
+
+    cut_segments(made["mkv, h264 and aac"], SEGMENTS, output)
+
+    with av.open(str(output)) as opened:
+        assert container in opened.format.name
+        assert opened.streams.video[0].codec_context.name == "h264"
+        assert opened.streams.audio[0].codec_context.name == "aac"
+    flashes, bursts, _ = read_marks(output)
+    assert len(flashes) == len(bursts) == len(SEGMENTS)
+    offsets = np.array([b - f for b, f in zip(bursts, flashes)])
+    assert offsets.max() - offsets.min() < 0.05
+
+
+def test_a_reel_cannot_be_saved_as_something_that_cannot_hold_it(made, tmp_path):
+    """WebM takes neither H.264 nor AAC; better said before the encode than
+    after minutes of it."""
+    from app.video.cutter import CutterError
+
+    for name in ("reel.webm", "reel.avi", "reel"):
+        with pytest.raises(CutterError, match="can be saved as"):
+            cut_segments(made["mkv, h264 and aac"], SEGMENTS, tmp_path / name)
+
+
+def test_a_reel_takes_its_video_s_own_format_where_it_can():
+    from app.video.cutter import export_format_for
+
+    assert export_format_for("episode.mkv") == "mkv"
+    assert export_format_for("clip.MOV") == "mov"
+    assert export_format_for("clip.m4v") == "mp4"
+    # A reel cannot be WebM or AVI, so those make MP4s.
+    assert export_format_for("recording.webm") == "mp4"
+    assert export_format_for("old.avi") == "mp4"

@@ -1777,3 +1777,69 @@ def test_nothing_is_renamed_while_a_job_runs(bridge, monkeypatch):
 
     assert bridge.rename_named("Coach", "Mr Hale")["applied"] is False
     assert bridge.forget_named("Coach")["applied"] is False
+
+
+# ------------------------------------------------------------ the export format
+
+
+def test_output_path_saves_as_the_chosen_format():
+    assert web.output_path("/tmp", "one", "mkv") == Path("/tmp/one.mkv")
+    # A video extension that disagrees is swapped, not doubled up.
+    assert web.output_path("/tmp", "one.mp4", "mkv") == Path("/tmp/one.mkv")
+    assert web.output_path("/tmp", "one.webm", "mov") == Path("/tmp/one.mov")
+    # A dot that is not an extension stays part of the name.
+    assert web.output_path("/tmp", "s01.part2", "mkv") == Path("/tmp/s01.part2.mkv")
+    assert web.output_path("/tmp", "one", "exe") == Path("/tmp/one.mp4")
+
+
+def test_an_mkv_is_exported_as_mkv_unless_someone_says_otherwise(bridge, monkeypatch):
+    bridge.window = FakeWindow()
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result("/videos/episode.mkv"))
+
+    bridge._scan_worker(Path("/videos/episode.mkv"), ScanSettings())
+
+    scanned = bridge.window.emitted("onScanned")
+    assert scanned["format"] == "mkv"
+    assert bridge.select_person(0, "")["filename"] == "episode-person-1.mkv"
+
+
+def test_changing_the_format_changes_the_extension_in_the_box(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    bridge._scan_result = make_scan_result("/videos/episode.mp4")
+    suggested = bridge.select_person(0, "")["filename"]
+
+    changed = bridge.set_export_format("mov", suggested)
+
+    assert changed["filename"] == "episode-person-1.mov"
+    # Still the window's own suggestion, so the next selection replaces it.
+    assert bridge.select_person(1, changed["filename"])["filename"] == "episode-person-1+2.mov"
+
+
+def test_a_typed_name_keeps_its_words_when_the_format_changes(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    bridge._scan_result = make_scan_result("/videos/episode.mp4")
+    bridge.select_person(0, "")
+
+    changed = bridge.set_export_format("mkv", "my cut.mp4")
+
+    assert changed["filename"] == "my cut.mkv"
+    assert bridge.select_person(1, changed["filename"])["filename"] is None
+
+
+def test_the_export_is_written_in_the_format_the_window_shows(bridge, monkeypatch):
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    bridge._scan_result = make_scan_result()
+    bridge.select_person(0, "")
+
+    bridge.start_export("/tmp/reels", "out.mp4", "libx264", "Standard", "mkv")
+
+    assert started[0][0] == Path("/tmp/reels/out.mkv")
+
+
+def test_a_format_that_is_not_offered_is_refused(bridge):
+    assert bridge.set_export_format("webm", "reel.mp4") == {"accepted": False}
+    assert [f["id"] for f in bridge.initial_state()["formats"]] == ["mp4", "mkv", "mov"]

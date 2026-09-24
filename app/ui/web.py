@@ -70,8 +70,14 @@ from app.ui.folder import (
     scan_folder,
 )
 from app.video import cuts
-from app.video.cutter import CutterError, probe_clip
-from app.video.loader import PICKER_PATTERN, VideoLoadError
+from app.video.cutter import (
+    DEFAULT_EXPORT_FORMAT,
+    EXPORT_FORMATS,
+    CutterError,
+    export_format_for,
+    probe_clip,
+)
+from app.video.loader import PICKER_PATTERN, SUPPORTED_EXTENSIONS, VideoLoadError
 from app.video.source import SourceMismatch
 from app.video.timeline import format_timestamp
 
@@ -123,20 +129,33 @@ def _data_uri(image) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def output_path(folder: str, filename: str) -> Path:
+def output_path(folder: str, filename: str, export_format: str = DEFAULT_EXPORT_FORMAT) -> Path:
     """Where the next export will be written.
 
     The folder and the name are separate fields because they change on
     different rhythms: a folder is chosen once for a session's worth of
-    reels, while the name follows whichever face is selected. A missing
-    .mp4 is added rather than refused -- the extension is not a decision
-    anyone wants to be corrected about.
+    reels, while the name follows whichever face is selected. The format
+    is chosen beside the name, and it decides the extension: one that is
+    missing is added, and a video extension that disagrees is replaced
+    rather than refused -- nobody wants to be corrected about it.
     """
     directory = Path(folder.strip() or DEFAULT_OUTPUT_DIR).expanduser()
-    name = filename.strip() or DEFAULT_FILENAME
-    if not name.lower().endswith(".mp4"):
-        name = f"{name}.mp4"
-    return directory / name
+    if export_format not in EXPORT_FORMATS:
+        export_format = DEFAULT_EXPORT_FORMAT
+    return directory / with_extension(filename.strip() or DEFAULT_FILENAME, export_format)
+
+
+def with_extension(name: str, export_format: str) -> str:
+    """`name` saved as `export_format`: any video extension it has swapped."""
+    stem, dot, extension = name.rpartition(".")
+    if dot and stem and f".{extension.lower()}" in SUPPORTED_EXTENSIONS:
+        name = stem
+    return f"{name}.{export_format}"
+
+
+def _stem(name: str) -> str:
+    """A file name without a video extension, for telling names apart."""
+    return with_extension(name.strip(), "x")[:-2] if name.strip() else ""
 
 
 def _clock(seconds: float) -> str:
@@ -203,6 +222,9 @@ class Bridge:
         # similar.
         self._scan_settings: ScanSettings | None = None
         self._suggested_filename = ""
+        # What the next reel is saved as. Follows the video just scanned --
+        # an MKV makes an MKV reel -- until someone picks another.
+        self._format = DEFAULT_EXPORT_FORMAT
         # A folder is its own view with its own state, so opening one does
         # not throw away a single video already scanned, or the reverse.
         self._folder: FolderScan | None = None
@@ -272,6 +294,8 @@ class Bridge:
             "quality": "High",
             "folder": str(DEFAULT_OUTPUT_DIR),
             "filename": DEFAULT_FILENAME,
+            "formats": [{"id": key, "label": label} for key, label in EXPORT_FORMATS.items()],
+            "format": self._format,
             "status": self._availability_text(self._mode),
             "tuning": tuning.describe(self._mode),
         }
@@ -392,10 +416,11 @@ class Bridge:
             self._scan_result.close()
         self._scan_result = result
         self._selected = []
+        self._format = export_format_for(result.video_path)
         # The last suggestion is deliberately kept. Forgetting it made the
         # file name already in the box look typed by hand, so it survived
         # and a reel of this video was saved under the previous one's name.
-        self._emit("onScanned", self._scan_payload(result))
+        self._emit("onScanned", {**self._scan_payload(result), "format": self._format})
 
     # ------------------------------------------------------- suggestions
 
@@ -777,6 +802,28 @@ class Bridge:
             return f"{labels[0]} and {labels[1]}"
         return f"{', '.join(labels[:-1])} and {labels[-1]}"
 
+    def _hand_typed(self, current: str) -> bool:
+        """Whether the name in the box is someone's own rather than ours.
+
+        Judged without the extension, since changing the format changes
+        that and nothing else: a suggestion saved as MKV is still ours.
+        """
+        return _stem(current) not in ("", _stem(DEFAULT_FILENAME), _stem(self._suggested_filename))
+
+    def set_export_format(self, export_format: str, current_filename: str = "") -> dict:
+        """Chooses what the reel is saved as, and says what the name becomes.
+
+        The extension in the box follows the choice -- whether the name was
+        suggested or typed -- so what the box says is what gets written.
+        """
+        if export_format not in EXPORT_FORMATS:
+            return {"accepted": False}
+        self._format = export_format
+        if self._suggested_filename:
+            self._suggested_filename = with_extension(self._suggested_filename, export_format)
+        name = current_filename.strip() or DEFAULT_FILENAME
+        return {"accepted": True, "format": export_format, "filename": with_extension(name, export_format)}
+
     def _suggest_filename(self, people: list[Person], current: str) -> str | None:
         """Names the file after the video and the person, if that is free.
 
@@ -801,12 +848,12 @@ class Bridge:
                 _filename_part(chosen.name) or f"person-{chosen.index + 1}"
                 for chosen in people
             ]
-            suggestion = f"{stem}-{'+'.join(parts)}.mp4"
+            suggestion = f"{stem}-{'+'.join(parts)}.{self._format}"
         else:
             numbers = "+".join(str(chosen.index + 1) for chosen in people)
-            suggestion = f"{stem}-person-{numbers}.mp4"
+            suggestion = f"{stem}-person-{numbers}.{self._format}"
 
-        hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
+        hand_typed = self._hand_typed(current)
         self._suggested_filename = suggestion
         return None if hand_typed else suggestion
 
@@ -1092,7 +1139,9 @@ class Bridge:
 
     # -------------------------------------------------------------- export
 
-    def start_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
+    def start_export(
+        self, folder: str, filename: str, encoder: str, quality: str, export_format: str | None = None
+    ) -> dict:
         if self._busy():
             return {"started": False, "reason": "already running"}
         if self._scan_result is None or not self._selected:
@@ -1108,7 +1157,11 @@ class Bridge:
             video_encoder=encoder,
             quality=quality_for(encoder, quality),
         )
-        self._start(self._export_worker, output_path(folder, filename), settings, segments)
+        if export_format in EXPORT_FORMATS:
+            self._format = export_format
+        self._start(
+            self._export_worker, output_path(folder, filename, self._format), settings, segments
+        )
         return {"started": True}
 
     def _ensure_source_available(self) -> bool:
@@ -1236,7 +1289,14 @@ class Bridge:
         self._answers = load_answers(scanned)
         self._cast_chosen = []
         self._rebuild_cast()
-        self._emit("onFolderScanned", {**self._cast_payload(), "folderName": folder.name})
+        # A season is usually all one format; where it is mixed, the reel
+        # takes the one most of it is in.
+        formats = [export_format_for(result.video_path) for result in scanned.videos]
+        self._format = max(set(formats), key=formats.count) if formats else DEFAULT_EXPORT_FORMAT
+        self._emit(
+            "onFolderScanned",
+            {**self._cast_payload(), "folderName": folder.name, "format": self._format},
+        )
 
     def _rebuild_cast(self) -> None:
         assert self._folder is not None
@@ -1396,8 +1456,8 @@ class Bridge:
         part = "+".join(
             _filename_part(person.name) or f"person-{person.index + 1}" for person in people
         )
-        suggestion = f"{stem}-{part}.mp4"
-        hand_typed = current.strip() not in ("", DEFAULT_FILENAME, self._suggested_filename)
+        suggestion = f"{stem}-{part}.{self._format}"
+        hand_typed = self._hand_typed(current)
         self._suggested_filename = suggestion
         return None if hand_typed else suggestion
 
@@ -1564,7 +1624,9 @@ class Bridge:
             "videos": len(report.videos),
         }
 
-    def start_folder_export(self, folder: str, filename: str, encoder: str, quality: str) -> dict:
+    def start_folder_export(
+        self, folder: str, filename: str, encoder: str, quality: str, export_format: str | None = None
+    ) -> dict:
         if self._busy():
             return {"started": False, "reason": "already running"}
         if self._folder is None or self._cast_selected is None:
@@ -1578,7 +1640,11 @@ class Bridge:
             video_encoder=encoder,
             quality=quality_for(encoder, quality),
         )
-        self._start(self._folder_export_worker, output_path(folder, filename), settings, plans)
+        if export_format in EXPORT_FORMATS:
+            self._format = export_format
+        self._start(
+            self._folder_export_worker, output_path(folder, filename, self._format), settings, plans
+        )
         return {"started": True}
 
     def _folder_export_worker(self, output: Path, settings: ExportSettings, plans) -> None:

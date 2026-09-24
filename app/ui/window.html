@@ -227,6 +227,7 @@
   .strip .waiting { grid-column: 1 / -1; font-size: .72rem; color: var(--faint); }
 
   .pair { display: grid; grid-template-columns: 1.35fr 1fr; gap: 9px; }
+  .pair.name-format { grid-template-columns: minmax(0, 1fr) 5.2rem; }
 
   .footnote { font-size: .72rem; color: var(--faint); line-height: 1.5; margin: 0; }
 
@@ -468,9 +469,17 @@
         </div>
       </div>
 
-      <div class="field">
-        <label for="fname">File name</label>
-        <input type="text" id="fname">
+      <!-- The name and what it is saved as, side by side: the format decides
+           the extension, so the two are read together. -->
+      <div class="pair name-format">
+        <div class="field">
+          <label for="fname">File name</label>
+          <input type="text" id="fname">
+        </div>
+        <div class="field">
+          <label for="fmt">Format</label>
+          <select id="fmt" title="What the reel is saved as. Follows the video you scanned: an MKV makes an MKV reel."></select>
+        </div>
       </div>
 
       <div class="pair">
@@ -523,6 +532,8 @@
       `<option ${q===s.quality?"selected":""}>${q}</option>`).join("");
     $("folder").textContent = s.folder;
     $("fname").value = s.filename;
+    $("fmt").innerHTML = s.formats.map(f =>
+      `<option value="${f.id}" ${f.id === s.format ? "selected" : ""}>${f.label}</option>`).join("");
     status("<b>" + s.status + "</b>");
     drawTuning(s.tuning);
     // Drawn hidden, so the button says how many are saved before it is opened.
@@ -661,7 +672,7 @@
 
   $("exportBtn").addEventListener("click", async () => {
     const start = state.view === "folder" ? pywebview.api.start_folder_export : pywebview.api.start_export;
-    const r = await start($("folder").textContent, $("fname").value, $("enc").value, $("q").value);
+    const r = await start($("folder").textContent, $("fname").value, $("enc").value, $("q").value, $("fmt").value);
     if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
     busy("export");
     status("<b>Exporting…</b>");
@@ -671,7 +682,7 @@
     state.busy = kind;
     $("actionBtn").textContent = "Cancel";
     $("exportBtn").disabled = true;
-    ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
+    ["mode","interval","enc","q","fname","fmt","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
     document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
     document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = true);
   }
@@ -681,7 +692,7 @@
     $("actionBtn").textContent = "Scan for people";
     $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
-    ["mode","interval","enc","q","fname","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
+    ["mode","interval","enc","q","fname","fmt","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
     document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = false);
   }
@@ -701,7 +712,23 @@
       (left.length ? " Left out: " + left.join(", ") + "." : ""));
   };
 
+  // The format follows what was just scanned, and the name in the box
+  // takes its extension; the menu can still be changed before exporting.
+  async function takeFormat(format) {
+    if (!format || format === $("fmt").value) return;
+    const r = await pywebview.api.set_export_format(format, $("fname").value);
+    if (!r.accepted) return;
+    $("fmt").value = r.format;
+    $("fname").value = r.filename;
+  }
+
+  $("fmt").addEventListener("change", async () => {
+    const r = await pywebview.api.set_export_format($("fmt").value, $("fname").value);
+    if (r.accepted) $("fname").value = r.filename;
+  });
+
   window.onScanned = (d) => {
+    takeFormat(d.format);
     idle();
     setBar(1);
     $("statusTime").textContent = d.elapsed.toFixed(0) + "s";
@@ -927,6 +954,7 @@
   // ------------------------------------------------------------ folder view
 
   window.onFolderScanned = (d) => {
+    takeFormat(d.format);
     idle();
     setBar(1);
     $("statusTime").textContent = "";

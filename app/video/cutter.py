@@ -169,6 +169,27 @@ def _quality_options(encoder: str, quality: int) -> dict[str, str]:
 # subprocess version asked ffmpeg for with -video_track_timescale.
 VIDEO_TIME_BASE = Fraction(1, 90000)
 
+# What a reel can be saved as, by extension. The reel is H.264 picture and
+# AAC sound whatever it is saved as, and all three hold both, so choosing
+# one changes only the wrapper -- no second encode, nothing slower. WebM
+# is not among them: it takes neither, and would mean encoding VP9 and
+# Opus instead, which is a different and much slower export. AVI can
+# carry H.264 only awkwardly, and nothing plays that better than MP4.
+EXPORT_FORMATS = {"mp4": "MP4", "mkv": "MKV", "mov": "MOV"}
+DEFAULT_EXPORT_FORMAT = "mp4"
+
+
+def export_format_for(video: Path | str) -> str:
+    """What a reel of this video is saved as unless someone says otherwise.
+
+    Its own format where a reel can be one -- an MKV episode makes an MKV
+    reel, so a library kept in MKV stays in MKV -- and MP4 otherwise.
+    """
+    extension = Path(video).suffix.lower().lstrip(".")
+    if extension == "m4v":
+        return "mp4"
+    return extension if extension in EXPORT_FORMATS else DEFAULT_EXPORT_FORMAT
+
 
 def _open_output(
     output_path: Path,
@@ -687,6 +708,14 @@ def cut_clips(
     sound = next((p for p in profiles if p.sample_rate is not None), None)
 
     output_path = Path(output_path)
+    # The wrapper is chosen from the extension, so an extension that cannot
+    # hold H.264 and AAC would fail only once the encode had started -- or,
+    # for a typo, write a file nothing opens.
+    if output_path.suffix.lower().lstrip(".") not in EXPORT_FORMATS:
+        raise CutterError(
+            f"A reel can be saved as {', '.join('.' + f for f in EXPORT_FORMATS)}, "
+            f"not {output_path.suffix or 'a file with no extension'}."
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     started = time.monotonic()

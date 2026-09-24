@@ -42,6 +42,7 @@ from app.video.cutter import (
     CutterError,
     cut_clips,
     cut_segments,
+    export_format_for,
     probe_clip,
 )
 from app.video.export import merge_for_export
@@ -1102,9 +1103,16 @@ class BatchOutcome:
         return self.output_path is not None
 
 
-def batch_output_path(video_path: Path, output_dir: Path, suffix: str = "reel") -> Path:
-    """Names one episode's reel after the episode it came from."""
-    return output_dir / f"{video_path.stem}-{suffix}.mp4"
+def batch_output_path(
+    video_path: Path, output_dir: Path, suffix: str = "reel", export_format: str | None = None
+) -> Path:
+    """Names one episode's reel after the episode it came from.
+
+    Saved as `export_format`, or as the episode's own format where a reel
+    can be one (see `export_format_for`): a season kept in MKV gets MKV reels.
+    """
+    extension = export_format or export_format_for(video_path)
+    return output_dir / f"{video_path.stem}-{suffix}.{extension}"
 
 
 # The settings a scan's cache key is built from, and the ones that turn a
@@ -1233,6 +1241,7 @@ def run_batch(
     combine_path: Path | None = None,
     use_cache: bool = True,
     keep_repeats: bool = False,
+    export_format: str | None = None,
 ) -> list[BatchOutcome]:
     """Cuts one person out of every video in a folder.
 
@@ -1291,7 +1300,7 @@ def run_batch(
     outcomes: list[BatchOutcome] = []
     for position, video_path in enumerate(videos, start=1):
         print(f"=== [{position}/{len(videos)}] {video_path.name}")
-        destination = batch_output_path(video_path, output_dir)
+        destination = batch_output_path(video_path, output_dir, export_format=export_format)
         try:
             with load_video(video_path) as container:
                 export = run_export(

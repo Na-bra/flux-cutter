@@ -331,7 +331,9 @@ second, at 0.92-0.97, with no other card above 0.30. A reel joining both
 files kept picture and sound within 1ms over two minutes.
 
 Without `--combine`, each video gets its own reel, named after it
-(`S01E03-reel.mp4`) in `--output-dir`. Nobody named yet? `--reference
+(`S01E03-reel.mp4`) in `--output-dir`, and saved in the episode's own format
+where a reel can be one — an MKV season gets MKV reels; `--format mp4|mkv|mov`
+chooses instead. With `--combine`, the file name's extension decides. Nobody named yet? `--reference
 photos/lead.jpg` matches a photograph instead. Folders, files, or a mix;
 `--recursive` searches at any depth.
 
@@ -525,6 +527,8 @@ Pick a video, press **Scan for people**, click a face, press **Export reel**. Cl
 **Advanced settings.** The **Advanced** button beside Sampling opens the three settings that change most what a scan finds — how alike two faces must be to count as one person, the least screen time worth a card, and the smallest face to look at — each described by what moving it does. They are kept per content type; the button shows how many you have changed, and one click puts them back. Left alone, the window scans exactly as the command line does and they share kept scans.
 
 **A whole folder.** Switch the source to **Folder**, pick a season, and scan: each episode is scanned (or its kept scan reused) and the window shows one card per person across all of them, with a strip of their face from each episode and how many they are in. Where two cards look alike but not clearly enough to join on their own, the window asks **Same person?** with the two faces side by side — nothing is guessed. Click a person to see their reel across the folder, name them once to name them in every episode, and export one reel. No photo of anyone is needed.
+
+**Format**, beside the file name, is what the reel is saved as: MP4, MKV or MOV. It follows the video you scanned — an MKV episode makes an MKV reel, a MOV makes a MOV — and anything else makes an MP4; change it before exporting and the name's extension follows. All three hold the same H.264 picture and AAC sound, so the choice costs nothing in time or quality. WebM and AVI are not offered as outputs: neither holds that pair, and saving to them would mean a different, much slower encode.
 
 **Folder** and **File name** are separate fields because they change on different rhythms. A folder is chosen once for a session's worth of reels (**Choose...** opens a directory picker, and a folder that does not exist yet is created on export). The file name follows whichever face is selected — `test_3-person-2.mp4` — but only while it is still the name the app suggested; type your own and it survives clicking through the whole gallery. A missing `.mp4` extension is added for you.
 
@@ -735,5 +739,6 @@ The next logical prototype milestones are:
 - ~~adjust or drop single cuts before exporting~~
 - ~~look after named people in the window (rename, merge two names, forget one)~~
 - ~~accept MKV, WebM and AVI, including WebM at a variable frame rate~~
+- ~~choose what a reel is saved as — MP4, MKV or MOV — following the source by default~~
 
 This roadmap may evolve as the prototype proves which stages need refinement.

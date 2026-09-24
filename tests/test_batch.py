@@ -195,3 +195,12 @@ def test_the_same_reference_is_used_for_every_video(tmp_path, reference, monkeyp
 
     assert len(seen) == 2
     assert all(item is reference for item in seen)
+
+
+def test_a_reel_is_saved_in_its_episode_s_format_unless_told_otherwise(tmp_path):
+    assert batch_output_path(Path("/season/S01E01.mkv"), tmp_path).name == "S01E01-reel.mkv"
+    assert batch_output_path(Path("/season/S01E01.webm"), tmp_path).name == "S01E01-reel.mp4"
+    assert (
+        batch_output_path(Path("/season/S01E01.mkv"), tmp_path, export_format="mov").name
+        == "S01E01-reel.mov"
+    )
