@@ -3334,3 +3334,37 @@ The MKV is the MP4, as a remux should be. The WebM's lead was found less
 often, and that was the encode, not the format: it was VP9's real-time
 mode at 2 Mb/s, and the detector found 39 faces where the MP4 gave 49. At
 ordinary quality (CRF 24) it found 48, sampling the same 47 frames.
+
+## 45. Choosing what a reel is saved as (`EXPORT_FORMATS`)
+
+Every reel was an MP4: the window added `.mp4` to whatever was typed, and
+`batch` named each reel `…-reel.mp4`. With MKV accepted (§44), an MKV
+season came back as MP4 reels, which is not what someone who keeps their
+library in MKV wants.
+
+The reel is H.264 and AAC whatever it is saved as, and MP4, MKV and MOV
+all hold both -- so the choice changes only the wrapper: no second encode,
+nothing slower, the same picture and sound. WebM and AVI are not offered.
+WebM holds neither codec, and saving to it would mean encoding VP9 and
+Opus instead: a different, much slower export. AVI carries H.264 only
+awkwardly, and nothing plays it better than an MP4.
+
+A reel takes its source's format where a reel can be one -- MKV makes MKV,
+MOV makes MOV, M4V is MP4 -- and MP4 otherwise. A folder takes the format
+most of its videos are in. In the window a **Format** menu sits beside the
+file name and follows each scan; changing it swaps the name's extension,
+typed or suggested, so the box always says what will be written. A
+suggested name is still recognised as the window's own after that swap, so
+the next selection still replaces it. `batch --format` overrides the
+episode's own; `export --output` and `batch --combine` take the extension
+of the path given.
+
+An extension the cutter cannot write is refused before the encode starts,
+not partway through it: `.webm` would fail only once H.264 packets reached
+the muxer, and a name with no extension at all would have been guessed at.
+
+Driven in the window on an MKV remux of test.mp4: the menu read MKV once
+the scan finished, the suggested name was `episode-person-1.mkv`, and the
+reel was Matroska with H.264 and AAC, 13.47s of picture against 13.48s of
+sound. Switching to MOV renamed the box to `.mov` and wrote a QuickTime
+file with the same streams and lengths.

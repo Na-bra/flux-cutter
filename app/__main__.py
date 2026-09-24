@@ -21,6 +21,7 @@ from app.faces.grouper import (
     DEFAULT_MIN_FACE_SIZE,
     DEFAULT_SIMILARITY_THRESHOLD,
 )
+from app.video.cutter import EXPORT_FORMATS
 from app.video.cutter import CutterError
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
@@ -628,6 +629,17 @@ def main():
         help="Where the reels are written, one per video. Unused with --combine.",
     )
     batch_parser.add_argument(
+        "--format",
+        dest="export_format",
+        choices=sorted(EXPORT_FORMATS),
+        default=None,
+        help=(
+            "Save each reel as this. By default a reel takes its episode's own "
+            "format where it can (an MKV episode makes an MKV reel), and MP4 "
+            "otherwise. With --combine, the file name's extension decides."
+        ),
+    )
+    batch_parser.add_argument(
         "--recursive",
         action="store_true",
         help="Search folders for videos at any depth, not just the top level.",
@@ -865,6 +877,7 @@ def main():
                 combine_path=args.combine,
                 use_cache=not args.rescan,
                 keep_repeats=args.keep_repeats,
+                export_format=args.export_format,
                 output_dir=args.output_dir,
                 recursive=args.recursive,
                 reference_threshold=args.reference_threshold,
