@@ -507,6 +507,33 @@ that any correction can change. Names are limited to 60 characters and
 cannot contain the characters a path cannot carry, since they become part
 of a filename.
 
+### 16. Where the shots are
+
+A shot is a continuous stretch of footage between two cuts. FluxCutter can
+find them on their own, without looking for anyone:
+
+```bash
+python -m app shots episode.mp4
+```
+
+```text
+Shot 1: 00:00.00 → 00:01.04 (1.04s)
+Shot 2: 00:01.04 → 00:04.00 (2.96s)
+Shot 3: 00:04.00 → 00:07.51 (3.50s)
+...
+560 shots in 1355.9s; median 2.0s. Each boundary is exact to within 0.5s.
+```
+
+It reads frames the way a scan does, every half second, and compares each
+with the one before by its mix of colours and by its picture with
+brightness evened out. A boundary is the first sample of the new shot, so
+the cut itself lies within half a second before it. On the 22-minute test
+episode it found 96% of the cuts two full-rate references agree on, and
+91% of what it reports are cuts. `--threshold` (0.30) and `--min-shot`
+(0.75s) are the two settings worth changing; `--interval` samples more
+often, which finds shorter shots. Reels and appearances do not use shots
+yet.
+
 ## The desktop window
 
 Everything above is also available as one screen, which is the shorter route if you just want a reel out of a video:
@@ -740,5 +767,6 @@ The next logical prototype milestones are:
 - ~~look after named people in the window (rename, merge two names, forget one)~~
 - ~~accept MKV, WebM and AVI, including WebM at a variable frame rate~~
 - ~~choose what a reel is saved as — MP4, MKV or MOV — following the source by default~~
+- ~~find where each shot begins and ends~~ (on its own for now; appearances and cuts will use it next)
 
 This roadmap may evolve as the prototype proves which stages need refinement.
