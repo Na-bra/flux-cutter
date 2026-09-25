@@ -3368,3 +3368,107 @@ the scan finished, the suggested name was `episode-person-1.mkv`, and the
 reel was Matroska with H.264 and AAC, 13.47s of picture against 13.48s of
 sound. Switching to MOV renamed the box to `.mov` and wrote a QuickTime
 file with the same streams and lengths.
+
+## 46. Shot boundaries (`app/video/shots.py`)
+
+A shot is a continuous stretch of footage between two cuts. This finds
+them on their own -- no faces, no appearances, no change to scanning,
+grouping or export -- so that the next piece of work can make appearance
+intervals and reel cuts respect them. `python -m app shots VIDEO` prints
+them.
+
+### From the samples a scan already reads
+
+The cutter finds cuts frame by frame at a segment's edges (§37), but over
+a whole episode that means decoding and thumbnailing all 32,508 frames:
+84s for the 22-minute episode. A scan already holds a frame every half
+second with its real timestamp, from `extract_frames`, so shots are found
+from those samples. `ShotDetector` takes them one at a time, so the scan
+can feed it later without a second pass; `shots_of_video` reads a video
+through `extract_frames` for now. The price is precision -- a cut is known
+to lie between two samples -- and each shot keeps both ends of that
+window: `earliest_start` (the last sample of the shot before) and
+`start_time` (its own first sample).
+
+### Measuring against references, not by guessing
+
+Nobody can label 500 cuts by hand, so two independent references were run
+over every frame of the 22-minute episode: the cutter's own spike detector
+(517 cuts) and ffmpeg's `scdet` (469). 97% of ffmpeg's cuts were in the
+cutter's list, so the cuts both found (453) are a trustworthy answer key.
+Candidate rules were then scored on the half-second samples:
+
+| rule | recall | precision |
+| --- | --- | --- |
+| pixel difference >= 32 | 97.4% | 72.0% |
+| hue-saturation histogram distance >= 0.28 | 97.1% | 80.4% |
+| histogram >= 0.30, 1.3x its neighbours, pixels >= 24 | 96.7% | 88.3% |
+| ... or histogram >= 0.5 regardless | 98.5% | 86.5% |
+| ... and shots under 0.75s merged | 96.2% | 92.3% |
+
+Histograms beat raw pixels because a camera move or someone crossing the
+frame keeps the same colours. The unconditional 0.5 is for rapid cutting,
+where the neighbours are cuts too. Looking at the "false" detections as
+frame pairs showed most were real transitions the references cannot see,
+because they only look for a one-frame jump: wipes, fades from black,
+animated title cards. The genuine errors were effect flashes and a light
+going off within a shot.
+
+The real shots are short -- median 2.1s, 31 under a second, none under
+half a second -- so the minimum shot is 0.75s: it removes one-sample
+"shots", mostly flashes, and a 1.5s minimum would have cost recall down to
+79%. A short shot with the same footage either side of it is treated as a
+flash and both its cuts go; otherwise the weaker cut goes. That cost 0.7
+points of recall on the episode (a quick cutaway and back looks the same)
+and gained correct handling of flashes.
+
+### What the fan edit found
+
+test.mp4 is a 23-second fan edit, dark and cut every half second to second
+and a half. Labelled by eye from a sheet of its samples, it has 16 cuts, and
+the rule above found 7. Two things were in the way:
+
+- **Dark footage.** Everything is near black, so real cuts moved raw pixels
+  by 20-24, just under the limit of 24. The picture is now compared with
+  each frame's brightness and contrast taken out (greyscale, mean 0,
+  spread 1, spread floored at 8 so a nearly black frame is not blown up
+  into noise). That changed nothing on the episode.
+- **Cuts among cuts.** With half the neighbouring gaps being cuts, a cut
+  compared with the *median* of its neighbours was compared with a cut.
+  "Typical" is now the 35th percentile -- the quieter neighbours -- which
+  found 13 of 16 on the fan edit with no false cut, for about three points
+  of precision on the episode.
+
+A synthetic test builds exactly that: angles on one set, changing the
+colour mix by 0.40-0.46, in shots of one and two samples. The median rule
+finds 3 of its 11 shots, the percentile all 11.
+
+### As shipped
+
+| footage | result |
+| --- | --- |
+| episode, 22 min, live action | recall 96.2%, precision 90.7%, 560 shots, 24.8s |
+| fan edit, 23 s, dark and fast | 12 of 16 cuts, none false |
+| animation, 7 min | precision 91.2% against the references |
+
+On animation the references disagree with each other -- only half of
+each one's cuts are in the other, because both fire on flicker, fire and
+impact flashes -- so recall there has no trustworthy number. By eye, of 12
+random detections about 10 were cuts or real transitions and 2 were effects
+inside one shot. The shared rule is used for both modes.
+
+Sampling interval matters more than any threshold: recall on the episode
+was 98% at 0.25s, 96% at 0.5s, 83% at 1s and 64% at 2s, because a shot
+shorter than the gap between two samples cannot be seen. Shots are
+therefore sampled every 0.5s whatever interval a scan uses.
+
+### Known weaknesses
+
+- A boundary is exact only to within the sampling interval (median window
+  0.50s). Frame-accurate cuts would need the frames between two samples.
+- Shots shorter than about one sample are merged or missed: 4 of the fan
+  edit's 16 cuts, and quick cutaways that return to the same shot.
+- Effects inside a shot -- flashes, explosions, glows -- can read as cuts,
+  most of all in action animation.
+- A dissolve longer than a sample is found at whichever sample changes
+  most, or not at all if no single step is large.

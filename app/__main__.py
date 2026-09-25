@@ -46,6 +46,8 @@ from app.models import (
     find_model,
 )
 from app.video.frames import extract_frames
+from app.video.shots import SHOT_SAMPLE_INTERVAL, ShotSettings, shots_of_video
+from app.video.shots import describe as describe_shots
 from app.video.loader import VideoLoadError, get_video_info, load_video
 
 
@@ -87,6 +89,31 @@ def main():
     # 'info' command
     info_parser = subparsers.add_parser("info", help="Get metadata for a video file.")
     info_parser.add_argument("video_path", type=Path, help="Path to the video file.")
+
+    # 'shots' command
+    shots_parser = subparsers.add_parser(
+        "shots",
+        help="List where a video's camera shots begin and end.",
+        description=(
+            "Divides a video into shots -- continuous footage between two "
+            "cuts -- from frames sampled the way a scan samples them. Each "
+            "boundary is where the new shot is first seen; the cut itself "
+            "lies within one sampling interval before it."
+        ),
+    )
+    shots_parser.add_argument("video_path", type=Path, help="Path to the video file.")
+    shots_parser.add_argument(
+        "--interval", type=float, default=SHOT_SAMPLE_INTERVAL,
+        help="Seconds between sampled frames. Shorter finds shorter shots.",
+    )
+    shots_parser.add_argument(
+        "--threshold", type=float, default=ShotSettings.threshold,
+        help="How different two samples must look to be a cut (0-1). Lower finds more.",
+    )
+    shots_parser.add_argument(
+        "--min-shot", type=float, default=ShotSettings.min_shot_seconds,
+        help="Shots shorter than this many seconds are merged away.",
+    )
 
     # 'ui' command
     ui_parser = subparsers.add_parser(
@@ -766,6 +793,24 @@ def main():
             found = find_model(spec)
             where = str(found.parent) if found else "not present - will download on first use"
             print(f"  {spec.description} ({spec.size_label})\n    {where}")
+        return
+
+    if args.command == "shots":
+        settings = ShotSettings(threshold=args.threshold, min_shot_seconds=args.min_shot)
+        try:
+            shots = shots_of_video(args.video_path, sample_interval=args.interval, settings=settings)
+        except (VideoLoadError, ValueError) as error:
+            print(f"Error: {error}", file=sys.stderr)
+            sys.exit(1)
+        for line in describe_shots(shots):
+            print(line)
+        if shots:
+            lengths = sorted(shot.duration for shot in shots)
+            print(
+                f"\n{len(shots)} shot{'s' if len(shots) != 1 else ''} in "
+                f"{shots[-1].end_time:.1f}s; median {lengths[len(lengths) // 2]:.1f}s. "
+                f"Each boundary is exact to within {args.interval:g}s."
+            )
         return
 
     if args.command == "report":
