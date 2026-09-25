@@ -109,6 +109,16 @@ def _open_session(model_path: Path, fixed: dict[str, int]):
     Args:
         fixed: Free dimensions and the sizes they are always given here.
     """
+    # Checked before anything is imported: a mistyped setting is a typo
+    # whatever is installed, and saying onnxruntime is missing instead would
+    # send someone after the wrong problem.
+    requested = os.environ.get(BACKEND_OVERRIDE_VARIABLE) or None
+    if requested not in (None, COREML_BACKEND, *CPU_BACKENDS):
+        raise ValueError(
+            f"unknown embedding backend {requested!r}; expected {COREML_BACKEND!r} "
+            f"or one of {', '.join(repr(b) for b in CPU_BACKENDS)}"
+        )
+
     try:
         import onnxruntime
     except ImportError as error:
@@ -122,12 +132,6 @@ def _open_session(model_path: Path, fixed: dict[str, int]):
     for name, size in fixed.items():
         options.add_free_dimension_override_by_name(name, size)
 
-    requested = os.environ.get(BACKEND_OVERRIDE_VARIABLE) or None
-    if requested not in (None, COREML_BACKEND, *CPU_BACKENDS):
-        raise ValueError(
-            f"unknown embedding backend {requested!r}; expected {COREML_BACKEND!r} "
-            f"or one of {', '.join(repr(b) for b in CPU_BACKENDS)}"
-        )
     if requested not in CPU_BACKENDS and _coreml_is_worth_trying():
         try:
             session = onnxruntime.InferenceSession(
