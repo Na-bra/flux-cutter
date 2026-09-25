@@ -3472,3 +3472,80 @@ therefore sampled every 0.5s whatever interval a scan uses.
   most of all in action animation.
 - A dissolve longer than a sample is found at whichever sample changes
   most, or not at all if no single step is large.
+
+## 47. Animation mode on Core ML (`app/faces/anime.py`)
+
+A second animated test video -- `animation2.mp4`, a 23.5-minute Ben 10
+episode -- took 14 minutes 17 seconds to scan in animation mode, against
+about a minute for a live-action episode of the same length. Both of
+animation mode's models ran on onnxruntime's CPU provider, deliberately:
+the mode had to work without an accelerator, and a provider list that
+silently preferred one could make results depend on the machine.
+
+### Where the time went
+
+    find faces in a frame (detector, CPU)    109-128 ms
+    embed one face (CCIP, CPU)               249 ms
+
+At a sample every half second and 1,898 faces, that is the whole scan.
+Batching faces did not help on the CPU (266 ms a face four at a time).
+
+### Why Core ML was slower before it was faster
+
+    embedder                                per face   agreement with CPU
+    CPU                                      249 ms
+    Core ML, neural network                  849 ms    1.00000
+    Core ML, ML Program                      refused
+    Core ML, ML Program, batch fixed at 1     67 ms    1.00000 (worst 1.0000)
+
+    detector                                per frame  largest output difference
+    CPU                                      109 ms
+    Core ML, neural network                   86 ms    0.25
+    Core ML, ML Program, 1x3x640x640          25 ms    0.0016
+
+Both graphs declare free dimensions -- the batch, and the detector's height
+and width -- and Core ML's ML Program format cannot plan a graph whose
+shapes are unbounded ("input has unbounded dimension which is not
+supported"). The older neural-network format takes the graph in pieces and
+hands the rest back to the CPU, and the embedder came out 3.4x slower that
+way. Pinning the shapes -- one face per call, and the 640x640 letterbox
+every frame is already fitted into -- lets ML Program take each graph
+whole. The Neural Engine alone was slower (125 ms a face) than letting
+Core ML choose.
+
+The shapes are pinned as the session loads (onnxruntime's free-dimension
+overrides), not by rewriting the model: that needed the `onnx` package,
+which FluxCutter does not depend on, and it would have meant a second copy
+of 150 MB of pinned, checksummed weights.
+
+### The same people, not just the same counts
+
+Live mode's Core ML path produces slightly different vectors (median
+0.99974 cosine, measured in app/faces/embedder.py), which is why its grouping was re-measured. These
+agree to six decimal places, so the check was a whole scan of each
+animated video both ways, compared card by card:
+
+    footage            CPU        Core ML    cards  same faces in each  worst agreement
+    animation2.mp4     14m 17s    3m 43s     14     14 of 14            1.000000
+    animation.mp4      3m 32s     1m 01s      6      6 of 6             1.000000
+
+Every face box matched too. Kept scans made either way are interchangeable.
+
+The CPU remains the fallback: off macOS, without Core ML, or if
+onnxruntime quietly declines the graph (it is checked, not assumed).
+`FLUXCUTTER_EMBED_BACKEND` -- live mode's switch -- also governs this one:
+`cpu` or `opencv` keeps animation on the CPU, `coreml` insists on Core ML
+and says so if it is not there.
+
+### What the second video said about the thresholds (ACC-1)
+
+The scan found Ben, Gwen and Grandpa Max as the three largest cards and
+eight more distinct supporting characters, plus two cards that are not
+people (a sunset, a glowing creature). Gwen was split across three cards,
+and no threshold could have joined them: her main card and a redder
+drawing of her are 0.67 alike, while different characters reach 0.81 (Max
+and a young man), 0.80 and 0.79. Her angry close-up is 0.82 alike her main
+card, under the 0.85 animation mode joins at, and 0.01 above the closest
+pair of different people. So the second video argues for leaving the
+animation thresholds where they are; a split like Gwen's is what Merge in
+the window is for.
