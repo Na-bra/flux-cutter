@@ -26,6 +26,7 @@ Two things here deliberately do NOT match the live-action pipeline:
   the other's thresholds would put every character in one group.
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,7 +35,13 @@ import numpy as np
 
 from app.debug import onnx_log_severity
 from app.faces.detector import BoundingBox, FaceDetection
-from app.faces.embedder import EmbeddedFace
+from app.faces.embedder import (
+    BACKEND_OVERRIDE_VARIABLE,
+    COREML_BACKEND,
+    OPENCV_BACKEND,
+    EmbeddedFace,
+    _coreml_is_worth_trying,
+)
 from app.faces.quality import sharpness as crop_sharpness
 from app.models import MODELS, ModelDownloadError, ensure_model_cli
 
@@ -64,13 +71,54 @@ def onnxruntime_available() -> bool:
     return True
 
 
-def _session(model_path: Path):
-    """One CPU inference session.
+# Core ML, and why the shapes are fixed first.
+#
+# Both models ran on onnxruntime's CPU provider, and a 23-minute episode took
+# 14 minutes to scan: 109 ms a frame to find faces and 249 ms a face to
+# embed them. Live mode reaches Apple's accelerators through Core ML
+# (app/faces/embedder.py); these two models did not, for a reason that took
+# measuring to see. Both declare their batch size -- and the detector its
+# height and width -- as free dimensions, and Core ML cannot plan a graph
+# whose shapes are unbounded:
+#
+#                                      embed a face   find faces in a frame
+#     CPU (as before)                      249 ms            109 ms
+#     Core ML, neural network              849 ms             86 ms
+#     Core ML, ML Program                  refused            refused
+#     Core ML, ML Program, shapes fixed     67 ms             25 ms
+#
+# The neural-network format takes the graph in pieces and hands the rest
+# back to the CPU, and the embedder came out 3.4x *slower*. ML Program with
+# the shapes pinned -- batch 1, and the 640x640 letterbox every frame is
+# already fitted into -- runs whole: 3.7x faster to embed, 4.4x to detect.
+# The shapes are fixed as the session loads (free dimension overrides), so
+# the pinned model files are used as downloaded and nothing is rewritten.
+#
+# Unlike live mode's, these vectors come out the same: over 64 real faces
+# the worst cosine agreement with the CPU was 1.0000, and the detector's
+# raw output differed by at most 0.0016. A whole scan of each test video
+# gives the same people either way (Instructions.md 47).
+#
+# The CPU provider stays the fallback, so animation mode still needs no
+# accelerator: off macOS, without Core ML, or when onnxruntime quietly
+# declines the graph, it runs exactly as it did.
 
-    CPU only and on purpose: the brief requires animation mode to work
-    without a GPU, and a provider list that silently prefers an accelerator
-    would make results depend on the machine.
+def _open_session(model_path: Path, fixed: dict[str, int]):
+    """A session for one model, on Core ML where it can be.
+
+    Args:
+        fixed: Free dimensions and the sizes they are always given here.
     """
+    # Checked before anything is imported: a mistyped setting is a typo
+    # whatever is installed, and saying onnxruntime is missing instead would
+    # send someone after the wrong problem.
+    requested = os.environ.get(BACKEND_OVERRIDE_VARIABLE) or None
+    if requested not in (None, COREML_BACKEND, *CPU_BACKENDS):
+        raise ValueError(
+            f"unknown embedding backend {requested!r}; expected {COREML_BACKEND!r} "
+            f"or one of {', '.join(repr(b) for b in CPU_BACKENDS)}"
+        )
+
     try:
         import onnxruntime
     except ImportError as error:
@@ -81,10 +129,37 @@ def _session(model_path: Path):
 
     options = onnxruntime.SessionOptions()
     options.log_severity_level = onnx_log_severity()
+    for name, size in fixed.items():
+        options.add_free_dimension_override_by_name(name, size)
+
+    if requested not in CPU_BACKENDS and _coreml_is_worth_trying():
+        try:
+            session = onnxruntime.InferenceSession(
+                str(model_path),
+                options,
+                providers=[
+                    ("CoreMLExecutionProvider", {"ModelFormat": "MLProgram"}),
+                    "CPUExecutionProvider",
+                ],
+            )
+            # onnxruntime falls back silently when Core ML declines the
+            # graph, so it is checked rather than assumed.
+            if "CoreMLExecutionProvider" in session.get_providers():
+                return session
+        except Exception:
+            pass
+    if requested == COREML_BACKEND:
+        raise RuntimeError("Core ML was requested but is not available here")
 
     return onnxruntime.InferenceSession(
         str(model_path), options, providers=["CPUExecutionProvider"]
     )
+
+
+# Live mode's switch, read the same way here, so one setting opts a machine
+# out of Core ML in both modes. Live mode's other backend is cv2.dnn, which
+# cannot load these graphs, so for animation "opencv" means the CPU.
+CPU_BACKENDS = ("cpu", OPENCV_BACKEND)
 
 
 def _letterbox(image: np.ndarray, size: int) -> tuple[np.ndarray, float, int, int]:
@@ -128,7 +203,10 @@ class AnimeFaceDetector:
     ):
         self.settings = settings or AnimeDetectorSettings()
         self.model_path = _resolve(model_path, "anime_detector")
-        self._session = _session(self.model_path)
+        self._session = _open_session(
+            self.model_path,
+            {"batch": 1, "height": DETECTOR_INPUT_SIZE, "width": DETECTOR_INPUT_SIZE},
+        )
         self._input = self._session.get_inputs()[0].name
 
     def detect(self, image: np.ndarray) -> list[FaceDetection]:
@@ -220,7 +298,7 @@ class AnimeFaceEmbedder:
     ):
         self.settings = settings or AnimeEmbedderSettings()
         self.model_path = _resolve(model_path, "anime_embedder")
-        self._session = _session(self.model_path)
+        self._session = _open_session(self.model_path, {"batch": 1})
         self._input = self._session.get_inputs()[0].name
 
     def crop(self, frame: np.ndarray, detection: FaceDetection) -> np.ndarray | None:
@@ -280,7 +358,12 @@ class AnimeFaceEmbedder:
             ]
         ).transpose(0, 3, 1, 2)
 
-        vectors = self._session.run(None, {self._input: batch})[0]
+        # One face at a time: the session's batch is fixed at 1 (see
+        # _open_session), and on the CPU four at once was no faster anyway
+        # (266 ms a face against 249).
+        vectors = np.concatenate(
+            [self._session.run(None, {self._input: batch[i : i + 1]})[0] for i in range(len(batch))]
+        )
         for row, position in enumerate(positions):
             vector = vectors[row].astype(np.float32)
             norm = float(np.linalg.norm(vector))

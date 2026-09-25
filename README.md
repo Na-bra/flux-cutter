@@ -549,6 +549,8 @@ Pick a video, press **Scan for people**, click a face, press **Export reel**. Cl
 
 **Season report.** In folder view, **Report** writes who is in which video, and for how long, beside your reels — a CSV and a page with each person's face — and opens the page. From the command line: `python -m app report season-1/`. Each figure is that person's screen time in that video as `timestamps` counts it; the total says how much of it is a recap of an earlier episode.
 
+**Animation.** Set **Content type** to Animation for drawn footage: it finds and recognises drawn faces with models made for them (live action's would put every character on one card). On a Mac both run through Core ML: a 23-minute episode scans in under four minutes, against fourteen on the CPU, with exactly the same people found. Elsewhere, or with `FLUXCUTTER_EMBED_BACKEND=cpu`, it runs on the CPU as before.
+
 **Editing the cuts.** Selecting a person says what the reel will be — `Person #2 selected - 14 cuts, about 4:31` — and **Edit cuts…** in the rail opens those fourteen as a list: each one with the frame it opens on, the frame it ends on, how long it runs, and which video it came from in folder view. Drop a cut you do not want, or move either end by a frame or a second; an end stops at the video's bounds and at its neighbour, so cuts never overlap. A dropped cut stays in the list, greyed, and its footage is free for a neighbour to grow across — which is how a shot split in two is repaired. The export cuts the list as you left it, and **Back to the plan** undoes the lot.
 
 **Advanced settings.** The **Advanced** button beside Sampling opens the three settings that change most what a scan finds — how alike two faces must be to count as one person, the least screen time worth a card, and the smallest face to look at — each described by what moving it does. They are kept per content type; the button shows how many you have changed, and one click puts them back. Left alone, the window scans exactly as the command line does and they share kept scans.
@@ -768,5 +770,6 @@ The next logical prototype milestones are:
 - ~~accept MKV, WebM and AVI, including WebM at a variable frame rate~~
 - ~~choose what a reel is saved as — MP4, MKV or MOV — following the source by default~~
 - ~~find where each shot begins and ends~~ (on its own for now; appearances and cuts will use it next)
+- ~~scan animation through Core ML: 3.5-3.8x faster, the same people~~
 
 This roadmap may evolve as the prototype proves which stages need refinement.

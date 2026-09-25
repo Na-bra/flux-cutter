@@ -54,7 +54,7 @@ def test_a_clear_error_when_the_runtime_is_missing(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", blocked)
     with pytest.raises(anime.AnimeModelUnavailable, match="pip install onnxruntime"):
-        anime._session(Path("unused.onnx"))
+        anime._open_session(Path("unused.onnx"), {})
 
 
 def test_a_missing_weights_file_is_reported_clearly():
@@ -148,3 +148,132 @@ def test_an_unusable_crop_yields_none_in_its_own_slot():
 
     assert len(results) == 2
     assert results[1] is not None
+
+
+# ----------------------------------------------------------------- Core ML
+#
+# Both models reach Apple's accelerators through Core ML, with their free
+# dimensions pinned so Core ML will take the whole graph (see
+# anime._open_session). The CPU stays the fallback, and the two must agree.
+
+coreml_here = pytest.mark.skipif(
+    not anime._coreml_is_worth_trying(), reason="Core ML is not available on this machine"
+)
+
+
+def _backend(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("FLUXCUTTER_EMBED_BACKEND", raising=False)
+    else:
+        monkeypatch.setenv("FLUXCUTTER_EMBED_BACKEND", value)
+
+
+def test_an_unknown_backend_is_refused(monkeypatch):
+    _backend(monkeypatch, "gpu-please")
+    with pytest.raises(ValueError, match="unknown embedding backend"):
+        anime._open_session(Path("unused.onnx"), {})
+
+
+def test_asking_for_core_ml_where_there_is_none_says_so(monkeypatch):
+    """Asked for by name, a missing accelerator is an error rather than a
+    silent CPU run someone would then mistake for Core ML's speed."""
+    _backend(monkeypatch, "coreml")
+    monkeypatch.setattr(anime, "_coreml_is_worth_trying", lambda: False)
+    if not anime.onnxruntime_available():
+        pytest.skip("onnxruntime is not installed")
+    with pytest.raises(RuntimeError, match="Core ML was requested"):
+        anime._open_session(Path("unused.onnx"), {})
+
+
+@needs_runtime
+@needs_weights
+@pytest.mark.parametrize("value", ["cpu", "opencv"])
+def test_the_cpu_can_be_chosen_with_live_mode_s_switch(monkeypatch, value):
+    """One setting opts a machine out of Core ML in both modes; live mode's
+    other backend is cv2.dnn, which cannot load these graphs, so it means
+    the CPU here."""
+    _backend(monkeypatch, value)
+    embedder = anime.AnimeFaceEmbedder()
+
+    assert embedder._session.get_providers() == ["CPUExecutionProvider"]
+
+
+@needs_runtime
+@needs_weights
+@coreml_here
+def test_both_models_run_on_core_ml_by_default(monkeypatch):
+    _backend(monkeypatch, None)
+
+    assert anime.AnimeFaceDetector()._session.get_providers()[0] == "CoreMLExecutionProvider"
+    assert anime.AnimeFaceEmbedder()._session.get_providers()[0] == "CoreMLExecutionProvider"
+
+
+def _crops_from_footage(count=6):
+    """Real drawn faces from the test footage, with their frame."""
+    from app.video.frames import extract_frames
+    from app.video.loader import load_video
+
+    detector = anime.AnimeFaceDetector()
+    with load_video(VIDEO) as container:
+        for _, frame in extract_frames(container, sample_interval=5.0):
+            found = detector.detect(frame)
+            if len(found) >= 1:
+                return frame, found[:count]
+    pytest.skip("no faces found in the footage")
+
+
+@needs_runtime
+@needs_weights
+@coreml_here
+@pytest.mark.skipif(not VIDEO.is_file(), reason="no animation footage")
+def test_core_ml_and_the_cpu_embed_a_face_the_same(monkeypatch):
+    """Measured over 64 real faces: worst cosine agreement 1.0000. Unlike
+    live mode's Core ML path, these come out the same vectors."""
+    frame, detections = _crops_from_footage()
+    _backend(monkeypatch, "cpu")
+    on_cpu = anime.AnimeFaceEmbedder().embed_batch(frame, detections)
+    _backend(monkeypatch, "coreml")
+    on_coreml = anime.AnimeFaceEmbedder().embed_batch(frame, detections)
+
+    for a, b in zip(on_cpu, on_coreml):
+        assert float(np.dot(a.embedding, b.embedding)) > 0.9999
+
+
+@needs_runtime
+@needs_weights
+@coreml_here
+@pytest.mark.skipif(not VIDEO.is_file(), reason="no animation footage")
+def test_core_ml_and_the_cpu_find_the_same_faces(monkeypatch):
+    from app.video.frames import extract_frames
+    from app.video.loader import load_video
+
+    with load_video(VIDEO) as container:
+        frames = [frame for _, frame in extract_frames(container, sample_interval=20.0)]
+    _backend(monkeypatch, "cpu")
+    on_cpu = [anime.AnimeFaceDetector().detect(frame) for frame in frames]
+    _backend(monkeypatch, "coreml")
+    on_coreml = [anime.AnimeFaceDetector().detect(frame) for frame in frames]
+
+    assert sum(len(found) for found in on_cpu) > 0
+    for a, b in zip(on_cpu, on_coreml):
+        assert [d.box for d in a] == [d.box for d in b]
+
+
+@needs_runtime
+@needs_weights
+def test_several_faces_embed_as_they_would_one_at_a_time():
+    """The session takes one face per call now; a frame with several must
+    still come back in order, each the vector it would have alone."""
+    rng = np.random.default_rng(3)
+    frame = rng.integers(0, 255, (400, 600, 3), dtype=np.uint8)
+    boxes = [
+        FaceDetection(box=BoundingBox(x_min=20 + 180 * k, y_min=60, x_max=160 + 180 * k, y_max=200), confidence=0.8)
+        for k in range(3)
+    ]
+    embedder = anime.AnimeFaceEmbedder()
+
+    together = embedder.embed_batch(frame, boxes)
+    alone = [embedder.embed_batch(frame, [box])[0] for box in boxes]
+
+    for a, b in zip(together, alone):
+        assert np.allclose(a.embedding, b.embedding, atol=1e-6)
