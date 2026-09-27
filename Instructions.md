@@ -3549,3 +3549,59 @@ card, under the 0.85 animation mode joins at, and 0.01 above the closest
 pair of different people. So the second video argues for leaving the
 animation thresholds where they are; a split like Gwen's is what Merge in
 the window is for.
+
+## 48. A crash exporting a 43-minute HDTV MKV
+
+Exporting three people from a 43-minute MKV -- H.264 720p, AC3 5.1 sound,
+an HDTV recording -- crashed the app twice, the second time leaving a
+612 MB MP4 with no index, which nothing can play. macOS kept the crash
+reports: both were segmentation faults in the export thread, in
+`AudioFifo.write`, copying from a null address.
+
+Rebuilt from the kept scan, the reel was 156 cuts making 27 minutes of the
+43, and it crashed the same way between cuts 41 and 51. Cut one at a time
+in separate processes, it was cut 43, alone, every time. Two faults were
+found on the way, and both are fixed.
+
+### The sound changed format mid-cut
+
+At 973.088s the broadcast sound switches from 5.1 to stereo for 0.128s --
+four AC3 frames -- and back: a splice in the recording. Each cut's sound
+goes through a resampler that fixes its input format on the first frame it
+sees. Handed the stereo frames, it produced a frame with nothing behind it,
+and copying that into the buffer crashed. Ten synthetic frames, three
+stereo among 5.1, reproduced it on their own (exit 139).
+
+Now a change of format finishes the current resampler and starts another
+converting to the same output. The frames a new resampler makes carry a
+different clock from the first's, which the buffer refuses ("Frame does not
+match AudioFifo parameters") when the source counts in milliseconds, as
+Matroska does -- so everything buffered is given the reel's clock. The test
+feeds the ten frames with a millisecond clock, and fails without either
+half of the fix.
+
+This was never specific to MKV; any source whose sound changes format
+would have done it. Broadcast recordings are where that happens.
+
+### Each cut's sound was copied several times over
+
+A cut's sound was faded at both ends -- 5ms, to stop joins clicking -- by
+building the whole cut as one array, in doubles, and multiplying it. One
+3.5-minute cut of that episode (670-881s, all three people in one scene)
+peaked at 2.4 GB: about 6.5 MB for each second of cut, where 5.1 sound is
+1.15 MB a second. Stereo is a third of that, which is why it had not shown.
+
+Now only the samples inside the fades are changed, in place, and a cut's
+sound goes to the encoder a second at a time. Chunks read back from the
+buffer keep their source's clock too, and are given the reel's.
+
+### After
+
+    the 156-cut reel, from the MKV     before            after
+    result                             crashed at cut 43  finished
+    peak memory                        2.4 GB on one cut  676 MB for the reel
+    time                               --                 2m 26s
+    picture / sound                    --                 1562.1439s / 1562.144s, 6 channels
+
+The partial reel the crashes left behind is not a valid file and has to be
+exported again.

@@ -433,11 +433,18 @@ def test_the_fade_eases_both_ends_and_keeps_every_sample(
         np.full(shape, full, dtype=dtype), format=format_name, layout=layout_name
     )
 
-    faded = state._faded([part, part])
-    data = _flat(faded, planar, channels).astype(np.float64)
+    # Two chunks of one segment, eased where they sit in it.
+    first, second = part, av.AudioFrame.from_ndarray(
+        np.full(shape, full, dtype=dtype), format=format_name, layout=layout_name
+    )
+    state._ease(first, 0, 2 * samples)
+    state._ease(second, samples, 2 * samples)
+    data = np.concatenate(
+        [_flat(first, planar, channels), _flat(second, planar, channels)], axis=1
+    ).astype(np.float64)
     fade = int(round(FADE_SECONDS * RATE))
 
-    assert faded.samples == 2 * samples
+    assert data.shape[1] == 2 * samples
     # Each channel eased to near zero at both ends, untouched in between.
     assert np.all(np.abs(data[:, 0]) < 0.01 * full)
     assert np.all(np.abs(data[:, -1]) < 0.01 * full)
@@ -452,9 +459,79 @@ def test_a_segment_shorter_than_two_fades_still_comes_out_whole():
         np.full((1, 101), 0.5, dtype=np.float32), format="fltp", layout="mono"
     )
 
-    faded = state._faded([part])
-    data = faded.to_ndarray()[0]
+    state._ease(part, 0, 101)
+    data = part.to_ndarray()[0]
 
-    assert faded.samples == 101
+    assert part.samples == 101
     assert np.isfinite(data).all()
     assert data.max() <= 0.5
+
+
+def test_a_fade_that_spans_two_chunks_is_one_smooth_fade():
+    """A segment's sound is written a second at a time, so a fade can
+    straddle two chunks; eased chunk by chunk it must match the fade of the
+    whole."""
+    from app.video.cutter import FADE_SECONDS, _AudioState
+
+    state = _AudioState(_Encoder("fltp", "mono"), RATE, Fraction(FPS))
+    total = 4800
+    whole = av.AudioFrame.from_ndarray(np.full((1, total), 0.5, np.float32), format="fltp", layout="mono")
+    state._ease(whole, 0, total)
+    fade = int(round(FADE_SECONDS * RATE))
+    split = fade // 3  # the first chunk ends partway into the opening fade
+    pieces = [
+        av.AudioFrame.from_ndarray(np.full((1, n), 0.5, np.float32), format="fltp", layout="mono")
+        for n in (split, total - split)
+    ]
+    state._ease(pieces[0], 0, total)
+    state._ease(pieces[1], split, total)
+
+    joined = np.concatenate([piece.to_ndarray()[0] for piece in pieces])
+    assert np.allclose(joined, whole.to_ndarray()[0])
+
+
+def test_a_long_cut_s_sound_is_written_a_second_at_a_time(tmp_path, monkeypatch):
+    """A 3.5-minute cut of 5.1 sound once became about 1.3 GB of copies, and
+    a 27-minute reel of a 43-minute MKV crashed when memory ran out. The
+    sound now goes to the encoder in chunks of at most one second."""
+    from app.video import cutter
+
+    source = tmp_path / "long.mp4"
+    write_tone_video(source, seconds=20)
+    largest = []
+    original = cutter._AudioState._push
+
+    def recording(self, frame):
+        largest.append(frame.samples)
+        return original(self, frame)
+
+    monkeypatch.setattr(cutter._AudioState, "_push", recording)
+
+    cut_segments(source, [AppearanceInterval(1.0, 18.0)], tmp_path / "cut.mp4")
+
+    assert max(largest) <= RATE
+    assert sum(largest) >= 16 * RATE
+
+
+def test_sound_that_changes_format_partway_is_buffered_whole():
+    """Broadcast AC3 can switch from 5.1 to stereo for a moment and back --
+    a 43-minute HDTV MKV does it for 0.128s at 973s. A resampler fixes its
+    input on the first frame, and handed the other layout it produced a
+    frame with nothing behind it; buffering that crashed the app outright
+    (a segmentation fault in AudioFifo.write) and left a half-written reel.
+    """
+    from app.video.cutter import _AudioState
+
+    state = _AudioState(_Encoder("fltp", "5.1(side)"), RATE, Fraction(FPS))
+    state.begin()
+    layouts = ["5.1(side)"] * 3 + ["stereo"] * 4 + ["5.1(side)"] * 3
+    for k, layout in enumerate(layouts):
+        channels = len(av.AudioLayout(layout).channels)
+        frame = av.AudioFrame.from_ndarray(
+            np.full((channels, 1536), 0.1, np.float32), format="fltp", layout=layout
+        )
+        # Matroska keeps sound in milliseconds, as the HDTV episode did.
+        frame.rate, frame.pts, frame.time_base = RATE, k * 32, Fraction(1, 1000)
+        state.write(frame)
+
+    assert state._staging.samples == len(layouts) * 1536

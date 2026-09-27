@@ -242,6 +242,9 @@ def _open_output(
 # picture and sound stay exactly as aligned as before.
 FADE_SECONDS = 0.005
 
+# Sample formats' numpy types, by name without the planar "p".
+_SAMPLE_TYPES = {"flt": np.float32, "dbl": np.float64, "s16": np.int16, "s32": np.int32, "u8": np.uint8}
+
 
 @dataclass
 class _Counters:
@@ -310,6 +313,8 @@ class _AudioState:
         # Samples of silence written because the source had no sound there.
         # Kept so a test can tell genuine gaps from manufactured ones.
         self.silence_samples = 0
+        # How much of a segment's sound is handled at once: a second.
+        self._chunk = rate
 
     def begin(self) -> None:
         """Starts buffering a new segment's audio.
@@ -322,7 +327,11 @@ class _AudioState:
         """
         self._staging = av.AudioFifo()
         self._origin = None
-        self._resampler = av.AudioResampler(
+        self._resampler = self._new_resampler()
+        self._source_format = None
+
+    def _new_resampler(self):
+        return av.AudioResampler(
             format=self._encoder.format,
             layout=self._encoder.layout,
             rate=self._encoder.rate,
@@ -334,11 +343,33 @@ class _AudioState:
         Nothing is encoded yet: which of these samples belong to the reel
         depends on which video frames the segment keeps, and that is only
         known once it has been read.
+
+        A source's sound can change format partway through. Broadcast AC3
+        does: the 43-minute HDTV episode this was found on switches from
+        5.1 to stereo for 0.128s at 973s and back, a splice in the
+        recording. A resampler fixes its input format on the first frame it
+        sees, and handed a different one it produced a frame with no
+        samples behind it -- and copying that into the buffer crashed the
+        app outright (a segmentation fault in AudioFifo.write), taking the
+        half-written reel with it. So a change of format finishes the
+        current resampler and starts another, converting to the same output.
         """
         if self._origin is None and frame.time is not None:
             self._origin = frame.time
-        for resampled in self._resampler.resample(frame):
+        source = (frame.format.name, frame.layout.name, frame.rate)
+        if self._source_format is not None and source != self._source_format:
+            self._stage(self._resampler.resample(None))
+            self._resampler = self._new_resampler()
+        self._source_format = source
+        self._stage(self._resampler.resample(frame))
+
+    def _stage(self, frames) -> None:
+        for resampled in frames:
+            # One clock for everything buffered: a new resampler's frames
+            # otherwise carry a different one from the first's, and the
+            # buffer refuses them.
             resampled.pts = None
+            resampled.time_base = self._time_base
             self._staging.write(resampled)
 
     def _silence(self, samples: int):
@@ -358,46 +389,58 @@ class _AudioState:
         self._output.write(frame)
         self._pushed += frame.samples
 
-    def _faded(self, parts):
-        """One segment's sound as a single frame, eased in and out at its ends.
+    def _ease(self, frame, offset: int, total: int) -> None:
+        """Fades, in place, whatever of `frame` lies in its segment's ends.
 
-        The fade is applied to the whole segment, silence included, so it
-        lands at the join whatever the segment is made of. A segment too
-        short for two full fades gets two that meet in its middle.
+        The frame is one chunk of a segment `total` samples long, starting
+        `offset` samples in. Only samples within FADE_SECONDS of either end
+        of the segment change; the rest are not touched, and nothing is
+        copied. A segment too short for two full fades gets two that meet
+        in its middle.
+
+        This used to build the whole segment's sound as one array, in
+        doubles, to change a few milliseconds at each end. A 3.5-minute cut
+        of 5.1 sound is 243 MB of samples, and that made it about 1.3 GB in
+        copies -- 6.5 MB for every second of cut, where the sound itself is
+        1.15 MB. On a 27-minute reel of a 43-minute MKV the export's memory
+        climbed until the audio buffer could not grow, and FluxCutter
+        crashed copying into it (a segmentation fault in AudioFifo.write).
         """
+        length = min(int(round(FADE_SECONDS * self._rate)), total // 2)
+        samples = frame.samples
+        if length <= 0 or samples == 0:
+            return
+        # Positions within this frame that the fades reach.
+        head = range(max(0, -offset), max(0, min(samples, length - offset)))
+        tail = range(max(0, total - length - offset), max(0, min(samples, total - offset)))
+        if not head and not tail:
+            return
+
         planar = self._encoder.format.is_planar
         channels = len(self._encoder.layout.channels)
-        arrays = []
-        for part in parts:
-            data = part.to_ndarray()
-            arrays.append(data if planar else data.reshape(-1, channels).T)
-        data = np.concatenate(arrays, axis=1)
-        dtype = data.dtype
+        dtype = _SAMPLE_TYPES[self._encoder.format.name.rstrip("p")]
 
-        total = data.shape[1]
-        length = min(int(round(FADE_SECONDS * self._rate)), total // 2)
-        if length > 0:
+        def gain(positions: np.ndarray) -> np.ndarray:
             # Raised cosine: starts and ends flat, so the fade adds no
             # corner of its own for the ear to catch.
-            ramp = 0.5 - 0.5 * np.cos(np.pi * (np.arange(length) + 0.5) / length)
-            gain = np.ones(total)
-            gain[:length] = ramp
-            gain[total - length :] = ramp[::-1]
-            faded = data * gain
-            if np.issubdtype(dtype, np.integer):
-                faded = np.round(faded)
-            data = faded.astype(dtype)
+            rising = np.minimum(positions, total - 1 - positions)
+            return 0.5 - 0.5 * np.cos(np.pi * (rising + 0.5) / length)
 
-        if not planar:
-            data = data.T.reshape(1, -1)
-        frame = av.AudioFrame.from_ndarray(
-            np.ascontiguousarray(data),
-            format=self._encoder.format.name,
-            layout=self._encoder.layout.name,
+        views = (
+            [np.frombuffer(plane, dtype=dtype)[:samples] for plane in frame.planes[:channels]]
+            if planar
+            else [np.frombuffer(frame.planes[0], dtype=dtype)[: samples * channels].reshape(samples, channels)]
         )
-        frame.rate = self._rate
-        frame.pts = None
-        return frame
+        for span in (head, tail):
+            if not span:
+                continue
+            factor = gain(np.arange(span.start, span.stop) + offset)
+            for view in views:
+                part = view[span.start : span.stop]
+                eased = part * (factor if planar else factor[:, None])
+                if np.issubdtype(dtype, np.integer):
+                    eased = np.round(eased)
+                part[...] = eased.astype(dtype)
 
     def finish(self, first_video_time: float | None, output, counters) -> None:
         """Takes the picture's span out of the segment's audio and encodes it.
@@ -412,13 +455,15 @@ class _AudioState:
         wanted = int(round(counters.video * self._rate / float(self._frame_rate)))
         need = wanted - self._pushed
 
-        # Everything this segment contributes, in order, so it can be faded
-        # as one piece before it joins the reel.
-        parts = []
+        # What this segment contributes, in order: runs of silence, and a
+        # run read from what was buffered around the cut. Planned first,
+        # so its length is known before any of it is written -- the fade
+        # at its end is measured from that.
+        pieces: list[tuple[str, int]] = []
         if need > 0:
             if first_video_time is None or origin is None or staging is None:
                 # A segment with picture and no sound at all.
-                parts.append(self._silence(need))
+                pieces.append(("silence", need))
             else:
                 offset = int(round((first_video_time - origin) * self._rate))
                 if offset > 0:
@@ -427,19 +472,36 @@ class _AudioState:
                 elif offset < 0:
                     # The source's sound starts after its picture does.
                     gap = min(-offset, need)
-                    parts.append(self._silence(gap))
+                    pieces.append(("silence", gap))
                     need -= gap
                 if need > 0:
-                    taken = staging.read(need, partial=True)
-                    got = 0
-                    if taken is not None:
-                        parts.append(taken)
-                        got = taken.samples
+                    got = min(need, staging.samples)
+                    if got > 0:
+                        pieces.append(("sound", got))
                     if got < need:
                         # The source's sound ends before its picture does.
-                        parts.append(self._silence(need - got))
-        if parts:
-            self._push(self._faded(parts))
+                        pieces.append(("silence", need - got))
+
+        # Written a chunk at a time and encoded as it goes, so a long cut
+        # never exists as one piece: memory stays at what was buffered
+        # around the cut, whatever its length.
+        total = sum(count for _, count in pieces)
+        written = 0
+        for kind, count in pieces:
+            while count > 0:
+                size = min(count, self._chunk)
+                chunk = self._silence(size) if kind == "silence" else staging.read(size, partial=True)
+                # Timed by where it lands in the reel, not where it came
+                # from: a chunk read back keeps its source's clock -- 1/48000
+                # for one video's sound, 1/1000 for a WebM's -- and the
+                # reel's buffer takes only frames that share one.
+                chunk.pts = None
+                chunk.time_base = self._time_base
+                self._ease(chunk, written, total)
+                self._push(chunk)
+                written += chunk.samples
+                count -= chunk.samples
+                self._drain(output, counters)
 
         self._drain(output, counters)
 
