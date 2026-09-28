@@ -419,6 +419,71 @@ class MixedEmbeddingSpaces(ValueError):
     """
 
 
+class _RowBest:
+    """Each row's most similar live partner, kept current as clusters merge.
+
+    Agglomerative merging repeatedly takes the most similar pair. Finding it
+    by scanning -- and first copying -- the whole n x n matrix each time made
+    grouping cubic: 29.5s for the 2,210 tracks of a 22-minute episode, 235s
+    for the 4,459 of a 45-minute one, and about half of a 29-minute scan of
+    a 113-minute file, whose matrix and its copy were 1 GB each.
+
+    A merge only changes two rows and two columns, so each row's best entry
+    is kept, and a merge re-examines only the rows it touched: the merged
+    row, and rows whose best partner was one of the two. Every other row
+    only has to compare its old best with the one new value in the merged
+    column. That makes the whole run quadratic.
+
+    Ties go exactly as `np.argmax` over the flattened matrix sent them --
+    to the lowest row, then the lowest column -- so the merges, and the
+    groups, are the same as before, pair for pair.
+    """
+
+    def __init__(self, similarity: np.ndarray, blocked: dict[int, set[int]]):
+        self._similarity = similarity
+        self._blocked = blocked
+        size = similarity.shape[0]
+        self._value = np.full(size, -np.inf)
+        self._column = np.zeros(size, dtype=np.int64)
+        self.refresh(range(size))
+
+    def refresh(self, rows) -> None:
+        """Recomputes these rows from scratch, leaving out blocked pairs."""
+        for row in rows:
+            values = self._similarity[row]
+            if self._blocked.get(row):
+                values = values.copy()
+                values[list(self._blocked[row])] = -np.inf
+            column = int(np.argmax(values))
+            self._column[row] = column
+            self._value[row] = values[column]
+
+    def pair(self, floor: float) -> tuple[int, int, float] | None:
+        """The most similar pair of live clusters that clears the floor."""
+        row = int(np.argmax(self._value))
+        value = float(self._value[row])
+        if not np.isfinite(value) or value < floor:
+            return None
+        return row, int(self._column[row]), value
+
+    def merged(self, first: int, second: int, unblocked: set[int]) -> None:
+        """Brings the cache up to date after `second` merged into `first`."""
+        self._value[second] = -np.inf
+        self._column[second] = 0
+        stale = (self._column == first) | (self._column == second)
+        stale[[first, second]] = False
+        # Rows whose best partner is unchanged may still have found a better
+        # one in the merged column, or an equal one further left.
+        column = self._similarity[:, first]
+        better = (column > self._value) | ((column == self._value) & (first < self._column))
+        better &= ~stale
+        better[[first, second]] = False
+        better &= np.isfinite(column)
+        self._value[better] = column[better]
+        self._column[better] = first
+        self.refresh([first, *np.flatnonzero(stale).tolist(), *unblocked])
+
+
 class IdentityGrouper:
     """Groups embedded face observations into per-identity clusters.
 
@@ -643,11 +708,13 @@ class IdentityGrouper:
         similarity[conflict] = -np.inf
 
         members: list[list[int] | None] = [[i] for i in range(unit_count)]
-        # Pairs refused as ambiguous, so a blocked pair is not retried forever.
-        blocked: set[tuple[int, int]] = set()
+        # Pairs refused as ambiguous, so a blocked pair is not retried
+        # forever: unit -> the units it may not currently merge with.
+        blocked: dict[int, set[int]] = {}
+        best = _RowBest(similarity, blocked)
 
         while True:
-            candidate = self._best_mergeable_pair(similarity, blocked)
+            candidate = best.pair(self.similarity_threshold)
             if candidate is None:
                 break
 
@@ -655,7 +722,9 @@ class IdentityGrouper:
             if not self._merge_is_unambiguous(
                 similarity, first, second, best_similarity, self.similarity_threshold
             ):
-                blocked.add((min(first, second), max(first, second)))
+                blocked.setdefault(first, set()).add(second)
+                blocked.setdefault(second, set()).add(first)
+                best.refresh([first, second])
                 continue
 
             # Lance-Williams average-linkage update, weighted by observation count.
@@ -681,31 +750,20 @@ class IdentityGrouper:
             members[second] = None
             sizes[first] = merged_size
 
-            # A merged cluster is a different cluster: give its pairs a fresh chance.
-            blocked = {pair for pair in blocked if first not in pair and second not in pair}
+            # A merged cluster is a different cluster: give its pairs a fresh
+            # chance. The rows that lose a block may now have a better pair.
+            unblocked = set()
+            for merged in (first, second):
+                for other in blocked.pop(merged, set()):
+                    blocked.get(other, set()).discard(merged)
+                    unblocked.add(other)
+            best.merged(first, second, unblocked)
 
         self._rejected = []
         groups = self._consolidate(self._build_groups(members))
         groups = self._reject_non_face_groups(groups)
         groups = self._reject_brief_groups(groups)
         return self._renumber(groups)
-
-    def _best_mergeable_pair(
-        self, similarity: np.ndarray, blocked: set[tuple[int, int]]
-    ) -> tuple[int, int, float] | None:
-        """The most similar pair of live clusters that clears the floor."""
-        workspace = similarity.copy()
-        for first, second in blocked:
-            workspace[first, second] = -np.inf
-            workspace[second, first] = -np.inf
-
-        best_flat = int(np.argmax(workspace))
-        first, second = np.unravel_index(best_flat, workspace.shape)
-        best_similarity = float(workspace[first, second])
-
-        if not np.isfinite(best_similarity) or best_similarity < self.similarity_threshold:
-            return None
-        return int(first), int(second), best_similarity
 
     def _merge_is_unambiguous(
         self,
@@ -734,22 +792,18 @@ class IdentityGrouper:
         if self.margin_threshold <= 0.0:
             return True
 
+        others = np.ones(similarity.shape[0], dtype=bool)
+        others[[first, second]] = False
         for endpoint, partner in ((first, second), (second, first)):
-            for other in range(similarity.shape[0]):
-                if other in (first, second):
-                    continue
-
-                competitor = float(similarity[endpoint, other])
-                if not np.isfinite(competitor):
-                    continue
-                if best_similarity - competitor >= self.margin_threshold:
-                    continue
-
-                # Near-tie. Ambiguous only if the competitor is a different
-                # identity rather than another piece of the same one.
-                rival = float(similarity[partner, other])
-                if not np.isfinite(rival) or rival < floor:
-                    return False
+            competitors = similarity[endpoint]
+            near_tie = others & np.isfinite(competitors) & (
+                best_similarity - competitors < self.margin_threshold
+            )
+            # Near-tie. Ambiguous only if the competitor is a different
+            # identity rather than another piece of the same one.
+            rivals = similarity[partner][near_tie]
+            if np.any(~np.isfinite(rivals) | (rivals < floor)):
+                return False
 
         return True
 
