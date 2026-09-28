@@ -3605,3 +3605,104 @@ buffer keep their source's clock too, and are given the reel's.
 
 The partial reel the crashes left behind is not a valid file and has to be
 exported again.
+
+## 49. MKV under stress
+
+After the crash in §48, MKV input was put through a stress test: 13 files
+built to reproduce what MKVs in the wild do, each put through everything
+FluxCutter does with a video -- probe, scan, shots, 40 seeks, and a reel
+of its two biggest cards exported as MP4 and as MKV -- in its own process,
+so a crash would be recorded rather than end the run.
+
+| file | what it stresses |
+| --- | --- |
+| remux | the episode excerpt, rewrapped: the baseline |
+| hevc10 | HEVC, 10-bit |
+| ac3-switching | AC3 that drops from 5.1 to stereo and back, twice |
+| multitrack | two sound tracks, two subtitle tracks, chapters |
+| no-audio | picture only |
+| vfr | variable frame rate |
+| no-index | no seek index and no duration, as a live capture writes |
+| offset | timestamps that start late |
+| truncated | cut off at 60%, as an unfinished download is |
+| flac51, dts | 5.1 lossless FLAC, DTS |
+| anamorphic | 720x480 stored, 16:9 shown (32:27 pixels), as a DVD rip is |
+| long | 113 minutes, 4 GB |
+
+All 13 ran every step without a crash. Every reel's sound ended within
+4-21 ms of its picture, 5.1 stayed six channels, the file with no index
+still scanned at its true length, and all 40 seeks landed on every file.
+A second phase joined five MKVs and an MP4 of mixed sound (stereo AAC,
+switching AC3, 5.1 FLAC, a second track, none at all) into one season reel
+(sound within 15 ms); exported the same reel five times in one process
+(peak memory 901 MB every time: nothing held on to); and cancelled exports
+partway.
+
+It found three things wrong.
+
+### A DVD rip's reel came out the wrong shape
+
+A 720x480 file with 32:27 pixels is meant to be seen at 16:9. The reel kept
+the 720x480 and dropped the note about the pixels, so every player showed
+it at 3:2 and everyone looked squeezed thin. Reels are now written in
+square pixels at the size the first video is meant to be seen at -- 854x480
+here -- and each frame is fitted by its shown shape, so a season mixing
+pixel shapes still comes out right. The test draws a circle in wide pixels
+and checks it is round in the reel; it fails on the old code.
+
+### A cancelled export left its partial reel behind
+
+All three cancels (after 0.5, 2 and 5 seconds) left a partial file, though
+the README promised none. A crash left one too: the 612 MB unplayable MP4
+of §48. A reel is now written as `name.partial.ext` and renamed only once
+complete; a cancel or an error deletes it, and whatever was at the name
+before survives until the new reel replaces it. A hard crash can still
+leave the `.partial` file, but not one that looks finished.
+
+### Grouping was cubic, and long files crawled
+
+The 113-minute file took 28.8 minutes to scan and 2.5 GB, against about
+a minute and a half for the 22-minute episode it was built from. Timing
+the stages at two lengths showed where:
+
+    length   tracks   recognising faces   grouping
+    22 min    2,210        51 s             29.5 s
+    45 min    4,459        93 s              235 s   (twice the tracks, 8x the time)
+
+Every merge copied the whole track-by-track similarity matrix and scanned
+it for the best pair; for 11,000 tracks that matrix is about a gigabyte,
+copied once per merge. Each row's best partner is now kept instead
+(`_RowBest`), and a merge re-examines only the rows it touched. Ties are
+broken exactly as `np.argmax` over the flattened matrix broke them, so the
+merges are the same pair for pair. The ambiguity check is one numpy step
+rather than a Python loop.
+
+Checked on the grouper's real input, captured from scans and grouped both
+ways:
+
+    input                  tracks   old       new      groups
+    22-min episode          2,210   32.3 s    1.9 s    42 = 42, member for member
+    animation.mp4             108    0.0 s    0.0 s     6 = 6
+    45-min file             4,459   82.8 s    1.2 s    56 = 56
+    113-min file           11,126   1330 s    6.2 s    74 = 74
+
+A randomised test holds the new search to the old on tables built to tie
+often, and fails if the tie-break is changed.
+
+A whole scan of the 113-minute file now takes 341 s where it took 1,728 s,
+and finds the same 74 people. Its peak memory did not fall (2.8 GB against
+2.5 GB): that is the similarity matrix itself -- 11,126 squared doubles,
+about 1 GB, plus the temporaries that build it once -- which both versions
+make. Memory therefore still grows with the square of the track count;
+storing the matrix as float32 would halve it, but could change which
+faces tie, so it is left for a change that can be measured on its own.
+
+### One thing not explained
+
+Exporting the 113-minute file's 421-cut, 62-minute reel as MKV, four
+frames at one point (49 minutes in) never reached the file; the MP4 of the
+same reel had them. The frames after the gap kept their times, so the sound
+did not drift. Re-exporting those cuts -- three times each with the
+hardware encoder to MKV and MP4, and with libx264 -- always gave every
+frame. The likeliest cause is the hardware encoder dropping frames under a
+long sustained load; it has not been reproduced.

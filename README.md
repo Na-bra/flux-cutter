@@ -736,7 +736,7 @@ The gallery stage uses the same real sample video and the already-validated dete
 
 ## Notes
 
-- Videos can be `.mp4`, `.m4v`, `.mov`, `.mkv`, `.webm` or `.avi`. WebM recorded at a variable frame rate (a browser or screen recorder's, typically) is cut by each frame's own timestamp, so its sound stays in step; every format is checked by cutting marked footage in `tests/test_formats.py`.
+- Videos can be `.mp4`, `.m4v`, `.mov`, `.mkv`, `.webm` or `.avi`. A DVD rip stored with wide pixels makes a reel of the shape it is meant to be seen at. WebM recorded at a variable frame rate (a browser or screen recorder's, typically) is cut by each frame's own timestamp, so its sound stays in step; every format is checked by cutting marked footage in `tests/test_formats.py`.
 - The loader raises a `VideoLoadError` when the file is missing, not a regular file, wrongly formatted, or unreadable.
 - This project is intended as a working prototype for validating the core concept before expanding into a more polished application.
 
