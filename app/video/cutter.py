@@ -38,6 +38,7 @@ Two things it must get right, both invisible until played:
   spelling out: it is wrong in a way nothing but a probe will tell you.
 """
 
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -95,6 +96,16 @@ class ClipProfile:
     # of its frames can stay on screen, and so how far past a cut its
     # sound has to be read.
     longest_frame: float = 0.0
+    # The shape of one stored pixel, width over height. 1 for almost
+    # everything; 32/27 for a DVD rip stored at 720x480 and meant to be
+    # shown at 16:9, and 8/9 for its 4:3 twin.
+    pixel_aspect: Fraction = Fraction(1)
+
+    @property
+    def shown_width(self) -> int:
+        """The width it is meant to be seen at, in square pixels, kept even
+        because H.264 in 4:2:0 wants even sizes."""
+        return max(2, 2 * round(self.width * self.pixel_aspect / 2))
 
 
 # How far apart two frame rates may be and still count as one.
@@ -212,7 +223,11 @@ def _open_output(
         rate=picture.frame_rate,
         options=_quality_options(video_encoder, quality),
     )
-    video.width = picture.width
+    # Square pixels, at the size the first video is meant to be seen at. A
+    # reel of a DVD rip kept its 720x480 but lost the note saying its
+    # pixels are wide, and every player showed it at 3:2 -- everyone
+    # squeezed thin. Written square, it plays at the right shape anywhere.
+    video.width = picture.shown_width
     video.height = picture.height
     # yuv420p rather than the source's own format: it is what every player
     # can decode, and the test footage is yuv444p, which many cannot.
@@ -241,6 +256,9 @@ def _open_output(
 # anything a listener hears as a fade, and it changes no lengths, so the
 # picture and sound stay exactly as aligned as before.
 FADE_SECONDS = 0.005
+
+# Sample formats' numpy types, by name without the planar "p".
+_SAMPLE_TYPES = {"flt": np.float32, "dbl": np.float64, "s16": np.int16, "s32": np.int32, "u8": np.uint8}
 
 
 @dataclass
@@ -310,6 +328,8 @@ class _AudioState:
         # Samples of silence written because the source had no sound there.
         # Kept so a test can tell genuine gaps from manufactured ones.
         self.silence_samples = 0
+        # How much of a segment's sound is handled at once: a second.
+        self._chunk = rate
 
     def begin(self) -> None:
         """Starts buffering a new segment's audio.
@@ -322,7 +342,11 @@ class _AudioState:
         """
         self._staging = av.AudioFifo()
         self._origin = None
-        self._resampler = av.AudioResampler(
+        self._resampler = self._new_resampler()
+        self._source_format = None
+
+    def _new_resampler(self):
+        return av.AudioResampler(
             format=self._encoder.format,
             layout=self._encoder.layout,
             rate=self._encoder.rate,
@@ -334,11 +358,33 @@ class _AudioState:
         Nothing is encoded yet: which of these samples belong to the reel
         depends on which video frames the segment keeps, and that is only
         known once it has been read.
+
+        A source's sound can change format partway through. Broadcast AC3
+        does: the 43-minute HDTV episode this was found on switches from
+        5.1 to stereo for 0.128s at 973s and back, a splice in the
+        recording. A resampler fixes its input format on the first frame it
+        sees, and handed a different one it produced a frame with no
+        samples behind it -- and copying that into the buffer crashed the
+        app outright (a segmentation fault in AudioFifo.write), taking the
+        half-written reel with it. So a change of format finishes the
+        current resampler and starts another, converting to the same output.
         """
         if self._origin is None and frame.time is not None:
             self._origin = frame.time
-        for resampled in self._resampler.resample(frame):
+        source = (frame.format.name, frame.layout.name, frame.rate)
+        if self._source_format is not None and source != self._source_format:
+            self._stage(self._resampler.resample(None))
+            self._resampler = self._new_resampler()
+        self._source_format = source
+        self._stage(self._resampler.resample(frame))
+
+    def _stage(self, frames) -> None:
+        for resampled in frames:
+            # One clock for everything buffered: a new resampler's frames
+            # otherwise carry a different one from the first's, and the
+            # buffer refuses them.
             resampled.pts = None
+            resampled.time_base = self._time_base
             self._staging.write(resampled)
 
     def _silence(self, samples: int):
@@ -358,46 +404,58 @@ class _AudioState:
         self._output.write(frame)
         self._pushed += frame.samples
 
-    def _faded(self, parts):
-        """One segment's sound as a single frame, eased in and out at its ends.
+    def _ease(self, frame, offset: int, total: int) -> None:
+        """Fades, in place, whatever of `frame` lies in its segment's ends.
 
-        The fade is applied to the whole segment, silence included, so it
-        lands at the join whatever the segment is made of. A segment too
-        short for two full fades gets two that meet in its middle.
+        The frame is one chunk of a segment `total` samples long, starting
+        `offset` samples in. Only samples within FADE_SECONDS of either end
+        of the segment change; the rest are not touched, and nothing is
+        copied. A segment too short for two full fades gets two that meet
+        in its middle.
+
+        This used to build the whole segment's sound as one array, in
+        doubles, to change a few milliseconds at each end. A 3.5-minute cut
+        of 5.1 sound is 243 MB of samples, and that made it about 1.3 GB in
+        copies -- 6.5 MB for every second of cut, where the sound itself is
+        1.15 MB. On a 27-minute reel of a 43-minute MKV the export's memory
+        climbed until the audio buffer could not grow, and FluxCutter
+        crashed copying into it (a segmentation fault in AudioFifo.write).
         """
+        length = min(int(round(FADE_SECONDS * self._rate)), total // 2)
+        samples = frame.samples
+        if length <= 0 or samples == 0:
+            return
+        # Positions within this frame that the fades reach.
+        head = range(max(0, -offset), max(0, min(samples, length - offset)))
+        tail = range(max(0, total - length - offset), max(0, min(samples, total - offset)))
+        if not head and not tail:
+            return
+
         planar = self._encoder.format.is_planar
         channels = len(self._encoder.layout.channels)
-        arrays = []
-        for part in parts:
-            data = part.to_ndarray()
-            arrays.append(data if planar else data.reshape(-1, channels).T)
-        data = np.concatenate(arrays, axis=1)
-        dtype = data.dtype
+        dtype = _SAMPLE_TYPES[self._encoder.format.name.rstrip("p")]
 
-        total = data.shape[1]
-        length = min(int(round(FADE_SECONDS * self._rate)), total // 2)
-        if length > 0:
+        def gain(positions: np.ndarray) -> np.ndarray:
             # Raised cosine: starts and ends flat, so the fade adds no
             # corner of its own for the ear to catch.
-            ramp = 0.5 - 0.5 * np.cos(np.pi * (np.arange(length) + 0.5) / length)
-            gain = np.ones(total)
-            gain[:length] = ramp
-            gain[total - length :] = ramp[::-1]
-            faded = data * gain
-            if np.issubdtype(dtype, np.integer):
-                faded = np.round(faded)
-            data = faded.astype(dtype)
+            rising = np.minimum(positions, total - 1 - positions)
+            return 0.5 - 0.5 * np.cos(np.pi * (rising + 0.5) / length)
 
-        if not planar:
-            data = data.T.reshape(1, -1)
-        frame = av.AudioFrame.from_ndarray(
-            np.ascontiguousarray(data),
-            format=self._encoder.format.name,
-            layout=self._encoder.layout.name,
+        views = (
+            [np.frombuffer(plane, dtype=dtype)[:samples] for plane in frame.planes[:channels]]
+            if planar
+            else [np.frombuffer(frame.planes[0], dtype=dtype)[: samples * channels].reshape(samples, channels)]
         )
-        frame.rate = self._rate
-        frame.pts = None
-        return frame
+        for span in (head, tail):
+            if not span:
+                continue
+            factor = gain(np.arange(span.start, span.stop) + offset)
+            for view in views:
+                part = view[span.start : span.stop]
+                eased = part * (factor if planar else factor[:, None])
+                if np.issubdtype(dtype, np.integer):
+                    eased = np.round(eased)
+                part[...] = eased.astype(dtype)
 
     def finish(self, first_video_time: float | None, output, counters) -> None:
         """Takes the picture's span out of the segment's audio and encodes it.
@@ -412,13 +470,15 @@ class _AudioState:
         wanted = int(round(counters.video * self._rate / float(self._frame_rate)))
         need = wanted - self._pushed
 
-        # Everything this segment contributes, in order, so it can be faded
-        # as one piece before it joins the reel.
-        parts = []
+        # What this segment contributes, in order: runs of silence, and a
+        # run read from what was buffered around the cut. Planned first,
+        # so its length is known before any of it is written -- the fade
+        # at its end is measured from that.
+        pieces: list[tuple[str, int]] = []
         if need > 0:
             if first_video_time is None or origin is None or staging is None:
                 # A segment with picture and no sound at all.
-                parts.append(self._silence(need))
+                pieces.append(("silence", need))
             else:
                 offset = int(round((first_video_time - origin) * self._rate))
                 if offset > 0:
@@ -427,19 +487,36 @@ class _AudioState:
                 elif offset < 0:
                     # The source's sound starts after its picture does.
                     gap = min(-offset, need)
-                    parts.append(self._silence(gap))
+                    pieces.append(("silence", gap))
                     need -= gap
                 if need > 0:
-                    taken = staging.read(need, partial=True)
-                    got = 0
-                    if taken is not None:
-                        parts.append(taken)
-                        got = taken.samples
+                    got = min(need, staging.samples)
+                    if got > 0:
+                        pieces.append(("sound", got))
                     if got < need:
                         # The source's sound ends before its picture does.
-                        parts.append(self._silence(need - got))
-        if parts:
-            self._push(self._faded(parts))
+                        pieces.append(("silence", need - got))
+
+        # Written a chunk at a time and encoded as it goes, so a long cut
+        # never exists as one piece: memory stays at what was buffered
+        # around the cut, whatever its length.
+        total = sum(count for _, count in pieces)
+        written = 0
+        for kind, count in pieces:
+            while count > 0:
+                size = min(count, self._chunk)
+                chunk = self._silence(size) if kind == "silence" else staging.read(size, partial=True)
+                # Timed by where it lands in the reel, not where it came
+                # from: a chunk read back keeps its source's clock -- 1/48000
+                # for one video's sound, 1/1000 for a WebM's -- and the
+                # reel's buffer takes only frames that share one.
+                chunk.pts = None
+                chunk.time_base = self._time_base
+                self._ease(chunk, written, total)
+                self._push(chunk)
+                written += chunk.samples
+                count -= chunk.samples
+                self._drain(output, counters)
 
         self._drain(output, counters)
 
@@ -543,6 +620,9 @@ def probe_clip(video: Path | VideoSource, include_audio: bool = True) -> ClipPro
         )
         # Read before the stream is demuxed: the header's own figures.
         width, height = picture.width, picture.height
+        pixel_aspect = picture.sample_aspect_ratio or Fraction(1)
+        if pixel_aspect <= 0:
+            pixel_aspect = Fraction(1)
         declared = picture.average_rate
         sample_rate = sound.rate if sound is not None else None
         layout = sound.layout.name if sound is not None else None
@@ -567,6 +647,7 @@ def probe_clip(video: Path | VideoSource, include_audio: bool = True) -> ClipPro
             layout=layout,
             variable=variable,
             longest_frame=longest,
+            pixel_aspect=Fraction(pixel_aspect),
         )
 
 
@@ -642,6 +723,15 @@ def _frame_spacing(source, picture) -> tuple[bool, float, float]:
     regular = [gap for gap in gaps if abs(gap - usual) <= ROUNDING_SECONDS + usual / 100]
     typical = sum(regular) / len(regular) if regular and usual > 0 else even
     return off_grid > even / 2, typical, max(gaps)
+
+
+def partial_path(output_path: Path) -> Path:
+    """Where a reel is written until it is complete: `reel.partial.mp4`.
+
+    The extension is kept, because it is what chooses the container.
+    """
+    output_path = Path(output_path)
+    return output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
 
 
 def same_frame_rate(first: Fraction, second: Fraction) -> bool:
@@ -724,9 +814,17 @@ def cut_clips(
     index = 0
     per_clip = {id(clip): 0.0 for clip in given}
 
+    # Written under another name and renamed once complete, so a reel that
+    # was cancelled, failed or crashed partway is never left looking like a
+    # finished one. The stress test found every cancel leaving its partial
+    # reel behind, and a crash left a 612 MB MP4 with no index that nothing
+    # could play. Whatever was at `output_path` before survives until the
+    # new reel replaces it.
+    partial = partial_path(output_path)
     output, out_video, out_audio = _open_output(
-        output_path, picture, sound, video_encoder, audio_encoder, quality
+        partial, picture, sound, video_encoder, audio_encoder, quality
     )
+    finished = False
     counters = _Counters()
     frame_rate = picture.frame_rate
     audio_state = (
@@ -771,6 +869,7 @@ def cut_clips(
                         source_rate,
                         trim_slivers,
                         profile.longest_frame if profile.variable else None,
+                        profile.pixel_aspect,
                     )
                     exported_seconds += written
                     per_clip[id(clip)] += written
@@ -786,8 +885,14 @@ def cut_clips(
         if out_audio is not None:
             for packet in out_audio.encode():
                 output.mux(packet)
+        finished = True
     finally:
-        output.close()
+        try:
+            output.close()
+        finally:
+            if not finished:
+                partial.unlink(missing_ok=True)
+    os.replace(partial, output_path)
 
     return CutResult(
         output_path=output_path,
@@ -798,21 +903,25 @@ def cut_clips(
     )
 
 
-def _fit_frame(frame, width: int, height: int):
+def _fit_frame(frame, width: int, height: int, pixel_aspect: Fraction = Fraction(1)):
     """A decoded frame in the reel's size and pixel format.
 
     The source here is yuv444p, which many players cannot decode; converting
     explicitly rather than relying on the encoder makes the output format a
     decision rather than a coincidence.
 
-    A frame of another shape -- a 4:3 episode in a 16:9 reel -- is scaled to
-    fit and centred on black rather than stretched.
+    A frame is fitted by the shape it is meant to be shown at -- its stored
+    width times `pixel_aspect` -- so a DVD rip's wide pixels are made square
+    rather than kept narrow. A frame of another shape -- a 4:3 episode in a
+    16:9 reel -- is scaled to fit and centred on black rather than
+    stretched.
     """
-    if frame.width * height == frame.height * width:
+    shown_width = frame.width * pixel_aspect
+    if shown_width * height == frame.height * width:
         return frame.reformat(width=width, height=height, format="yuv420p")
 
-    scale = min(width / frame.width, height / frame.height)
-    fit_width = max(2, min(width, int(round(frame.width * scale))))
+    scale = min(width / shown_width, Fraction(height, frame.height))
+    fit_width = max(2, min(width, int(round(shown_width * scale))))
     fit_height = max(2, min(height, int(round(frame.height * scale))))
     scaled = frame.reformat(width=fit_width, height=fit_height, format="rgb24")
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
@@ -838,6 +947,7 @@ def _write_segment(
     source_rate: Fraction | None = None,
     trim_slivers: bool = True,
     timed: float | None = None,
+    pixel_aspect: Fraction = Fraction(1),
 ) -> float:
     """Encodes one segment into the open reel, returning its real duration.
 
@@ -928,7 +1038,7 @@ def _write_segment(
             if frame.time > last_video_time:
                 last_gap = frame.time - last_video_time
             last_video_time = frame.time
-            converted = _fit_frame(frame, out_video.width, out_video.height)
+            converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
             # The frame before this one was on screen until now. A frame
             # due in the same reel slot as the one after it is dropped.
             if held is not None:
@@ -936,7 +1046,7 @@ def _write_segment(
             held = converted
             return 1
         last_video_time = frame.time
-        converted = _fit_frame(frame, out_video.width, out_video.height)
+        converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
         if source_rate is None:
             copies = 1
         else:

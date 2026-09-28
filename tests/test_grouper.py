@@ -675,3 +675,89 @@ def test_accepts_detection_follows_the_configured_thresholds():
 
     assert strict.accepts_detection(middling.detection) is False
     assert loose.accepts_detection(middling.detection) is True
+
+
+# ------------------------------------------------ merging in quadratic time
+#
+# Grouping found each merge by copying and scanning the whole similarity
+# matrix, which made it cubic: 29.5s for a 22-minute episode's 2,210 tracks,
+# 235s for a 45-minute file's 4,459. _RowBest keeps each row's best partner
+# instead. It must choose exactly the merges the full scan chose, ties
+# included, or kept scans would regroup.
+
+
+def _merges_by_full_scan(similarity, floor, block_every):
+    """The old search: copy the matrix, strike the blocked pairs, argmax."""
+    similarity = similarity.copy()
+    blocked, merges, attempt = set(), [], 0
+    while True:
+        workspace = similarity.copy()
+        for a, b in blocked:
+            workspace[a, b] = workspace[b, a] = -np.inf
+        flat = int(np.argmax(workspace))
+        first, second = np.unravel_index(flat, workspace.shape)
+        value = workspace[first, second]
+        if not np.isfinite(value) or value < floor:
+            return merges
+        attempt += 1
+        if attempt % block_every == 0:
+            blocked.add((min(first, second), max(first, second)))
+            merges.append(("blocked", int(first), int(second)))
+            continue
+        similarity[first, :] = (similarity[first, :] + similarity[second, :]) / 2
+        similarity[:, first] = similarity[first, :]
+        similarity[first, first] = -np.inf
+        similarity[second, :] = similarity[:, second] = -np.inf
+        merges.append(("merged", int(first), int(second)))
+        blocked = {pair for pair in blocked if first not in pair and second not in pair}
+
+
+def _merges_by_row_best(similarity, floor, block_every):
+    from app.faces.grouper import _RowBest
+
+    similarity = similarity.copy()
+    blocked, merges, attempt = {}, [], 0
+    best = _RowBest(similarity, blocked)
+    while True:
+        candidate = best.pair(floor)
+        if candidate is None:
+            return merges
+        first, second, _ = candidate
+        attempt += 1
+        if attempt % block_every == 0:
+            blocked.setdefault(first, set()).add(second)
+            blocked.setdefault(second, set()).add(first)
+            best.refresh([first, second])
+            merges.append(("blocked", first, second))
+            continue
+        similarity[first, :] = (similarity[first, :] + similarity[second, :]) / 2
+        similarity[:, first] = similarity[first, :]
+        similarity[first, first] = -np.inf
+        similarity[second, :] = similarity[:, second] = -np.inf
+        merges.append(("merged", first, second))
+        unblocked = set()
+        for merged in (first, second):
+            for other in blocked.pop(merged, set()):
+                blocked.get(other, set()).discard(merged)
+                unblocked.add(other)
+        best.merged(first, second, unblocked)
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_the_row_cache_merges_exactly_as_scanning_the_whole_matrix_did(seed):
+    rng = np.random.default_rng(seed)
+    size = 60
+    # Quarters, which binary holds exactly, so averages of them tie exactly
+    # and often -- the tie-break is what this is most likely to get wrong.
+    similarity = np.round(rng.random((size, size)) * 4) / 4
+    similarity = (similarity + similarity.T) / 2
+    np.fill_diagonal(similarity, -np.inf)
+    # Some pairs can never merge, as faces sharing a frame cannot.
+    for a, b in rng.integers(0, size, (40, 2)):
+        if a != b:
+            similarity[a, b] = similarity[b, a] = -np.inf
+
+    for block_every in (1_000_000, 3, 7):
+        assert _merges_by_row_best(similarity, 0.3, block_every) == _merges_by_full_scan(
+            similarity, 0.3, block_every
+        )
