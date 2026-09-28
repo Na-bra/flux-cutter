@@ -287,3 +287,108 @@ def test_a_reel_takes_its_video_s_own_format_where_it_can():
     # A reel cannot be WebM or AVI, so those make MP4s.
     assert export_format_for("recording.webm") == "mp4"
     assert export_format_for("old.avi") == "mp4"
+
+
+# ------------------------------------------------------------ stress-test finds
+
+
+def write_wide_pixel_video(path: Path, seconds: int = 4) -> None:
+    """720x480 with 32:27 pixels, as a DVD rip is stored, holding a circle:
+    squeezed in the stored pixels, round once shown at 16:9."""
+    container = av.open(str(path), mode="w")
+    video = container.add_stream("libx264", rate=24)
+    video.width, video.height, video.pix_fmt = 720, 480, "yuv420p"
+    video.codec_context.sample_aspect_ratio = Fraction(32, 27)
+    audio = container.add_stream("aac", rate=RATE)
+    audio.layout = "stereo"
+    yy, xx = np.mgrid[0:480, 0:720]
+    # A circle of radius 150 shown pixels: 150 * 27/32 stored pixels across.
+    inside = ((xx - 360) / (150 * 27 / 32)) ** 2 + ((yy - 240) / 150) ** 2 <= 1
+    picture = np.where(inside[..., None], 255, 0).astype(np.uint8).repeat(3, axis=2)
+    for n in range(seconds * 24):
+        frame = av.VideoFrame.from_ndarray(picture, format="rgb24")
+        frame.pts, frame.time_base = n, Fraction(1, 24)
+        for packet in video.encode(frame):
+            container.mux(packet)
+    for packet in video.encode():
+        container.mux(packet)
+    silence = np.zeros((1, seconds * RATE * 2), np.int16)
+    for offset in range(0, seconds * RATE, 1024):
+        frame = av.AudioFrame.from_ndarray(silence[:, 2 * offset : 2 * (offset + 1024)], format="s16", layout="stereo")
+        frame.rate, frame.pts, frame.time_base = RATE, offset, Fraction(1, RATE)
+        for packet in audio.encode(frame):
+            container.mux(packet)
+    for packet in audio.encode():
+        container.mux(packet)
+    container.close()
+
+
+def test_a_wide_pixel_video_makes_a_reel_of_the_right_shape(tmp_path):
+    """A DVD rip's reel kept its 720x480 but lost the note that its pixels
+    are wide, so every player showed it at 3:2 and everyone looked squeezed.
+    The reel is now square-pixelled at the size it was meant to be seen."""
+    source = tmp_path / "dvd.mkv"
+    write_wide_pixel_video(source)
+    output = tmp_path / "reel.mp4"
+
+    cut_segments(source, [AppearanceInterval(0.5, 3.0)], output)
+
+    with av.open(str(output)) as container:
+        stream = container.streams.video[0]
+        assert (stream.width, stream.height) == (854, 480)
+        assert stream.sample_aspect_ratio in (None, Fraction(1))
+        frame = next(container.decode(stream)).to_ndarray(format="gray")
+    rows, columns = np.where(frame > 128)
+    width, height = columns.max() - columns.min(), rows.max() - rows.min()
+    # The circle is round again, to within a couple of pixels.
+    assert abs(width - height) <= 4
+
+
+def test_a_cancelled_export_leaves_nothing_behind(tmp_path):
+    """Every cancel in the stress test left its partial reel on disk."""
+    from app.video.cutter import partial_path
+
+    source = tmp_path / "clip.mkv"
+    write_container(source, "libx264", "aac", even(24), 1024, {"g": "12"})
+    output = tmp_path / "reel.mp4"
+
+    class Stop(Exception):
+        pass
+
+    def stop_after_the_first_cut(index, total, segment):
+        raise Stop()
+
+    with pytest.raises(Stop):
+        cut_segments(source, SEGMENTS, output, on_segment=stop_after_the_first_cut)
+
+    assert not output.exists()
+    assert not partial_path(output).exists()
+
+
+def test_a_failed_export_keeps_the_reel_it_would_have_replaced(tmp_path):
+    source = tmp_path / "clip.mkv"
+    write_container(source, "libx264", "aac", even(24), 1024, {"g": "12"})
+    output = tmp_path / "reel.mp4"
+    output.write_bytes(b"yesterday's reel")
+
+    def fail(index, total, segment):
+        raise RuntimeError("the disk filled up")
+
+    with pytest.raises(RuntimeError):
+        cut_segments(source, SEGMENTS, output, on_segment=fail)
+
+    assert output.read_bytes() == b"yesterday's reel"
+
+
+def test_a_finished_export_leaves_only_the_reel(tmp_path):
+    from app.video.cutter import partial_path
+
+    source = tmp_path / "clip.mkv"
+    write_container(source, "libx264", "aac", even(24), 1024, {"g": "12"})
+    output = tmp_path / "reel.mkv"
+
+    result = cut_segments(source, SEGMENTS[:2], output)
+
+    assert result.output_path == output and output.is_file()
+    assert not partial_path(output).exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["clip.mkv", "reel.mkv"]

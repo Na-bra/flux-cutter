@@ -38,6 +38,7 @@ Two things it must get right, both invisible until played:
   spelling out: it is wrong in a way nothing but a probe will tell you.
 """
 
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -95,6 +96,16 @@ class ClipProfile:
     # of its frames can stay on screen, and so how far past a cut its
     # sound has to be read.
     longest_frame: float = 0.0
+    # The shape of one stored pixel, width over height. 1 for almost
+    # everything; 32/27 for a DVD rip stored at 720x480 and meant to be
+    # shown at 16:9, and 8/9 for its 4:3 twin.
+    pixel_aspect: Fraction = Fraction(1)
+
+    @property
+    def shown_width(self) -> int:
+        """The width it is meant to be seen at, in square pixels, kept even
+        because H.264 in 4:2:0 wants even sizes."""
+        return max(2, 2 * round(self.width * self.pixel_aspect / 2))
 
 
 # How far apart two frame rates may be and still count as one.
@@ -212,7 +223,11 @@ def _open_output(
         rate=picture.frame_rate,
         options=_quality_options(video_encoder, quality),
     )
-    video.width = picture.width
+    # Square pixels, at the size the first video is meant to be seen at. A
+    # reel of a DVD rip kept its 720x480 but lost the note saying its
+    # pixels are wide, and every player showed it at 3:2 -- everyone
+    # squeezed thin. Written square, it plays at the right shape anywhere.
+    video.width = picture.shown_width
     video.height = picture.height
     # yuv420p rather than the source's own format: it is what every player
     # can decode, and the test footage is yuv444p, which many cannot.
@@ -605,6 +620,9 @@ def probe_clip(video: Path | VideoSource, include_audio: bool = True) -> ClipPro
         )
         # Read before the stream is demuxed: the header's own figures.
         width, height = picture.width, picture.height
+        pixel_aspect = picture.sample_aspect_ratio or Fraction(1)
+        if pixel_aspect <= 0:
+            pixel_aspect = Fraction(1)
         declared = picture.average_rate
         sample_rate = sound.rate if sound is not None else None
         layout = sound.layout.name if sound is not None else None
@@ -629,6 +647,7 @@ def probe_clip(video: Path | VideoSource, include_audio: bool = True) -> ClipPro
             layout=layout,
             variable=variable,
             longest_frame=longest,
+            pixel_aspect=Fraction(pixel_aspect),
         )
 
 
@@ -704,6 +723,15 @@ def _frame_spacing(source, picture) -> tuple[bool, float, float]:
     regular = [gap for gap in gaps if abs(gap - usual) <= ROUNDING_SECONDS + usual / 100]
     typical = sum(regular) / len(regular) if regular and usual > 0 else even
     return off_grid > even / 2, typical, max(gaps)
+
+
+def partial_path(output_path: Path) -> Path:
+    """Where a reel is written until it is complete: `reel.partial.mp4`.
+
+    The extension is kept, because it is what chooses the container.
+    """
+    output_path = Path(output_path)
+    return output_path.with_name(f"{output_path.stem}.partial{output_path.suffix}")
 
 
 def same_frame_rate(first: Fraction, second: Fraction) -> bool:
@@ -786,9 +814,17 @@ def cut_clips(
     index = 0
     per_clip = {id(clip): 0.0 for clip in given}
 
+    # Written under another name and renamed once complete, so a reel that
+    # was cancelled, failed or crashed partway is never left looking like a
+    # finished one. The stress test found every cancel leaving its partial
+    # reel behind, and a crash left a 612 MB MP4 with no index that nothing
+    # could play. Whatever was at `output_path` before survives until the
+    # new reel replaces it.
+    partial = partial_path(output_path)
     output, out_video, out_audio = _open_output(
-        output_path, picture, sound, video_encoder, audio_encoder, quality
+        partial, picture, sound, video_encoder, audio_encoder, quality
     )
+    finished = False
     counters = _Counters()
     frame_rate = picture.frame_rate
     audio_state = (
@@ -833,6 +869,7 @@ def cut_clips(
                         source_rate,
                         trim_slivers,
                         profile.longest_frame if profile.variable else None,
+                        profile.pixel_aspect,
                     )
                     exported_seconds += written
                     per_clip[id(clip)] += written
@@ -848,8 +885,14 @@ def cut_clips(
         if out_audio is not None:
             for packet in out_audio.encode():
                 output.mux(packet)
+        finished = True
     finally:
-        output.close()
+        try:
+            output.close()
+        finally:
+            if not finished:
+                partial.unlink(missing_ok=True)
+    os.replace(partial, output_path)
 
     return CutResult(
         output_path=output_path,
@@ -860,21 +903,25 @@ def cut_clips(
     )
 
 
-def _fit_frame(frame, width: int, height: int):
+def _fit_frame(frame, width: int, height: int, pixel_aspect: Fraction = Fraction(1)):
     """A decoded frame in the reel's size and pixel format.
 
     The source here is yuv444p, which many players cannot decode; converting
     explicitly rather than relying on the encoder makes the output format a
     decision rather than a coincidence.
 
-    A frame of another shape -- a 4:3 episode in a 16:9 reel -- is scaled to
-    fit and centred on black rather than stretched.
+    A frame is fitted by the shape it is meant to be shown at -- its stored
+    width times `pixel_aspect` -- so a DVD rip's wide pixels are made square
+    rather than kept narrow. A frame of another shape -- a 4:3 episode in a
+    16:9 reel -- is scaled to fit and centred on black rather than
+    stretched.
     """
-    if frame.width * height == frame.height * width:
+    shown_width = frame.width * pixel_aspect
+    if shown_width * height == frame.height * width:
         return frame.reformat(width=width, height=height, format="yuv420p")
 
-    scale = min(width / frame.width, height / frame.height)
-    fit_width = max(2, min(width, int(round(frame.width * scale))))
+    scale = min(width / shown_width, Fraction(height, frame.height))
+    fit_width = max(2, min(width, int(round(shown_width * scale))))
     fit_height = max(2, min(height, int(round(frame.height * scale))))
     scaled = frame.reformat(width=fit_width, height=fit_height, format="rgb24")
     canvas = np.zeros((height, width, 3), dtype=np.uint8)
@@ -900,6 +947,7 @@ def _write_segment(
     source_rate: Fraction | None = None,
     trim_slivers: bool = True,
     timed: float | None = None,
+    pixel_aspect: Fraction = Fraction(1),
 ) -> float:
     """Encodes one segment into the open reel, returning its real duration.
 
@@ -990,7 +1038,7 @@ def _write_segment(
             if frame.time > last_video_time:
                 last_gap = frame.time - last_video_time
             last_video_time = frame.time
-            converted = _fit_frame(frame, out_video.width, out_video.height)
+            converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
             # The frame before this one was on screen until now. A frame
             # due in the same reel slot as the one after it is dropped.
             if held is not None:
@@ -998,7 +1046,7 @@ def _write_segment(
             held = converted
             return 1
         last_video_time = frame.time
-        converted = _fit_frame(frame, out_video.width, out_video.height)
+        converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
         if source_rate is None:
             copies = 1
         else:
