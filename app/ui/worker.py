@@ -892,6 +892,23 @@ def track_previews(
     ]
 
 
+def segment_reporter(on_progress=None, cancel: threading.Event | None = None):
+    """The cutter's per-segment callback, for an export the window runs.
+
+    Stops the cut when `cancel` is set -- after the segment that has just
+    finished, which is as soon as the cutter can stop cleanly -- and reports
+    progress as (fraction, cuts done, cuts in all).
+    """
+
+    def report(index: int, total: int, _segment) -> None:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        if on_progress is not None:
+            on_progress((index + 1) / total, index + 1, total)
+
+    return report
+
+
 def export(
     scan_result: ScanResult,
     person: Person | list[Person],
@@ -937,11 +954,7 @@ def export(
             settings=settings,
         )
 
-    def report(index: int, total: int, _segment) -> None:
-        if cancel is not None and cancel.is_set():
-            raise Cancelled()
-        if on_progress is not None:
-            on_progress((index + 1) / total, index + 1, total)
+    report = segment_reporter(on_progress, cancel)
 
     return cut_segments(
         # The held descriptor when there is one, so a video moved since the

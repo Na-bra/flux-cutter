@@ -215,7 +215,7 @@ def build_cast(
                 links.append((score, card.ref, other))
     links.sort(reverse=True)
 
-    for score, a, b in links:
+    for _score, a, b in links:
         if sets.find(a) == sets.find(b) or forbidden(a, b):
             continue
         group_a, group_b = sets.group(a), sets.group(b)

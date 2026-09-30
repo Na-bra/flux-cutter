@@ -1031,24 +1031,22 @@ def _write_segment(
 
     def emit(frame) -> int:
         """Writes one source frame to the reel, as many times as it covers."""
-        nonlocal first_video_time, last_video_time, read_here, written_here, held, last_gap
+        nonlocal first_video_time, last_video_time, read_here, held, last_gap
         if first_video_time is None:
             first_video_time = frame.time
+        if timed is not None and frame.time > last_video_time:
+            last_gap = frame.time - last_video_time
+        last_video_time = frame.time
+        converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
+
         if timed is not None:
-            if frame.time > last_video_time:
-                last_gap = frame.time - last_video_time
-            last_video_time = frame.time
-            converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
             # The frame before this one was on screen until now. A frame
             # due in the same reel slot as the one after it is dropped.
             if held is not None:
                 put(held, max(0, slots_before(frame.time) - written_here))
             held = converted
-            return 1
-        last_video_time = frame.time
-        converted = _fit_frame(frame, out_video.width, out_video.height, pixel_aspect)
-        if source_rate is None:
-            copies = 1
+        elif source_rate is None:
+            put(converted, 1)
         else:
             # The reel frames that start while this source frame is on
             # screen: every k with k/reel < read/source. Counted in whole
@@ -1056,14 +1054,7 @@ def _write_segment(
             # drift the way summing float timestamps would.
             read_here += 1
             due = -(-(read_here * frame_rate) // source_rate)
-            copies = int(due) - written_here
-            written_here += copies
-        for _ in range(copies):
-            converted.pts = int(round(counters.video / frame_rate / VIDEO_TIME_BASE))
-            converted.time_base = VIDEO_TIME_BASE
-            counters.video += 1
-            for packet in out_video.encode(converted):
-                output.mux(packet)
+            put(converted, int(due) - written_here)
         return 1
 
     for frame in source.decode(*streams):

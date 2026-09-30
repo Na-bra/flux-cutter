@@ -8,7 +8,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from app.faces.detector import FaceDetection, FaceDetector
-from app.faces.embedder import FaceEmbedder
 from app.faces.grouper import (
     DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
     DEFAULT_FORBID_COOCCURRING,

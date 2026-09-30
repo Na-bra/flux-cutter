@@ -54,7 +54,6 @@ from app.faces.edits import EditError
 from app.ui.folder import (
     CastPerson,
     FolderScan,
-    cards_of,
     cast_of,
     detach_cards,
     discard_people,
@@ -147,15 +146,21 @@ def output_path(folder: str, filename: str, export_format: str = DEFAULT_EXPORT_
 
 def with_extension(name: str, export_format: str) -> str:
     """`name` saved as `export_format`: any video extension it has swapped."""
+    return f"{_without_video_extension(name)}.{export_format}"
+
+
+def _without_video_extension(name: str) -> str:
+    """`name` less a video extension, if it ends in one. A dot that is not
+    one -- `s01.part2` -- stays part of the name."""
     stem, dot, extension = name.rpartition(".")
     if dot and stem and f".{extension.lower()}" in SUPPORTED_EXTENSIONS:
-        name = stem
-    return f"{name}.{export_format}"
+        return stem
+    return name
 
 
 def _stem(name: str) -> str:
     """A file name without a video extension, for telling names apart."""
-    return with_extension(name.strip(), "x")[:-2] if name.strip() else ""
+    return _without_video_extension(name.strip())
 
 
 def _clock(seconds: float) -> str:

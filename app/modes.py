@@ -27,7 +27,6 @@ refuses to compare across them (see grouper.MixedEmbeddingSpaces).
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from app.models import MODELS, ModelSpec, find_model
 

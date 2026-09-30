@@ -1101,24 +1101,12 @@
       return;
     }
 
-    $("picked").hidden = false;
-    $("pickedName").textContent = r.name;
-    $("pickedTime").textContent = r.onScreen;
-    $("pickedCuts").textContent = r.cuts;
-    $("pickedLen").textContent = r.reel;
-    $("pickedDet").textContent = r.detections;
-    if (r.filename) $("fname").value = r.filename;
+    showPicked(r);
     $("foot").textContent =
       "Cuts " + r.cuts + " segments and joins them into one file." +
       (r.indexes.length > 1 ? " Any scene with any of them." : "");
-    $("exportBtn").disabled = false;
     showSuggestion();
     refreshCuts();
-
-    state.previewToken = r.token;
-    const strip = $("strip");
-    strip.hidden = false;
-    strip.innerHTML = '<p class="waiting">Reading the reel…</p>';
   });
 
   // Frames from the reel itself, so the numbers above are not the only
