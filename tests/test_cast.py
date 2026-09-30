@@ -5,7 +5,6 @@ floor is live action's 0.35 and the margin is the batch rule's 0.05.
 """
 
 import numpy as np
-import pytest
 
 from app.faces.cast import Answers, CardRef, CastCard, build_cast
 

@@ -6,7 +6,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.modes import DEFAULT_MODE, MODES, availability, get_mode, mode_ids
+from app.modes import DEFAULT_MODE, get_mode, mode_ids
 from app.faces.reference import ReferenceError, load_reference_face
 from app.scans import clear as clear_scans
 from app.scans import entries as scan_entries
@@ -14,12 +14,7 @@ from app.scans import scan_cache_dir
 from app.scans import total_bytes as scan_total_bytes
 from app.faces.grouper import (
     DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
-    DEFAULT_CONSOLIDATION_THRESHOLD,
-    DEFAULT_MIN_GROUP_EYE_SPAN,
     DEFAULT_MARGIN_THRESHOLD,
-    DEFAULT_MIN_CONFIDENCE,
-    DEFAULT_MIN_FACE_SIZE,
-    DEFAULT_SIMILARITY_THRESHOLD,
 )
 from app.video.cutter import EXPORT_FORMATS
 from app.video.cutter import CutterError
@@ -814,7 +809,6 @@ def main():
         return
 
     if args.command == "report":
-        from app.faces.cast import Answers
         from app.report import clock, season_report, write_csv, write_html
         from app.ui.folder import load_answers, scan_folder
         from app.ui.worker import ScanSettings

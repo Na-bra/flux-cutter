@@ -36,6 +36,7 @@ from app.ui.worker import (
     plan_export,
     preview_frames,
     scan,
+    segment_reporter,
 )
 from app.video.cutter import (
     Clip,
@@ -525,11 +526,7 @@ def export_cast(
     if not usable:
         raise CutterError(f"{person.label} has nothing to cut in these videos.")
 
-    def report(index: int, total: int, _segment) -> None:
-        if cancel is not None and cancel.is_set():
-            raise Cancelled()
-        if on_progress is not None:
-            on_progress((index + 1) / total, index + 1, total)
+    report = segment_reporter(on_progress, cancel)
 
     cut = cut_clips(
         usable,

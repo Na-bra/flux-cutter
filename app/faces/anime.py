@@ -10,8 +10,9 @@ including the large foreground faces (Instructions.md 17).
 Both models run under onnxruntime rather than cv2.dnn, which cannot load
 either graph -- the detector's ONNX trips cv2's importer on a Concat node.
 onnxruntime is an optional dependency: nothing in live-action mode imports
-this module, so a user who never selects Animation never needs it, and the
-frozen app does not carry it.
+this module, so a user who never selects Animation never needs it. The
+macOS app carries it anyway, because live action's Core ML path uses it;
+the Windows app does not, and reports Animation as needing an install.
 
 Two things here deliberately do NOT match the live-action pipeline:
 

@@ -11,7 +11,6 @@ The footage is generated, so like the rest of the sync tests these need no
 sample video and run in CI.
 """
 
-from pathlib import Path
 
 import numpy as np
 import pytest
