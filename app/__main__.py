@@ -591,6 +591,29 @@ def main():
         help="Where report.csv and report.html are written.",
     )
 
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Measure finding and telling people apart against labelled videos.",
+    )
+    evaluate_parser.add_argument(
+        "names", nargs="*", help="Videos of the suite to run, by name; all of them if none."
+    )
+    evaluate_parser.add_argument(
+        "--suite", type=Path, default=None, help="A suite file other than evaluation/suite.json."
+    )
+    evaluate_parser.add_argument(
+        "--output", type=Path, default=Path("output/evaluation/results.json"),
+        help="Where the numbers are written, to compare against a later run.",
+    )
+    evaluate_parser.add_argument(
+        "--review", action="store_true",
+        help="Instead of measuring, write a page for checking and correcting each named video's labels.",
+    )
+    evaluate_parser.add_argument(
+        "--correct", type=Path, default=None, metavar="CORRECTIONS",
+        help="Write the corrections saved from a review page into the named video's truth.",
+    )
+
     people_parser = subparsers.add_parser(
         "people", help="List, rename or forget the people you have named."
     )
@@ -840,6 +863,71 @@ def main():
         for path, reason in folder.skipped:
             print(f"  could not read {path.name}: {reason}")
         print(f"\nWrote {csv_path} and {html_path}")
+        return
+
+    if args.command == "evaluate":
+        import json
+
+        from app.evaluation.run import SUITE, as_record, evaluate_entry, load_suite, why_not
+
+        entries = load_suite(args.suite or SUITE)
+        unknown = set(args.names) - {entry.name for entry in entries}
+        if unknown:
+            parser.error(
+                f"not in the suite: {', '.join(sorted(unknown))} "
+                f"(it has {', '.join(entry.name for entry in entries)})"
+            )
+        if args.correct is not None:
+            from app.evaluation.review import apply_corrections
+
+            if len(args.names) != 1:
+                parser.error("say which video the corrections are for: evaluate NAME --correct FILE")
+            entry = next(e for e in entries if e.name == args.names[0])
+            changed, truth = apply_corrections(entry.truth, json.loads(args.correct.read_text(encoding="utf-8")))
+            print(
+                f"{entry.name}: {changed} face{'s' if changed != 1 else ''} relabelled"
+                f"{', marked reviewed' if truth.reviewed else ''}. Wrote {entry.truth}"
+            )
+            return
+        if args.review:
+            from app.evaluation.review import write_review
+
+            for entry in entries:
+                if args.names and entry.name not in args.names:
+                    continue
+                reason = why_not(entry)
+                if reason:
+                    print(f"{entry.name}: skipped -- {reason}")
+                    continue
+                page = write_review(entry.truth, entry.video, args.output.parent / f"review-{entry.name}.html")
+                print(f"{entry.name}: wrote {page}")
+            return
+        records = []
+        for entry in entries:
+            if args.names and entry.name not in args.names:
+                continue
+            reason = why_not(entry)
+            if reason:
+                print(f"{entry.name}: skipped -- {reason}\n")
+                continue
+            print(f"{entry.name}: scanning...", flush=True)
+            result = evaluate_entry(entry)
+            print(result.summary() + "\n")
+            records.append(as_record(entry, result))
+        if not records:
+            print("Nothing was measured.", file=sys.stderr)
+            sys.exit(1)
+        if len(records) > 1:
+            print(f"{'video':<14} {'precision':>9} {'recall':>7} {'contam.':>8} {'held':>6} {'splits':>6}")
+            for r in records:
+                recall = f"{r['recall']:.1%}" if r["recall"] is not None else "-"
+                print(
+                    f"{r['name']:<14} {r['precision']:>9.1%} {recall:>7} {r['contamination']:>8.2%} "
+                    f"{r['contaminated_cards']:>2}/{r['cards']:<3} {r['splits']:>6}"
+                )
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(records, indent=1) + "\n", encoding="utf-8")
+        print(f"\nWrote {args.output}")
         return
 
     if args.command == "people":

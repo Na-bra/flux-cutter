@@ -3706,3 +3706,129 @@ did not drift. Re-exporting those cuts -- three times each with the
 hardware encoder to MKV and MP4, and with libx264 -- always gave every
 frame. The likeliest cause is the hardware encoder dropping frames under a
 long sustained load; it has not been reproduced.
+
+## 50. The evaluation suite (`app/evaluation/`, `python -m app evaluate`)
+
+The thresholds were fitted to one 22-minute episode by looking at its
+gallery. This measures the pipeline instead, against labels, on six videos:
+
+    name         video                                    length   mode
+    test         assets/test-videos/test.mp4              23 s     live
+    test_2       assets/test-videos/test_2.MOV            33 s     live
+    animation    assets/test-videos/animation.mp4         7 min    animation
+    animation2   assets/test-videos/animation2.mp4        23 min   animation
+    test_3       assets/test-videos/test_3.mp4            22 min   live
+    s01e01       the 45-minute S01E01 MKV, in ~/Downloads  45 min   live
+
+`evaluation/suite.json` says where each video is; the videos are not in the
+repository, and one that is missing -- or is a different file from the one
+its labels were made on (checked by size) -- is skipped and said so.
+
+### What a label is
+
+The unit is a face a scan produced: the sampled frame's timestamp, the
+detector's box, and who it is (`evaluation/truth/<name>.json`, one face to
+a line). A later run of the same pipeline reproduces the boxes exactly; a
+changed one is matched by overlap (IoU 0.5 within 0.02 s), and the report
+says how many of its faces the labels cover, which says when they need
+topping up. Two labels are not people: `not-a-face` (a toy, a pattern, a
+hand), which counts against precision, and `unknown` (a face that cannot
+be told apart -- too small, turned away, blurred), which counts as a face
+and is left out of identity. Recall needs faces the pipeline did not find,
+so twelve sampled frames per video were looked over and the faces missed
+in them recorded.
+
+Live-action people are numbered (`p1`, `p2`, ...) by the card holding most
+of them, with `x1`... for people with no card. Naming them, and saying when
+two numbers are one person, is for the review. Cartoon characters are named.
+
+### The measures
+
+- **precision**: of the faces found, how many are faces;
+- **recall**: of the faces in the checked frames, how many were found;
+- **contamination**: of the named faces on cards, the share on someone
+  else's card -- the one to watch, since it puts someone else in a reel;
+- **splits**: extra cards, one person on more than one;
+- **completeness**: share of a person's faces on their main card (the
+  one holding most of them; faces that made no card count against it);
+- **timing**: overlap (IoU) between the person's appearances and their
+  card's;
+- **reel**: the reel exactly as an export of their card would cut it
+  (`merge_for_export`), how much of it shows them and how many seconds
+  show another named person and not them.
+
+### First results (draft labels, not yet reviewed)
+
+    video          precision  recall   contamination   cards holding others   splits
+    test              100.0%    71.4%        0.00%           0 of 2                0
+    test_2            100.0%    90.9%        0.00%           0 of 2                0
+    animation          97.7%    71.4%        6.19%           3 of 6                1
+    animation2         96.0%    50.0%        2.40%           6 of 14               2
+    test_3             99.7%    74.2%        0.13%           4 of 42               2
+    s01e01             97.0%    93.8%        0.00%           0 of 44               0
+
+(`evaluation/baseline.json` has every number, per person.)
+
+What they say:
+
+- **Animation is where contamination is.** On animation.mp4 a card holds
+  the man in a suit (12 faces) with the goggled henchmen it is named for,
+  and Grandpa Max's card holds two bystanders; on animation2 a split-off
+  card of Gwen's holds 11 faces of a boy with glasses, and another mixes two
+  boys. Live action is clean by these labels.
+- **People are lost before grouping more than they are confused.** On
+  test_2 a third person appears only in tracks rejected as too brief, so
+  has no card at all; on the 45-minute file seventeen people have faces
+  but no card, one with 17 faces in two tracks. And the not-a-face filter
+  rejects real faces: 299 on test_3, 250 of them the lead in profile, and
+  3 of the 45 on test.mp4.
+- **A track can run from one person into another.** Three animation tracks
+  do (a henchman into the man in a suit; Ben into Grandpa Max across a
+  dissolve; a blond man into a woman), and two more on animation2. The
+  tracker joins them, so no later step can separate them.
+- **A reel shows other people for a fifth to a quarter of its length**
+  (reel purity 70-85% for the main people), without contamination: that is
+  the export padding and the bridging of short gaps, which keeps the other
+  side of a conversation. It is measured against the faces found, so a
+  cutaway where the person is on screen but no face was found also counts
+  as not them.
+- Recall rests on 7 to 31 faces per video and moves a lot with one face;
+  read it as a rough figure.
+
+### What the labels can and cannot show
+
+They were drafted from FluxCutter's own output: each card's tracks were
+looked over and labelled by who is on most of them, with the exceptions
+picked out from contact sheets, from whole frames, and from the tracks
+whose faces stop resembling each other (the likeliest to have run into
+someone else). That finds the contamination one sees on a sheet, but a
+face that looks like the card's person and is not will be labelled as the
+card's person -- so a draft can understate contamination, never overstate
+it. Two live-action cards that are one person can be missed the same way;
+the uncertain pairs are listed in each truth's notes. The review settles
+both.
+
+### Reviewing
+
+    python -m app evaluate test_3 --review
+
+writes `output/evaluation/review-test_3.html`, a local page -- it holds
+faces from your own video, so it is never published. Each tile is a run:
+someone's faces in consecutive sampled frames at the same place. Select
+tiles, pick a person (or "a new person") and Move; rename anyone in the box
+by their label; tick Reviewed; Save corrections. Then
+
+    python -m app evaluate test_3 --correct corrections-test_3.json
+
+relabels those faces, names the people, and marks the truth reviewed
+(`labelled_by: "draft, reviewed"`), after which the report stops calling
+it a draft.
+
+### Running it
+
+    python -m app evaluate              # all six, about 40 minutes
+    python -m app evaluate test test_2  # the two short ones, 20 seconds
+
+It never reads or writes kept scans -- a kept scan carries the user's own
+corrections, and measuring those would measure the user -- and it keeps
+the faces that made no card, since they are where a missing person went.

@@ -1,0 +1,1045 @@
+[
+ {
+  "name": "test",
+  "reviewed": false,
+  "faces": 45,
+  "coverage": 1.0,
+  "precision": 1.0,
+  "recall": 0.7143,
+  "contamination": 0.0,
+  "contaminated_cards": 0,
+  "cards": 2,
+  "splits": 0,
+  "people": {
+   "p2": {
+    "faces": 20,
+    "completeness": 0.8,
+    "timing": 0.7727,
+    "reel_purity": 0.6452,
+    "reel_shows_others": 2.75
+   },
+   "p1": {
+    "faces": 17,
+    "completeness": 0.9412,
+    "timing": 0.8889,
+    "reel_purity": 0.5926,
+    "reel_shows_others": 3.0
+   }
+  }
+ },
+ {
+  "name": "test_2",
+  "reviewed": false,
+  "faces": 55,
+  "coverage": 1.0,
+  "precision": 1.0,
+  "recall": 0.9091,
+  "contamination": 0.0,
+  "contaminated_cards": 0,
+  "cards": 2,
+  "splits": 0,
+  "people": {
+   "p1": {
+    "faces": 30,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9521,
+    "reel_shows_others": 0
+   },
+   "p2": {
+    "faces": 20,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9763,
+    "reel_shows_others": 0
+   },
+   "p3": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation",
+  "reviewed": false,
+  "faces": 344,
+  "coverage": 1.0,
+  "precision": 0.9767,
+  "recall": 0.7143,
+  "contamination": 0.0619,
+  "contaminated_cards": 3,
+  "cards": 6,
+  "splits": 1,
+  "people": {
+   "gwen": {
+    "faces": 117,
+    "completeness": 0.9915,
+    "timing": 0.9915,
+    "reel_purity": 0.8801,
+    "reel_shows_others": 2.45
+   },
+   "ben": {
+    "faces": 112,
+    "completeness": 0.9821,
+    "timing": 0.9825,
+    "reel_purity": 0.8127,
+    "reel_shows_others": 2.72
+   },
+   "max": {
+    "faces": 48,
+    "completeness": 0.8333,
+    "timing": 0.7719,
+    "reel_purity": 0.6217,
+    "reel_shows_others": 8.33
+   },
+   "goggles": {
+    "faces": 18,
+    "completeness": 1.0,
+    "timing": 0.6381,
+    "reel_purity": 0.3733,
+    "reel_shows_others": 6.1
+   },
+   "suit-man": {
+    "faces": 13,
+    "completeness": 0.9231,
+    "timing": 0.4667,
+    "reel_purity": 0.273,
+    "reel_shows_others": 8.5
+   },
+   "bull": {
+    "faces": 11,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8344,
+    "reel_shows_others": 0
+   },
+   "blue-shirt": {
+    "faces": 3,
+    "completeness": 1.0,
+    "timing": 0.1095,
+    "reel_purity": 0.0641,
+    "reel_shows_others": 13.51
+   },
+   "extra-2": {
+    "faces": 2,
+    "completeness": 1.0,
+    "timing": 0.0458,
+    "reel_purity": 0.0313,
+    "reel_shows_others": 27.85
+   },
+   "extra-1": {
+    "faces": 1,
+    "completeness": 1.0,
+    "timing": 0.0221,
+    "reel_purity": 0.0151,
+    "reel_shows_others": 28.38
+   },
+   "extra-3": {
+    "faces": 1,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "four-arms": {
+    "faces": 1,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "diamondhead": {
+    "faces": 1,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation2",
+  "reviewed": false,
+  "faces": 1898,
+  "coverage": 1.0,
+  "precision": 0.9605,
+  "recall": 0.5,
+  "contamination": 0.024,
+  "contaminated_cards": 6,
+  "cards": 14,
+  "splits": 2,
+  "people": {
+   "gwen": {
+    "faces": 602,
+    "completeness": 0.9003,
+    "timing": 0.9061,
+    "reel_purity": 0.8525,
+    "reel_shows_others": 12.87
+   },
+   "ben": {
+    "faces": 529,
+    "completeness": 0.966,
+    "timing": 0.9624,
+    "reel_purity": 0.8053,
+    "reel_shows_others": 17.95
+   },
+   "max": {
+    "faces": 362,
+    "completeness": 0.9779,
+    "timing": 0.9519,
+    "reel_purity": 0.8244,
+    "reel_shows_others": 14.31
+   },
+   "boy-black-glasses": {
+    "faces": 54,
+    "completeness": 0.7963,
+    "timing": 0.7966,
+    "reel_purity": 0.8286,
+    "reel_shows_others": 3.46
+   },
+   "teen": {
+    "faces": 46,
+    "completeness": 1.0,
+    "timing": 0.8109,
+    "reel_purity": 0.6207,
+    "reel_shows_others": 11.38
+   },
+   "old-man": {
+    "faces": 33,
+    "completeness": 0.9697,
+    "timing": 0.9672,
+    "reel_purity": 0.805,
+    "reel_shows_others": 0.96
+   },
+   "camper": {
+    "faces": 32,
+    "completeness": 1.0,
+    "timing": 0.8861,
+    "reel_purity": 0.6481,
+    "reel_shows_others": 2.25
+   },
+   "boy-brown-glasses": {
+    "faces": 31,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6643,
+    "reel_shows_others": 7.42
+   },
+   "blonde": {
+    "faces": 31,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8356,
+    "reel_shows_others": 0
+   },
+   "teacher": {
+    "faces": 23,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8847,
+    "reel_shows_others": 0.92
+   },
+   "boy-blue": {
+    "faces": 11,
+    "completeness": 1.0,
+    "timing": 0.1891,
+    "reel_purity": 0.1447,
+    "reel_shows_others": 29.48
+   },
+   "ranger": {
+    "faces": 8,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "vilgax": {
+    "faces": 5,
+    "completeness": 1.0,
+    "timing": 0.3296,
+    "reel_purity": 0.2906,
+    "reel_shows_others": 0
+   },
+   "diamondhead": {
+    "faces": 2,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "four-arms": {
+    "faces": 1,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "test_3",
+  "reviewed": false,
+  "faces": 5439,
+  "coverage": 1.0,
+  "precision": 0.9972,
+  "recall": 0.7419,
+  "contamination": 0.0013,
+  "contaminated_cards": 4,
+  "cards": 42,
+  "splits": 2,
+  "people": {
+   "p1": {
+    "faces": 1335,
+    "completeness": 0.7903,
+    "timing": 0.8223,
+    "reel_purity": 0.8381,
+    "reel_shows_others": 88.25
+   },
+   "p2": {
+    "faces": 580,
+    "completeness": 0.9879,
+    "timing": 0.9831,
+    "reel_purity": 0.7547,
+    "reel_shows_others": 84.24
+   },
+   "p3": {
+    "faces": 380,
+    "completeness": 0.9,
+    "timing": 0.8975,
+    "reel_purity": 0.8678,
+    "reel_shows_others": 23.21
+   },
+   "p4": {
+    "faces": 221,
+    "completeness": 0.9819,
+    "timing": 0.9819,
+    "reel_purity": 0.7387,
+    "reel_shows_others": 26.69
+   },
+   "p5": {
+    "faces": 205,
+    "completeness": 0.9463,
+    "timing": 0.9511,
+    "reel_purity": 0.7444,
+    "reel_shows_others": 30.34
+   },
+   "p6": {
+    "faces": 188,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7841,
+    "reel_shows_others": 23.19
+   },
+   "p7": {
+    "faces": 172,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7011,
+    "reel_shows_others": 32.88
+   },
+   "p8": {
+    "faces": 152,
+    "completeness": 1.0,
+    "timing": 0.9934,
+    "reel_purity": 0.746,
+    "reel_shows_others": 23.63
+   },
+   "p9": {
+    "faces": 139,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7285,
+    "reel_shows_others": 25.3
+   },
+   "p14": {
+    "faces": 118,
+    "completeness": 0.7712,
+    "timing": 0.8158,
+    "reel_purity": 0.7648,
+    "reel_shows_others": 11.83
+   },
+   "p10": {
+    "faces": 117,
+    "completeness": 1.0,
+    "timing": 0.9915,
+    "reel_purity": 0.6786,
+    "reel_shows_others": 23.5
+   },
+   "p11": {
+    "faces": 99,
+    "completeness": 1.0,
+    "timing": 0.99,
+    "reel_purity": 0.6825,
+    "reel_shows_others": 22.0
+   },
+   "p12": {
+    "faces": 98,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7363,
+    "reel_shows_others": 16.2
+   },
+   "p13": {
+    "faces": 92,
+    "completeness": 1.0,
+    "timing": 0.9684,
+    "reel_purity": 0.622,
+    "reel_shows_others": 27.18
+   },
+   "p15": {
+    "faces": 92,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6752,
+    "reel_shows_others": 21.42
+   },
+   "p16": {
+    "faces": 92,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.687,
+    "reel_shows_others": 20.68
+   },
+   "p17": {
+    "faces": 86,
+    "completeness": 1.0,
+    "timing": 0.9885,
+    "reel_purity": 0.7094,
+    "reel_shows_others": 15.18
+   },
+   "p18": {
+    "faces": 85,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7313,
+    "reel_shows_others": 14.57
+   },
+   "p19": {
+    "faces": 70,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6193,
+    "reel_shows_others": 20.88
+   },
+   "p20": {
+    "faces": 65,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5681,
+    "reel_shows_others": 24.1
+   },
+   "p21": {
+    "faces": 64,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5196,
+    "reel_shows_others": 29.51
+   },
+   "p22": {
+    "faces": 60,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.693,
+    "reel_shows_others": 12.84
+   },
+   "p23": {
+    "faces": 53,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6674,
+    "reel_shows_others": 13.17
+   },
+   "p25": {
+    "faces": 43,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5891,
+    "reel_shows_others": 14.12
+   },
+   "p26": {
+    "faces": 39,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.75,
+    "reel_shows_others": 6.21
+   },
+   "p27": {
+    "faces": 38,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6816,
+    "reel_shows_others": 8.88
+   },
+   "p28": {
+    "faces": 38,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6147,
+    "reel_shows_others": 11.5
+   },
+   "p29": {
+    "faces": 35,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6657,
+    "reel_shows_others": 8.54
+   },
+   "p30": {
+    "faces": 34,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.559,
+    "reel_shows_others": 13.05
+   },
+   "p31": {
+    "faces": 33,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6337,
+    "reel_shows_others": 9.14
+   },
+   "p34": {
+    "faces": 29,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5574,
+    "reel_shows_others": 11.3
+   },
+   "p33": {
+    "faces": 28,
+    "completeness": 1.0,
+    "timing": 0.9667,
+    "reel_purity": 0.591,
+    "reel_shows_others": 9.64
+   },
+   "p36": {
+    "faces": 26,
+    "completeness": 1.0,
+    "timing": 0.963,
+    "reel_purity": 0.594,
+    "reel_shows_others": 8.88
+   },
+   "p37": {
+    "faces": 26,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5115,
+    "reel_shows_others": 12.19
+   },
+   "p39": {
+    "faces": 25,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5814,
+    "reel_shows_others": 8.71
+   },
+   "p40": {
+    "faces": 24,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6644,
+    "reel_shows_others": 5.79
+   },
+   "p24": {
+    "faces": 22,
+    "completeness": 1.0,
+    "timing": 0.4408,
+    "reel_purity": 0.2689,
+    "reel_shows_others": 29.84
+   },
+   "p32": {
+    "faces": 21,
+    "completeness": 1.0,
+    "timing": 0.6767,
+    "reel_purity": 0.2831,
+    "reel_shows_others": 25.25
+   },
+   "p41": {
+    "faces": 21,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5936,
+    "reel_shows_others": 7.25
+   },
+   "p42": {
+    "faces": 16,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.398,
+    "reel_shows_others": 12.04
+   },
+   "x5": {
+    "faces": 9,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x6": {
+    "faces": 8,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x3": {
+    "faces": 3,
+    "completeness": 1.0,
+    "timing": 0.0601,
+    "reel_purity": 0.0367,
+    "reel_shows_others": 39.35
+   },
+   "x1": {
+    "faces": 1,
+    "completeness": 1.0,
+    "timing": 0.0029,
+    "reel_purity": 0.0025,
+    "reel_shows_others": 198.36
+   },
+   "x2": {
+    "faces": 1,
+    "completeness": 1.0,
+    "timing": 0.0115,
+    "reel_purity": 0.0083,
+    "reel_shows_others": 57.63
+   },
+   "x4": {
+    "faces": 1,
+    "completeness": 1.0,
+    "timing": 0.0323,
+    "reel_purity": 0.0135,
+    "reel_shows_others": 35.21
+   }
+  }
+ },
+ {
+  "name": "s01e01",
+  "reviewed": false,
+  "faces": 9267,
+  "coverage": 1.0,
+  "precision": 0.9705,
+  "recall": 0.9375,
+  "contamination": 0.0,
+  "contaminated_cards": 0,
+  "cards": 44,
+  "splits": 0,
+  "people": {
+   "p1": {
+    "faces": 2129,
+    "completeness": 0.9131,
+    "timing": 0.9149,
+    "reel_purity": 0.7502,
+    "reel_shows_others": 270.5
+   },
+   "p2": {
+    "faces": 1447,
+    "completeness": 0.9986,
+    "timing": 0.9994,
+    "reel_purity": 0.77,
+    "reel_shows_others": 177.22
+   },
+   "p3": {
+    "faces": 1015,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7905,
+    "reel_shows_others": 122.55
+   },
+   "p4": {
+    "faces": 835,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7624,
+    "reel_shows_others": 120.62
+   },
+   "p5": {
+    "faces": 308,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7354,
+    "reel_shows_others": 39.94
+   },
+   "p6": {
+    "faces": 173,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7201,
+    "reel_shows_others": 32.77
+   },
+   "p7": {
+    "faces": 170,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7041,
+    "reel_shows_others": 34.85
+   },
+   "p8": {
+    "faces": 165,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7845,
+    "reel_shows_others": 20.9
+   },
+   "p10": {
+    "faces": 138,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7419,
+    "reel_shows_others": 20.03
+   },
+   "p11": {
+    "faces": 127,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7424,
+    "reel_shows_others": 17.52
+   },
+   "p14": {
+    "faces": 110,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6862,
+    "reel_shows_others": 26.09
+   },
+   "p15": {
+    "faces": 98,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7558,
+    "reel_shows_others": 16.18
+   },
+   "p16": {
+    "faces": 87,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6958,
+    "reel_shows_others": 17.37
+   },
+   "p17": {
+    "faces": 84,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7592,
+    "reel_shows_others": 11.62
+   },
+   "p18": {
+    "faces": 74,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9242,
+    "reel_shows_others": 2.9
+   },
+   "p19": {
+    "faces": 71,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6992,
+    "reel_shows_others": 13.92
+   },
+   "p20": {
+    "faces": 66,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6867,
+    "reel_shows_others": 12.83
+   },
+   "p21": {
+    "faces": 63,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6816,
+    "reel_shows_others": 14.04
+   },
+   "p22": {
+    "faces": 63,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6497,
+    "reel_shows_others": 15.43
+   },
+   "p23": {
+    "faces": 58,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6629,
+    "reel_shows_others": 13.22
+   },
+   "p24": {
+    "faces": 51,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7079,
+    "reel_shows_others": 8.28
+   },
+   "p25": {
+    "faces": 48,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5927,
+    "reel_shows_others": 16.47
+   },
+   "p26": {
+    "faces": 47,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6072,
+    "reel_shows_others": 15.5
+   },
+   "p27": {
+    "faces": 44,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7511,
+    "reel_shows_others": 5.9
+   },
+   "p28": {
+    "faces": 43,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8313,
+    "reel_shows_others": 4.5
+   },
+   "p29": {
+    "faces": 42,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6328,
+    "reel_shows_others": 13.93
+   },
+   "p30": {
+    "faces": 39,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8873,
+    "reel_shows_others": 2.47
+   },
+   "p31": {
+    "faces": 38,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6301,
+    "reel_shows_others": 9.4
+   },
+   "p32": {
+    "faces": 38,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.69,
+    "reel_shows_others": 6.97
+   },
+   "p33": {
+    "faces": 37,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5372,
+    "reel_shows_others": 15.43
+   },
+   "p34": {
+    "faces": 35,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8959,
+    "reel_shows_others": 2.0
+   },
+   "p35": {
+    "faces": 35,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5275,
+    "reel_shows_others": 14.5
+   },
+   "p36": {
+    "faces": 34,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.7256,
+    "reel_shows_others": 5.58
+   },
+   "p37": {
+    "faces": 34,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5926,
+    "reel_shows_others": 11.68
+   },
+   "p38": {
+    "faces": 34,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5125,
+    "reel_shows_others": 17.25
+   },
+   "p39": {
+    "faces": 32,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6676,
+    "reel_shows_others": 6.68
+   },
+   "p40": {
+    "faces": 30,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5971,
+    "reel_shows_others": 9.87
+   },
+   "p41": {
+    "faces": 29,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6026,
+    "reel_shows_others": 9.82
+   },
+   "p42": {
+    "faces": 29,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.4517,
+    "reel_shows_others": 17.6
+   },
+   "p43": {
+    "faces": 29,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.5496,
+    "reel_shows_others": 11.93
+   },
+   "p44": {
+    "faces": 27,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.4929,
+    "reel_shows_others": 13.68
+   },
+   "x1": {
+    "faces": 26,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x4": {
+    "faces": 24,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x5": {
+    "faces": 23,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x7": {
+    "faces": 22,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x2": {
+    "faces": 21,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x3": {
+    "faces": 20,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x9": {
+    "faces": 19,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x6": {
+    "faces": 17,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x8": {
+    "faces": 17,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x10": {
+    "faces": 17,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "baby": {
+    "faces": 16,
+    "completeness": 1.0,
+    "timing": 0.1159,
+    "reel_purity": 0.0443,
+    "reel_shows_others": 124.27
+   },
+   "x11": {
+    "faces": 16,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x12": {
+    "faces": 14,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x13": {
+    "faces": 14,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x14": {
+    "faces": 14,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x15": {
+    "faces": 12,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x16": {
+    "faces": 10,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x17": {
+    "faces": 9,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ }
+]
