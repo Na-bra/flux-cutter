@@ -36,6 +36,7 @@ flux-cutter/
 │   ├── __init__.py
 │   ├── __main__.py          # CLI entry point
 │   ├── main.py              # pipeline stages, shared by every front end
+│   ├── evaluation/          # measuring against labelled videos (python -m app evaluate)
 │   ├── faces/
 │   │   ├── __init__.py
 │   │   ├── detector.py
@@ -69,6 +70,7 @@ flux-cutter/
 │   │   └── face_recognition_arcface_w600k_r50.onnx
 │   └── test-videos/
 │       └── test.mp4
+├── evaluation/              # the suite and its labels (truth/)
 ├── tests/
 ├── Instructions.md
 ├── README.md
@@ -534,6 +536,31 @@ episode it found 96% of the cuts two full-rate references agree on, and
 often, which finds shorter shots. Reels and appearances do not use shots
 yet.
 
+### 17. Measuring how well it tells people apart
+
+`python -m app evaluate` scans each video of a small suite and measures the
+result against labels kept in `evaluation/truth/`: every face a scan finds,
+and who it is.
+
+```bash
+python -m app evaluate                 # every video of evaluation/suite.json on this machine
+python -m app evaluate test_3          # one of them
+python -m app evaluate test_3 --review # a page for checking and correcting its labels
+python -m app evaluate test_3 --correct corrections-test_3.json
+```
+
+It reports, for each video: how many of the faces found are faces
+(precision) and how many faces in a few frames checked by eye were found
+(recall); how often one person is split across cards; how often a card
+holds somebody else (contamination, the failure that matters most); how
+closely each card's appearances match the person's; and how much of the
+reel cut from each card shows that person and how much shows someone else.
+The numbers are written to `output/evaluation/results.json` to compare
+against a later run. The videos are not in the repository; one that is not
+on the machine is skipped. The labels are drafts until reviewed: the review
+page shows each run of faces, lets you rename people and move runs between
+them, and saves what you changed. See Instructions.md §50.
+
 ## The desktop window
 
 Everything above is also available as one screen, which is the shorter route if you just want a reel out of a video:
@@ -724,7 +751,7 @@ source .venv/bin/activate
 pytest tests -q
 ```
 
-540 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, sound-to-picture sync across joins and across videos, reference-photo and named-person matching, linking a folder's cards into one cast, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
+Over 780 tests covering the loader, frame sampling, the detector, the embedder, the tracker, identity grouping, identity corrections and naming, appearance timelines, export segmentation, sound-to-picture sync across joins and across videos, reference-photo and named-person matching, linking a folder's cards into one cast, batch runs, the kept-scan cache, the model downloader, mode selection, and the window's bridge and worker layers. They validate against the real sample video in `assets/test-videos/test.mp4` rather than synthetic frames wherever the stage is about real footage — the detector test confirms it finds a face in actual video while ignoring blank frames.
 
 The tests need no display. `app/ui/worker.py` deliberately imports no toolkit at all, and `app/ui/web.py` keeps every decision on the Python side, so the window's behaviour — which filename to suggest, when to refuse a click, what to do about footage that moved — is tested without opening anything.
 

@@ -1,0 +1,10 @@
+{
+ "videos": [
+  {"name": "test", "video": "assets/test-videos/test.mp4", "truth": "evaluation/truth/test.json"},
+  {"name": "test_2", "video": "assets/test-videos/test_2.MOV", "truth": "evaluation/truth/test_2.json"},
+  {"name": "animation", "video": "assets/test-videos/animation.mp4", "truth": "evaluation/truth/animation.json"},
+  {"name": "animation2", "video": "assets/test-videos/animation2.mp4", "truth": "evaluation/truth/animation2.json"},
+  {"name": "test_3", "video": "assets/test-videos/test_3.mp4", "truth": "evaluation/truth/test_3.json"},
+  {"name": "s01e01", "video": "~/Downloads/Henry Danger (2014) - S01E01 - The Danger Begins 1 [WEBDL-1080p][EAC3 5.1][h264]-LAZY.mkv", "truth": "evaluation/truth/s01e01.json"}
+ ]
+}
