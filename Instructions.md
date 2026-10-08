@@ -3832,3 +3832,42 @@ it a draft.
 It never reads or writes kept scans -- a kept scan carries the user's own
 corrections, and measuring those would measure the user -- and it keeps
 the faces that made no card, since they are where a missing person went.
+
+## 51. Cutting a track that turns into someone else (`split_track`)
+
+The suite's worst contamination (§50) was not grouping's doing. The tracker
+links a face to the one at the same place in the next sampled frame, and
+vetoes the link only when the two are unlike (the contradiction floor,
+0.60 in animation). A track can pass that at every step and still end on
+another character: across a dissolve, or when a henchman in a crowd is
+replaced, a step at a time, by his boss standing where he stood. Grouping
+then files the whole track by its average, so one character's card
+carries the other.
+
+What gives such a track away is its two ends. `split_track` finds the
+point where the faces before and after it are least alike on average,
+cuts there if that average is below a threshold, and looks at each piece
+the same way. It runs once, on the finished tracks.
+
+Measured on the tracker's own output against the labels (one place to cut
+per track, its average similarity across):
+
+    video        tracks of 2+   holding two characters   split at       clean below 0.66
+    animation         60                 1                 0.659              2
+    animation2       284                 3                 0.571-0.627        1
+
+Animation's threshold is 0.66: it cuts all four, and three clean tracks
+besides, which grouping puts back together -- a wrong cut costs a little,
+a missed one puts someone in a reel. Live action has no such track in
+these labels, and its clean ones go as low as 0.28 across a head turn
+under ArcFace, so it has no threshold and its tracks, scans and kept-scan
+keys are unchanged. Animation's kept scans are rescanned, once.
+
+    video        contamination   cards holding others
+    animation    6.19% -> 2.48%       3 of 6 -> 3 of 7
+    animation2   2.40% -> 1.83%       6 of 14 -> 4 of 14
+
+On animation the man in a suit has his own card now, and the henchmen's
+reel no longer shows him (6.1 s of others down to 0.8 s). What remains is
+grouping's: animation2's card 4 is a split-off card of Gwen's that also
+holds 11 faces of a boy with glasses, and card 5 two boys in whole tracks.

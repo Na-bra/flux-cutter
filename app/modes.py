@@ -61,6 +61,9 @@ class GroupingDefaults:
     consolidation_threshold: float
     contradiction_floor: float
     min_group_eye_span: float
+    # A finished track is cut in two where its halves are on average less
+    # alike than this (tracker.split_track). None leaves tracks whole.
+    track_split_threshold: float | None = None
 
 
 @dataclass(frozen=True)
@@ -186,6 +189,14 @@ MODES: dict[str, ModeSpec] = {
             # nothing to measure. Set to zero to say that plainly rather
             # than leave a live-action number sitting inert.
             min_group_eye_span=0.0,
+            # Each link of a track passes the floor, but a track can still
+            # run from one character into another a step at a time -- across
+            # a dissolve, or a henchman turning into his boss in a crowd.
+            # Measured on the labelled animation tracks (Instructions.md
+            # 51): the four holding two characters split at 0.571-0.659,
+            # and 3 of 340 clean ones fall below 0.66. A wrong split costs
+            # little, since grouping puts the pieces back together.
+            track_split_threshold=0.66,
         ),
         build_detector=_anime_detector,
         build_embedder=_anime_embedder,
