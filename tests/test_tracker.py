@@ -237,3 +237,46 @@ def test_two_tracks_of_one_person_merge_into_a_single_identity():
 
     assert len(grouper.groups) == 1
     assert grouper.groups[0].size == 2
+
+
+def _turning(degrees):
+    """Faces at the same place in consecutive frames, whose embeddings turn
+    through `degrees` -- a dissolve from one face to another, a step at a time."""
+    return [
+        make_observation([np.cos(np.radians(d)), np.sin(np.radians(d)), 0.0], (0, 0, 100, 100),
+                         timestamp=0.5 * i, frame_index=i)
+        for i, d in enumerate(degrees)
+    ]
+
+
+def test_a_track_that_turns_into_someone_else_is_cut_where_it_turns():
+    """Every step passes the floor (the widest, 37 degrees, is 0.80), so the
+    tracker links all nine faces; its two ends are different people, so the
+    track is cut once, after the face the dissolve has least changed (30)."""
+    faces = _turning([0, 3, 6, 9, 30, 67, 70, 73, 76])
+    tracker = FaceTracker(contradiction_floor=0.6, split_threshold=0.66)
+    for i, face in enumerate(faces):
+        tracker.add_frame(i, [face])
+
+    tracks = tracker.finish()
+
+    assert [track.observations for track in tracks] == [faces[:5], faces[5:]]
+    assert len({track.track_id for track in tracks}) == 2
+
+
+def test_a_track_is_left_whole_when_it_stays_one_person_or_no_threshold_is_set():
+    turning = _turning([0, 3, 6, 9, 30, 67, 70, 73, 76])
+    steady = _turning([0, 8, 16, 24, 30, 24, 16, 8])
+
+    for faces, threshold in ((turning, None), (steady, 0.66)):
+        tracker = FaceTracker(contradiction_floor=0.6, split_threshold=threshold)
+        for i, face in enumerate(faces):
+            tracker.add_frame(i, [face])
+        assert len(tracker.finish()) == 1
+
+
+def test_only_animation_splits_tracks():
+    from app.modes import ANIMATION, LIVE, get_mode
+
+    assert get_mode(LIVE).grouping.track_split_threshold is None
+    assert get_mode(ANIMATION).grouping.track_split_threshold is not None

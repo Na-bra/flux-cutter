@@ -403,7 +403,10 @@ def run_identity_pipeline(
     # the embedding space, not to the tracker: 0.25 separates a shot cut
     # from a continuing face under ArcFace and never fires at all under
     # CCIP, where two different characters already sit near 0.57.
-    tracker = FaceTracker(contradiction_floor=spec.grouping.contradiction_floor)
+    tracker = FaceTracker(
+        contradiction_floor=spec.grouping.contradiction_floor,
+        split_threshold=spec.grouping.track_split_threshold,
+    )
     grouper = IdentityGrouper(
         similarity_threshold=similarity_threshold,
         margin_threshold=margin_threshold,

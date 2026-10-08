@@ -41,6 +41,7 @@ import app
 from app.faces.detector import BoundingBox, FaceDetection, FaceLandmarks
 from app.faces.grouper import FaceIdentityGroup, FaceObservation
 from app.models import cache_dir
+from app.modes import get_mode, mode_ids
 
 # Bumped when the stored layout changes in a way an older reader would
 # misread. Entries written by another version are ignored, not repaired.
@@ -152,6 +153,11 @@ def cache_key(
         f"{min_detections!r}",
         f"{skip_nonreference!r}",
     ]
+    # Only animation splits tracks, so a live-action scan keeps the key
+    # it had -- and with it everything a person corrected on it.
+    split = get_mode(mode).grouping.track_split_threshold if mode in mode_ids() else None
+    if split is not None:
+        parts.append(f"split{split!r}")
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
 
 

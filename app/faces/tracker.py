@@ -48,6 +48,35 @@ DEFAULT_MAX_FRAME_GAP = 1
 DEFAULT_CONTRADICTION_FLOOR = 0.25
 
 
+def split_track(track: "FaceTrack", threshold: float) -> list[list[FaceObservation]]:
+    """A track's observations, cut where it turns into someone else.
+
+    The floor above compares each face with the one before, so a track can
+    pass it at every step and still end on a different person: a dissolve
+    from one face to another, or two people standing in the same place in
+    turn. What gives it away is that its two ends are unlike each other.
+    The cut goes where the faces before and after it are least alike on
+    average, and is made only if that average is below `threshold`; each
+    piece is then examined the same way.
+    """
+    observations = track.observations
+    if len(observations) < 2:
+        return [observations]
+    vectors = np.stack([o.embedding / np.linalg.norm(o.embedding) for o in observations])
+    similarity = vectors @ vectors.T
+    count = len(observations)
+    # Sum of similarity[:k, k:] for every k, from 2-D cumulative sums.
+    totals = similarity.cumsum(axis=0).cumsum(axis=1)
+    cuts = np.arange(1, count)
+    across = (totals[cuts - 1, count - 1] - totals[cuts - 1, cuts - 1]) / (cuts * (count - cuts))
+    best = int(np.argmin(across))
+    if across[best] >= threshold:
+        return [observations]
+    head = FaceTrack(track_id=track.track_id, observations=observations[: best + 1])
+    tail = FaceTrack(track_id=track.track_id, observations=observations[best + 1 :])
+    return split_track(head, threshold) + split_track(tail, threshold)
+
+
 @dataclass
 class FaceTrack:
     """One face followed across consecutive sampled frames within a shot."""
@@ -108,6 +137,7 @@ class FaceTracker:
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
         max_frame_gap: int = DEFAULT_MAX_FRAME_GAP,
         contradiction_floor: float = DEFAULT_CONTRADICTION_FLOOR,
+        split_threshold: float | None = None,
     ):
         if not 0.0 <= iou_threshold <= 1.0:
             raise ValueError("iou_threshold must be within [0.0, 1.0]")
@@ -119,6 +149,7 @@ class FaceTracker:
         self.iou_threshold = iou_threshold
         self.max_frame_gap = max_frame_gap
         self.contradiction_floor = contradiction_floor
+        self.split_threshold = split_threshold
 
         self._live: list[_LiveTrack] = []
         self._closed: list[FaceTrack] = []
@@ -208,4 +239,12 @@ class FaceTracker:
         """Closes all open tracks and returns every track in start-time order."""
         self._closed.extend(live.track for live in self._live)
         self._live = []
-        return sorted(self._closed, key=lambda track: (track.start_time, track.track_id))
+        tracks = self._closed
+        if self.split_threshold is not None:
+            tracks = []
+            for track in self._closed:
+                for piece in split_track(track, self.split_threshold):
+                    tracks.append(FaceTrack(track_id=self._next_track_id, observations=piece))
+                    self._next_track_id += 1
+            self._closed = tracks
+        return sorted(tracks, key=lambda track: (track.start_time, track.track_id))

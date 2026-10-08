@@ -69,9 +69,9 @@
   "coverage": 1.0,
   "precision": 0.9767,
   "recall": 0.7143,
-  "contamination": 0.0619,
+  "contamination": 0.0248,
   "contaminated_cards": 3,
-  "cards": 6,
+  "cards": 7,
   "splits": 1,
   "people": {
    "gwen": {
@@ -90,24 +90,24 @@
    },
    "max": {
     "faces": 48,
-    "completeness": 0.8333,
-    "timing": 0.7719,
-    "reel_purity": 0.6217,
-    "reel_shows_others": 8.33
+    "completeness": 0.8542,
+    "timing": 0.7907,
+    "reel_purity": 0.6219,
+    "reel_shows_others": 9.08
    },
    "goggles": {
     "faces": 18,
     "completeness": 1.0,
-    "timing": 0.6381,
-    "reel_purity": 0.3733,
-    "reel_shows_others": 6.1
+    "timing": 1.0,
+    "reel_purity": 0.5425,
+    "reel_shows_others": 0.8
    },
    "suit-man": {
     "faces": 13,
     "completeness": 0.9231,
-    "timing": 0.4667,
-    "reel_purity": 0.273,
-    "reel_shows_others": 8.5
+    "timing": 0.8635,
+    "reel_purity": 0.5666,
+    "reel_shows_others": 2.57
    },
    "bull": {
     "faces": 11,
@@ -119,23 +119,23 @@
    "blue-shirt": {
     "faces": 3,
     "completeness": 1.0,
-    "timing": 0.1095,
-    "reel_purity": 0.0641,
-    "reel_shows_others": 13.51
+    "timing": 0.2026,
+    "reel_purity": 0.1329,
+    "reel_shows_others": 7.57
    },
    "extra-2": {
     "faces": 2,
     "completeness": 1.0,
-    "timing": 0.0458,
-    "reel_purity": 0.0313,
-    "reel_shows_others": 27.85
+    "timing": 0.0448,
+    "reel_purity": 0.0295,
+    "reel_shows_others": 29.85
    },
    "extra-1": {
     "faces": 1,
     "completeness": 1.0,
-    "timing": 0.0221,
-    "reel_purity": 0.0151,
-    "reel_shows_others": 28.38
+    "timing": 0.0217,
+    "reel_purity": 0.0143,
+    "reel_shows_others": 30.38
    },
    "extra-3": {
     "faces": 1,
@@ -167,31 +167,31 @@
   "coverage": 1.0,
   "precision": 0.9605,
   "recall": 0.5,
-  "contamination": 0.024,
-  "contaminated_cards": 6,
+  "contamination": 0.0183,
+  "contaminated_cards": 4,
   "cards": 14,
   "splits": 2,
   "people": {
    "gwen": {
     "faces": 602,
-    "completeness": 0.9003,
-    "timing": 0.9061,
-    "reel_purity": 0.8525,
-    "reel_shows_others": 12.87
+    "completeness": 0.9037,
+    "timing": 0.9095,
+    "reel_purity": 0.8504,
+    "reel_shows_others": 13.83
    },
    "ben": {
     "faces": 529,
-    "completeness": 0.966,
-    "timing": 0.9624,
-    "reel_purity": 0.8053,
-    "reel_shows_others": 17.95
+    "completeness": 0.9849,
+    "timing": 0.9849,
+    "reel_purity": 0.8091,
+    "reel_shows_others": 17.66
    },
    "max": {
     "faces": 362,
-    "completeness": 0.9779,
-    "timing": 0.9519,
-    "reel_purity": 0.8244,
-    "reel_shows_others": 14.31
+    "completeness": 0.9807,
+    "timing": 0.978,
+    "reel_purity": 0.8372,
+    "reel_shows_others": 11.02
    },
    "boy-black-glasses": {
     "faces": 54,
