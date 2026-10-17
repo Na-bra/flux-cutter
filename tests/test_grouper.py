@@ -387,6 +387,44 @@ def test_non_face_filter_abstains_without_landmarks():
     assert grouper.unassigned == []
 
 
+def _turning_head(profile_vector, frames):
+    """A person filmed frontally on even sampled frames and in profile on the
+    odd ones, at the same place: what a head turning back and forth gives."""
+    frontal = [make_observation([1.0, 0.0, 0.0], timestamp=f / 2, eye_span=0.35, frame_index=f)
+               for f in frames if f % 2 == 0]
+    profile = [make_observation(profile_vector, timestamp=f / 2, eye_span=0.05, frame_index=f)
+               for f in frames if f % 2 == 1]
+    return frontal, profile
+
+
+def test_a_rejected_group_beside_one_card_joins_it_without_moving_its_centroid():
+    """The lead in profile: unlike his own face, so a group of its own, which
+    the eye-span test rejects -- but it begins where his card's faces leave
+    off, frame after frame, so it is his."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+    frontal, profile = _turning_head([0.0, 1.0, 0.0], range(20))
+    for observation in frontal + profile:
+        grouper.add(observation)
+
+    assert len(grouper.groups) == 1
+    card = grouper.groups[0]
+    assert card.size == 20 and grouper.unassigned == []
+    np.testing.assert_allclose(card.representative_embedding, [1.0, 0.0, 0.0], atol=1e-6)
+
+
+def test_a_rejected_group_beside_several_cards_stays_rejected():
+    """Backs of heads in a crowd sit beside everyone a little: nobody's."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+    first = [make_observation([1.0, 0.0, 0.0], eye_span=0.35, frame_index=f) for f in (0, 4, 8)]
+    second = [make_observation([0.0, 0.0, 1.0], eye_span=0.35, frame_index=f) for f in (2, 6, 10)]
+    backs = [make_observation([0.0, 1.0, 0.0], eye_span=0.05, frame_index=f) for f in (1, 3, 5, 7, 9)]
+    for observation in first + second + backs:
+        grouper.add(observation)
+
+    assert sorted(group.size for group in grouper.groups) == [3, 3]
+    assert len(grouper.unassigned) == 5
+
+
 def test_auto_min_detections_scales_with_sampling_interval():
     """Tests that the cutoff means the same screen time at any sampling rate.
 
