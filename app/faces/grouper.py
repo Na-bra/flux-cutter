@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from app.faces.detector import FaceDetection
+from app.faces.detector import FaceDetection, intersection_over_union
 
 # Re-tuned when ArcFace (w600k_r50) replaced SFace as the embedder. The
 # previous 0.45 was fitted to SFace's similarity distribution and does not
@@ -100,6 +100,24 @@ DEFAULT_MIN_FACE_SIZE = 40
 # group of 5+ detections removed -- the costumed character (whose mask distorts
 # the landmarks) and a legitimate profile-heavy cluster both survive.
 DEFAULT_MIN_GROUP_EYE_SPAN = 0.15
+# A group the eye-span test rejects is not always nobody. A person filmed in
+# profile for long stretches forms a group of their own -- their profile
+# faces resemble each other more than their own frontal face -- and the
+# test throws it away whole: on test_3.mp4, 215 faces of the lead. Nor can
+# it be put back by resemblance, since under ArcFace that profile group is
+# no closer to his card than to a stranger's. Where it is put back from is
+# the footage itself: when he turns his head the tracker's veto breaks his
+# track, and the profile faces begin at the very place, in the very next
+# sampled frame, that his card's faces left off.
+#
+# So a rejected group joins the card whose faces it sits beside -- the same
+# place (IoU >= 0.3, the tracker's own linking rule) in an adjacent sampled
+# frame -- when it does so at least ATTACH_MIN_NEIGHBOURS times and that
+# card holds at least ATTACH_MIN_SHARE of those neighbours. On test_3.mp4
+# the lead's profile group has 26 such neighbours, 23 of them his; a group
+# of backs of heads has 10 spread over eight cards and stays rejected.
+ATTACH_MIN_NEIGHBOURS = 5
+ATTACH_MIN_SHARE = 0.75
 # How much screen time an identity needs before it is worth reporting as a
 # person, used by auto_min_detections() to derive a minimum detection count.
 #
@@ -976,6 +994,7 @@ class IdentityGrouper:
             return groups
 
         kept: list[FaceIdentityGroup] = []
+        flagged: list[FaceIdentityGroup] = []
         for group in groups:
             spans = [
                 span
@@ -983,11 +1002,50 @@ class IdentityGrouper:
                 if span is not None
             ]
             if spans and float(np.median(spans)) < self.min_group_eye_span:
+                flagged.append(group)
+            else:
+                kept.append(group)
+
+        for group in flagged:
+            home = self._neighbouring_card(group, kept)
+            if home is None:
                 self._rejected.extend(group.observations)
                 continue
-            kept.append(group)
+            # The card's centroid is left as it was. It is what the card is
+            # recognised by -- across videos, and against named people -- and
+            # profile faces would pull it away from the face it was built on.
+            home.observations.extend(group.observations)
+            home.unit_sizes.extend(group.unit_sizes or [len(group.observations)])
 
         return kept
+
+    @staticmethod
+    def _neighbouring_card(
+        group: FaceIdentityGroup, cards: list[FaceIdentityGroup]
+    ) -> FaceIdentityGroup | None:
+        """The card a rejected group continues, if one clearly does.
+
+        See ATTACH_MIN_NEIGHBOURS. A neighbour is a card's face at the same
+        place in an adjacent sampled frame.
+        """
+        by_frame: dict[int, list[tuple[FaceObservation, int]]] = {}
+        for index, card in enumerate(cards):
+            for observation in card.observations:
+                if observation.frame_index is not None:
+                    by_frame.setdefault(observation.frame_index, []).append((observation, index))
+        votes: dict[int, int] = {}
+        for observation in group.observations:
+            if observation.frame_index is None:
+                continue
+            for frame in (observation.frame_index - 1, observation.frame_index + 1):
+                for other, index in by_frame.get(frame, ()):
+                    if intersection_over_union(observation.detection.box, other.detection.box) >= 0.3:
+                        votes[index] = votes.get(index, 0) + 1
+        total = sum(votes.values())
+        if total < ATTACH_MIN_NEIGHBOURS:
+            return None
+        best = max(votes, key=votes.get)
+        return cards[best] if votes[best] >= ATTACH_MIN_SHARE * total else None
 
     def _reject_brief_groups(
         self, groups: list[FaceIdentityGroup]

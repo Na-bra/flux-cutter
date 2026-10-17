@@ -3871,3 +3871,49 @@ On animation the man in a suit has his own card now, and the henchmen's
 reel no longer shows him (6.1 s of others down to 0.8 s). What remains is
 grouping's: animation2's card 4 is a split-off card of Gwen's that also
 holds 11 faces of a boy with glasses, and card 5 two boys in whole tracks.
+
+## 52. A person in profile is not "not a face" (`_neighbouring_card`)
+
+The not-a-face test (§7f, `DEFAULT_MIN_GROUP_EYE_SPAN`) throws away a whole
+group whose eyes sit too close together -- backs of heads, a spinning
+logo. On test_3 the suite (§50) found it also threw away the lead: 240
+faces, 215 of them him in profile. His profile faces resemble each other
+more than his frontal face, so they form a group of their own, and the
+test rejects it whole.
+
+Resemblance cannot put that group back. Its nearest card under ArcFace
+was a stranger's, by 0.05; attaching rejected groups to the card they
+most resemble would have put the lead's profile into someone else's reel.
+What does put it back is the footage. When he turns his head the
+tracker's veto breaks his track, and the profile faces begin at the same
+place, in the very next sampled frame, that his card's faces left off. So
+a rejected group now joins the card whose faces it sits beside (IoU at
+least 0.3 in an adjacent sampled frame), when it has at least 5 such
+neighbours and one card holds three quarters of them:
+
+    test_3 rejected group      neighbours   on one card      result
+    240 faces (215 the lead)        26      23 the lead's    joins his card
+    162 faces (backs of heads)      10      2 at most        stays rejected
+
+The card's centroid is left as it was: it is what the card is recognised
+by, across videos and against named people, and profile faces would move
+it. A later merge or split by hand recomputes it from every face, profile
+included, as it always has.
+
+    test_3, the lead               before    after
+    faces on his card                79%       95%
+    timing against his own           82%       96%
+    reel                            668 s     779 s
+      showing him                   561 s     631 s
+      showing others, not him        88 s     122 s
+    contamination, all cards        0.13%     0.22%
+
+The cost is the 4 faces of person 4 and the 20 unknown ones that came
+with the group, and the cut padding around the faces added: 34 s more of
+other people in his reel against 70 s more of him, nearly all of it the
+other side of his own conversations. test and test_2 are unchanged;
+animation has no landmarks, so the test, and this, never run there.
+
+Kept scans were deliberately left valid (`SCAN_FORMAT` unchanged): a
+scan kept before this keeps its answer, and the corrections made on it,
+until the video is rescanned.
