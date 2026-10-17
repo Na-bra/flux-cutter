@@ -1,0 +1,26 @@
+name: Task for Claude
+description: A change for the nightly job to make. It opens a pull request; you merge it.
+title: "[claude] "
+labels: ["claude"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What should change
+      description: In your own words. What you see now, and what you want instead.
+      placeholder: "Animation cards still hold two characters on animation2 (card 4: Gwen and a boy with glasses)."
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: How we will know it worked
+      description: A number from `python -m app evaluate`, a video that should look different, or a test.
+      placeholder: "Contamination on animation2 falls below 1.83% without any live-action number getting worse."
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: Anything it must not do
+      description: Optional. Files to leave alone, behaviour to keep.
