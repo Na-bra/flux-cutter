@@ -43,7 +43,15 @@ export FLUXCUTTER_SCAN_DIR="$SCRATCH/scans"
 export FLUXCUTTER_PEOPLE_DIR="$SCRATCH/people"
 export FLUXCUTTER_SETTINGS_DIR="$SCRATCH/settings"
 
-prompt="$(sed -e "s/{{ISSUE}}/$issue/g" -e "s/{{DATE}}/$(date +%Y-%m-%d)/g" scripts/nightly/prompt.md)"
+# A branch an earlier run left unfinished is continued, not started again.
+git fetch -q origin
+branch="$(git branch -r --list "origin/claude/issue-$issue-*" | head -1 | sed 's|^ *origin/||')"
+prompt="$(sed -e "s/{{ISSUE}}/$issue/g" -e "s/{{DATE}}/$(date +%Y-%m-%d)/g" \
+  -e "s|{{BRANCH}}|${branch:-none}|g" scripts/nightly/prompt.md)"
+
+# Long evaluations run in the foreground: without this a command is cut
+# off at 10 minutes, and test_3 alone takes 16.
+export BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=3600000
 
 # dontAsk: anything not listed is refused rather than asked about, since
 # nobody is there to answer. Merging, pushing to main, force-pushing and
@@ -51,7 +59,7 @@ prompt="$(sed -e "s/{{ISSUE}}/$issue/g" -e "s/{{DATE}}/$(date +%Y-%m-%d)/g" scri
 claude -p "$prompt" --permission-mode dontAsk --output-format text --allowedTools \
   "Read" "Edit" "Write" "Glob" "Grep" \
   "Bash(git status*)" "Bash(git diff*)" "Bash(git log*)" "Bash(git show*)" \
-  "Bash(git branch --show-current)" "Bash(git checkout -b claude/*)" "Bash(git add *)" \
+  "Bash(git branch --show-current)" "Bash(git checkout -b claude/*)" "Bash(git checkout claude/*)" "Bash(git add *)" \
   "Bash(git commit *)" "Bash(git push -u origin claude/*)" "Bash(git push origin claude/*)" \
   "Bash(.venv/bin/python -m pytest *)" "Bash(.venv/bin/python -m app evaluate*)" \
   "Bash(.venv/bin/python -m app info *)" "Bash(.venv/bin/python -m app shots *)" \
@@ -60,5 +68,26 @@ claude -p "$prompt" --permission-mode dontAsk --output-format text --allowedTool
   "Bash(ls*)" "Bash(head *)" "Bash(tail *)" "Bash(wc *)" "Bash(grep *)" "Bash(mkdir -p *)" \
   || echo "claude exited with status $?"
 
+# Whatever the run did not commit is kept on its branch, never carried back
+# onto main: commit it there as unfinished, and push it for the next run.
+current="$(git branch --show-current)"
+if [[ -n "$(git status --porcelain)" ]]; then
+  if [[ "$current" == claude/* ]]; then
+    git add -A
+    git commit -q -m "wip: unfinished nightly run on #$issue" \
+      -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+    git push -q -u origin "$current"
+    echo "left unfinished work on $current"
+  else
+    git stash push -q -u -m "nightly #$issue: changes made outside a claude branch"
+    echo "stashed changes made on $current"
+  fi
+fi
 git checkout -q main || true
+
+# If no pull request came of it, say so on the issue, so a stopped run is
+# not mistaken for one still going.
+if ! gh pr list --state open --json headRefName --jq '.[].headRefName' | grep -q "^claude/issue-$issue-"; then
+  gh issue comment "$issue" --body "The nightly run on $(date +%Y-%m-%d) stopped without opening a pull request.${current:+ Its work so far is on \`$current\`.} The next run carries on from there. Log: \`~/Library/Logs/fluxcutter-nightly/$stamp.log\`." || true
+fi
 echo "== done $(date +%H:%M)"

@@ -1,9 +1,18 @@
 You are working on FluxCutter, unattended, on one GitHub issue: #{{ISSUE}}.
 Nobody is watching. Do the work, or explain on the issue why you could not.
 
+This session ends the moment you stop to wait for anything, and whatever is
+still running is lost with it. So run every command in the foreground and
+wait for it to finish. Never start a command in the background, and never
+wait for a notification. Long commands are fine: give them a timeout of up
+to 3600000 ms. `evaluate test_3` takes about 16 minutes, `animation2` about
+4, the whole suite about 40.
+
 Read the issue first: `gh issue view {{ISSUE}} --comments`. Then:
 
-1. Branch from main, which is already up to date:
+1. If a branch for this issue already exists ({{BRANCH}}), an earlier run
+   stopped partway: `git checkout {{BRANCH}}`, read its commits and carry
+   on from there. Otherwise branch from main, which is already up to date:
    `git checkout -b claude/issue-{{ISSUE}}-<short-slug>`.
 2. Make the change. Match the surrounding code's style and comment density.
 3. Run the tests: `.venv/bin/python -m pytest tests -q`. They must pass.
