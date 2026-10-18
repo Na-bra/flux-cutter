@@ -61,6 +61,12 @@ class GroupingDefaults:
     consolidation_threshold: float
     contradiction_floor: float
     min_group_eye_span: float
+    # Similarity above which two faces sharing a frame stop being evidence
+    # of two people (grouper.DEFAULT_COOCCURRENCE_SIMILARITY_CEILING). It
+    # has to be per mode for the same reason the similarity floor does: it
+    # is a point on an embedding model's similarity scale, and the two
+    # models do not share one.
+    cooccurrence_similarity_ceiling: float = 0.50
     # A finished track is cut in two where its halves are on average less
     # alike than this (tracker.split_track). None leaves tracks whole.
     track_split_threshold: float | None = None
@@ -154,6 +160,7 @@ MODES: dict[str, ModeSpec] = {
             consolidation_threshold=0.375,
             contradiction_floor=0.25,
             min_group_eye_span=0.15,
+            cooccurrence_similarity_ceiling=0.50,
         ),
         build_detector=_live_detector,
         build_embedder=_live_embedder,

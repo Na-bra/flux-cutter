@@ -122,6 +122,7 @@ class ScanSettings:
             min_confidence=spec.detection.min_confidence,
             min_face_size=spec.detection.min_face_size,
             min_group_eye_span=spec.grouping.min_group_eye_span,
+            cooccurrence_similarity_ceiling=spec.grouping.cooccurrence_similarity_ceiling,
         )
 
 

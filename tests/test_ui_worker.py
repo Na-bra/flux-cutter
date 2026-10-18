@@ -709,6 +709,7 @@ def test_the_window_scans_each_mode_with_the_same_settings_as_the_command_line(m
         min_confidence=None,
         min_face_size=None,
         min_group_eye_span=None,
+        cooccurrence_ceiling=None,
     )
     resolve_mode_settings(args)
     window = ScanSettings.for_mode(mode, sample_interval=0.5)
@@ -723,6 +724,9 @@ def test_the_window_scans_each_mode_with_the_same_settings_as_the_command_line(m
         "min_group_eye_span",
     ):
         assert getattr(window, field) == getattr(args, field), field
+    # Named differently on the two sides -- the flag is --cooccurrence-ceiling
+    # -- which is how it stayed out of the list above, and out of the mode.
+    assert window.cooccurrence_similarity_ceiling == args.cooccurrence_ceiling
 
 
 def test_live_action_settings_are_unchanged_so_its_kept_scans_still_match():

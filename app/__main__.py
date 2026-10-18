@@ -12,10 +12,7 @@ from app.scans import clear as clear_scans
 from app.scans import entries as scan_entries
 from app.scans import scan_cache_dir
 from app.scans import total_bytes as scan_total_bytes
-from app.faces.grouper import (
-    DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
-    DEFAULT_MARGIN_THRESHOLD,
-)
+from app.faces.grouper import DEFAULT_MARGIN_THRESHOLD
 from app.video.cutter import EXPORT_FORMATS
 from app.video.cutter import CutterError
 from app.video.export import (
@@ -74,6 +71,9 @@ def resolve_mode_settings(args):
     args.min_confidence = pick(spec.detection.min_confidence, args.min_confidence)
     args.min_face_size = pick(spec.detection.min_face_size, args.min_face_size)
     args.min_group_eye_span = pick(spec.grouping.min_group_eye_span, args.min_group_eye_span)
+    args.cooccurrence_ceiling = pick(
+        spec.grouping.cooccurrence_similarity_ceiling, args.cooccurrence_ceiling
+    )
     return spec
 
 def main():
@@ -296,7 +296,7 @@ def main():
     group_parser.add_argument(
         "--cooccurrence-ceiling",
         type=float,
-        default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+        default=None,
         help="Similarity above which two faces sharing a frame are read as one person "
         "shown twice -- a split screen, a monitor, a photograph -- rather than as two "
         "people. Set above 1.0 to treat every shared frame as two people.",
@@ -413,7 +413,7 @@ def main():
     timestamps_parser.add_argument(
         "--cooccurrence-ceiling",
         type=float,
-        default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING,
+        default=None,
         help="Similarity above which two faces sharing a frame are read as one person "
         "shown twice -- a split screen, a monitor, a photograph -- rather than as two "
         "people. Set above 1.0 to treat every shared frame as two people.",
@@ -514,9 +514,7 @@ def main():
     export_parser.add_argument("--min-group-eye-span", type=float, default=None)
     export_parser.add_argument("--mode", choices=mode_ids(), default=None)
     export_parser.add_argument("--allow-cooccurring-identities", action="store_true")
-    export_parser.add_argument(
-        "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
-    )
+    export_parser.add_argument("--cooccurrence-ceiling", type=float, default=None)
     export_parser.add_argument("--min-detections", type=int, default=None)
     export_parser.add_argument(
         "--rescan",
@@ -710,9 +708,7 @@ def main():
     batch_parser.add_argument("--min-group-eye-span", type=float, default=None)
     batch_parser.add_argument("--mode", choices=mode_ids(), default=None)
     batch_parser.add_argument("--allow-cooccurring-identities", action="store_true")
-    batch_parser.add_argument(
-        "--cooccurrence-ceiling", type=float, default=DEFAULT_COOCCURRENCE_SIMILARITY_CEILING
-    )
+    batch_parser.add_argument("--cooccurrence-ceiling", type=float, default=None)
     batch_parser.add_argument("--min-detections", type=int, default=None)
     batch_parser.add_argument(
         "--rescan",

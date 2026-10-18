@@ -65,6 +65,7 @@ def test_live_action_thresholds_are_unchanged():
     assert grouping.similarity_threshold == 0.35
     assert grouping.consolidation_threshold == 0.375
     assert grouping.contradiction_floor == 0.25
+    assert grouping.cooccurrence_similarity_ceiling == 0.50
     assert modes.get_mode(modes.LIVE).detection.confidence_threshold == 0.6
 
 
@@ -76,6 +77,22 @@ def test_animation_thresholds_are_independent_of_live_action():
     assert animation.similarity_threshold != live.similarity_threshold
     assert animation.contradiction_floor != live.contradiction_floor
     assert animation.similarity_threshold > live.similarity_threshold
+
+
+def test_a_shared_frame_still_proves_two_characters_apart_in_animation():
+    """The ceiling above which a shared frame is read as one person twice has
+    to be on CCIP's scale too.
+
+    At live action's 0.50 it sits below the median of two *different*
+    characters in one frame, so it read almost every shared frame as a split
+    screen and switched off the only hard evidence the pipeline has.
+    """
+    live = modes.get_mode(modes.LIVE).grouping
+    animation = modes.get_mode(modes.ANIMATION).grouping
+    assert animation.cooccurrence_similarity_ceiling > live.cooccurrence_similarity_ceiling
+    # Above the floor that merges two cards, or the rule could never block a
+    # merge that was going to happen anyway.
+    assert animation.cooccurrence_similarity_ceiling > animation.similarity_threshold
 
 
 def test_animation_does_not_ask_for_landmark_geometry():
@@ -222,6 +239,7 @@ def _grouping_args(**overrides):
         "min_face_size": None,
         "min_group_eye_span": None,
         "confidence_threshold": None,
+        "cooccurrence_ceiling": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -264,3 +282,25 @@ def test_an_explicit_threshold_beats_the_mode_default():
     resolve_mode_settings(args)
 
     assert args.similarity_threshold == 0.5
+
+
+def test_an_unset_cooccurrence_ceiling_takes_the_mode_s_own():
+    """It used to default to live action's number in argparse, so animation
+    runs read nearly every shared frame as one character shown twice."""
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION)
+    resolve_mode_settings(args)
+
+    assert args.cooccurrence_ceiling == (
+        modes.get_mode(modes.ANIMATION).grouping.cooccurrence_similarity_ceiling
+    )
+
+
+def test_an_explicit_cooccurrence_ceiling_still_wins():
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION, cooccurrence_ceiling=1.01)
+    resolve_mode_settings(args)
+
+    assert args.cooccurrence_ceiling == 1.01
