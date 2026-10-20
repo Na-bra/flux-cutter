@@ -118,6 +118,7 @@ class ScanSettings:
             mode=spec.id,
             confidence_threshold=spec.detection.confidence_threshold,
             similarity_threshold=spec.grouping.similarity_threshold,
+            margin_threshold=spec.grouping.margin_threshold,
             consolidation_threshold=spec.grouping.consolidation_threshold,
             min_confidence=spec.detection.min_confidence,
             min_face_size=spec.detection.min_face_size,

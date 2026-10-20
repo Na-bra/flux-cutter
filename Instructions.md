@@ -3917,3 +3917,119 @@ animation has no landmarks, so the test, and this, never run there.
 Kept scans were deliberately left valid (`SCAN_FORMAT` unchanged): a
 scan kept before this keeps its answer, and the corrections made on it,
 until the video is rescanned.
+
+## 53. Two animation cards that hold two characters, and why they stay
+
+§51 left two cards on `animation2` holding two characters each as whole
+tracks: card 4, a split-off card of Gwen's that also carries 11 faces of
+the black-haired boy with glasses, 4 of Ben and 4 of Grandpa Max; and card
+5, the dark-haired teen with all 11 faces of the boy in a blue shirt. This
+is the search for the setting that separates them. There isn't one, and
+the measurements are here so the next person does not repeat them.
+
+Every number below is `python -m app evaluate animation animation2`, one
+setting moved at a time from animation's own defaults.
+
+### Where the merge happens
+
+Clustering, not consolidation. With consolidation effectively off
+(`consolidation_threshold` 1.0) both cards come out byte for byte the
+same -- card 4 at 70 faces with the same three contaminants, card 5 at
+57. So the two characters are joined by average linkage clearing the
+0.75 similarity floor, and the only thing consolidation contributed was
+a split of Ben's (1 card -> 2).
+
+### Co-occurrence cannot veto it
+
+The co-occurrence rule (§15's `DEFAULT_FORBID_COOCCURRING`) is the only
+hard evidence in the pipeline, and in animation it is **inert**. Its
+ceiling was live action's 0.50, on ArcFace's scale, where two different
+people sit near 0.03; under CCIP two different *characters* sit at a
+median 0.567 (§17). A pair only becomes evidence when it scores *below*
+the ceiling, so at 0.50 nothing that could merge -- everything near the
+0.75 floor -- is ever read as two characters. The rule cannot block a
+merge it is not consulted about.
+
+Moving it onto CCIP's scale does not help, because these particular
+units never share a sampled frame:
+
+    ceiling   animation            animation2
+    0.50      2.48%  3/7  1 split  1.83%  4/14  2 splits
+    0.90      2.52%  3/6  1 split  1.83%  4/15  2 splits
+
+Card 5 is untouched and card 4 loses 2 of its 70 faces. What 0.90 does
+buy is a wrong split: the bull creature drops from 100% to 55% of his
+faces on his own card. So the ceiling stays at 0.50, now as animation's
+own number with this written beside it rather than as live action's
+leaking in through an argparse default.
+
+### Lowering consolidation is much worse
+
+The live-action story (§15) is that enforcing co-occurrence is what made
+it safe to lower consolidation into the gap below the missed merges. That
+reasoning does not carry: there is no gap here. At 0.80, with the ceiling
+at 0.90, whole characters fold together --
+
+    video        contamination   worst card
+    animation    2.48% -> 6.29%  card 1: Ben, plus 12 faces of the man in a suit
+    animation2   1.83% -> 4.45%  card 3: Max (418 faces), plus the teen's 46 and the boy in blue's 11
+
+-- so two different characters' whole-card centroids reach 0.80 on this
+footage. 0.85 is not a cautious value, it is close to the edge.
+
+### Raising the similarity floor does not reach them
+
+    floor   animation            animation2
+    0.75    2.48%  3/7  1 split  1.83%  4/14  2 splits
+    0.80    2.49%  3/7  1 split  1.75%  2/13  1 split
+
+animation2 improves a little (Gwen goes from 3 cards to 2) and animation
+gets marginally worse, but **both named cards come out identical**. Those
+two merges score 0.80 or better in average linkage, which is above the
+threshold at which whole groups are consolidated. Reaching them by floor
+alone would mean 0.85-plus, which the line above shows is where the cast
+starts fusing.
+
+### The margin rule reaches them, and charges for it
+
+`DEFAULT_MARGIN_THRESHOLD`'s own note says to raise it per run "if a
+specific video shows false merges", for "footage with few faces and heavy
+ambiguity". Animation is that footage, and the rule works: a near-tie
+against a *different* identity is exactly how the boy's 11-face track
+beat his own main card for the Gwen fragment.
+
+    margin   animation                   animation2
+    0.00     2.48%  7 cards  1 split     1.83%  14 cards  2 splits
+    0.02     1.62%  8 cards  2 splits    1.39%  17 cards  5 splits
+    0.05     0.67%  10 cards 4 splits    0.97%  18 cards  6 splits
+
+0.05 clears card 5 outright (the boy in blue keeps no card at all, which
+is the cheap error) and both videos pass the bar #42 set. What it costs is
+the leads:
+
+    animation, margin 0.00 -> 0.05      animation2, margin 0.00 -> 0.05
+    Ben      98% -> 56% of his faces    Gwen  90% -> 79%, 3 -> 4 cards
+             on his main card, 4 cards  Ben   98% -> 72%, 1 -> 2 cards
+    henchman 100% -> 72%                Max   98% -> 86%, 1 -> 3 cards
+
+Even at 0.05 card 4 is not clean: the Gwen fragment keeps the boy's 11
+faces. So the margin buys the contamination number by handing the user a
+gallery that shows Ben four times and Grandpa Max three, and still does
+not finish the job.
+
+### Left as it was
+
+Nothing here is shipped. Animation keeps 0.75 / 0.85 / 0.50 / 0.0, and
+every number in `evaluation/baseline.json` is unchanged -- checked by
+running the whole suite. Anyone who wants the purer cards can have them
+per run with `--margin-threshold 0.05`, which is now a real choice: that
+flag and `--cooccurrence-ceiling` used to default to a live-action module
+constant, so a mode could not own them and an animation run quietly used
+live action's number. Both now default to None and resolve through the
+mode, like every other threshold (§17).
+
+The honest conclusion is the one §17 already warned about: CCIP's
+same-character and different-character distributions overlap, and these
+two cards sit inside the overlap at card level, not just at crop level.
+Separating them needs evidence the pipeline does not currently have --
+not a different value for evidence it already weighs.

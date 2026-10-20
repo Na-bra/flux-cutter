@@ -12,7 +12,6 @@ from app.scans import clear as clear_scans
 from app.scans import entries as scan_entries
 from app.scans import scan_cache_dir
 from app.scans import total_bytes as scan_total_bytes
-from app.faces.grouper import DEFAULT_MARGIN_THRESHOLD
 from app.video.cutter import EXPORT_FORMATS
 from app.video.cutter import CutterError
 from app.video.export import (
@@ -67,6 +66,7 @@ def resolve_mode_settings(args):
         spec.detection.confidence_threshold, args.confidence_threshold
     )
     args.similarity_threshold = pick(spec.grouping.similarity_threshold, args.similarity_threshold)
+    args.margin_threshold = pick(spec.grouping.margin_threshold, args.margin_threshold)
     args.consolidation_threshold = pick(spec.grouping.consolidation_threshold, args.consolidation_threshold)
     args.min_confidence = pick(spec.detection.min_confidence, args.min_confidence)
     args.min_face_size = pick(spec.detection.min_face_size, args.min_face_size)
@@ -249,7 +249,7 @@ def main():
     group_parser.add_argument(
         "--margin-threshold",
         type=float,
-        default=DEFAULT_MARGIN_THRESHOLD,
+        default=None,
         help="Minimum similarity gap over the second-best group before assigning a match.",
     )
     group_parser.add_argument(
@@ -353,7 +353,7 @@ def main():
     timestamps_parser.add_argument(
         "--margin-threshold",
         type=float,
-        default=DEFAULT_MARGIN_THRESHOLD,
+        default=None,
         help="Minimum similarity gap over the second-best group before assigning a match.",
     )
     timestamps_parser.add_argument(
@@ -507,7 +507,7 @@ def main():
     export_parser.add_argument("--confidence-threshold", type=float, default=None)
     export_parser.add_argument("--padding", type=float, default=0.08)
     export_parser.add_argument("--similarity-threshold", type=float, default=None)
-    export_parser.add_argument("--margin-threshold", type=float, default=DEFAULT_MARGIN_THRESHOLD)
+    export_parser.add_argument("--margin-threshold", type=float, default=None)
     export_parser.add_argument("--consolidation-threshold", type=float, default=None)
     export_parser.add_argument("--min-confidence", type=float, default=None)
     export_parser.add_argument("--min-face-size", type=int, default=None)
@@ -701,7 +701,7 @@ def main():
     batch_parser.add_argument("--confidence-threshold", type=float, default=None)
     batch_parser.add_argument("--padding", type=float, default=0.08)
     batch_parser.add_argument("--similarity-threshold", type=float, default=None)
-    batch_parser.add_argument("--margin-threshold", type=float, default=DEFAULT_MARGIN_THRESHOLD)
+    batch_parser.add_argument("--margin-threshold", type=float, default=None)
     batch_parser.add_argument("--consolidation-threshold", type=float, default=None)
     batch_parser.add_argument("--min-confidence", type=float, default=None)
     batch_parser.add_argument("--min-face-size", type=int, default=None)

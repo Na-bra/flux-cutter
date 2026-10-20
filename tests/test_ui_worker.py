@@ -710,6 +710,7 @@ def test_the_window_scans_each_mode_with_the_same_settings_as_the_command_line(m
         min_face_size=None,
         min_group_eye_span=None,
         cooccurrence_ceiling=None,
+        margin_threshold=None,
     )
     resolve_mode_settings(args)
     window = ScanSettings.for_mode(mode, sample_interval=0.5)
@@ -722,6 +723,7 @@ def test_the_window_scans_each_mode_with_the_same_settings_as_the_command_line(m
         "min_confidence",
         "min_face_size",
         "min_group_eye_span",
+        "margin_threshold",
     ):
         assert getattr(window, field) == getattr(args, field), field
     # Named differently on the two sides -- the flag is --cooccurrence-ceiling

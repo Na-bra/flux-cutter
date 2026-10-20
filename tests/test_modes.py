@@ -79,20 +79,18 @@ def test_animation_thresholds_are_independent_of_live_action():
     assert animation.similarity_threshold > live.similarity_threshold
 
 
-def test_a_shared_frame_still_proves_two_characters_apart_in_animation():
-    """The ceiling above which a shared frame is read as one person twice has
-    to be on CCIP's scale too.
+def test_the_cooccurrence_rule_is_inert_in_animation():
+    """Pins a known hole rather than a feature, so nobody counts on the rule
+    here or re-measures it by accident.
 
-    At live action's 0.50 it sits below the median of two *different*
-    characters in one frame, so it read almost every shared frame as a split
-    screen and switched off the only hard evidence the pipeline has.
+    A shared frame is read as two characters only while the two faces score
+    below the ceiling. Animation's ceiling sits below its own similarity
+    floor, so every pair that could merge is already above it: the rule can
+    never block a merge. Raising it onto CCIP's scale was measured and made
+    animation worse (Instructions.md 53), so it stays, documented.
     """
-    live = modes.get_mode(modes.LIVE).grouping
     animation = modes.get_mode(modes.ANIMATION).grouping
-    assert animation.cooccurrence_similarity_ceiling > live.cooccurrence_similarity_ceiling
-    # Above the floor that merges two cards, or the rule could never block a
-    # merge that was going to happen anyway.
-    assert animation.cooccurrence_similarity_ceiling > animation.similarity_threshold
+    assert animation.cooccurrence_similarity_ceiling < animation.similarity_threshold
 
 
 def test_animation_does_not_ask_for_landmark_geometry():
@@ -240,6 +238,7 @@ def _grouping_args(**overrides):
         "min_group_eye_span": None,
         "confidence_threshold": None,
         "cooccurrence_ceiling": None,
+        "margin_threshold": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -304,3 +303,26 @@ def test_an_explicit_cooccurrence_ceiling_still_wins():
     resolve_mode_settings(args)
 
     assert args.cooccurrence_ceiling == 1.01
+
+
+def test_an_unset_margin_takes_the_mode_s_own():
+    """The other flag that defaulted to a live-action module constant, so
+    --margin-threshold could not be made a property of a mode at all."""
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION)
+    resolve_mode_settings(args)
+
+    assert args.margin_threshold == modes.get_mode(modes.ANIMATION).grouping.margin_threshold
+
+
+def test_an_explicit_margin_still_wins():
+    """The escape hatch for the trade this mode declines to make by default:
+    a margin does clean animation's cards, at the cost of splitting the
+    leads across several of them (modes.ANIMATION, Instructions.md 53)."""
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION, margin_threshold=0.05)
+    resolve_mode_settings(args)
+
+    assert args.margin_threshold == 0.05

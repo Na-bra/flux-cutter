@@ -66,7 +66,13 @@ class GroupingDefaults:
     # has to be per mode for the same reason the similarity floor does: it
     # is a point on an embedding model's similarity scale, and the two
     # models do not share one.
-    cooccurrence_similarity_ceiling: float = 0.50
+    cooccurrence_similarity_ceiling: float
+    # Gap a merge must hold over the best competing alternative before it is
+    # allowed (grouper.DEFAULT_MARGIN_THRESHOLD). A gap rather than a point,
+    # so it looks scale-free -- but it is not: it is read against the spread
+    # of similarities a model puts between different identities, and CCIP's
+    # is far narrower than ArcFace's.
+    margin_threshold: float
     # A finished track is cut in two where its halves are on average less
     # alike than this (tracker.split_track). None leaves tracks whole.
     track_split_threshold: float | None = None
@@ -161,6 +167,7 @@ MODES: dict[str, ModeSpec] = {
             contradiction_floor=0.25,
             min_group_eye_span=0.15,
             cooccurrence_similarity_ceiling=0.50,
+            margin_threshold=0.0,
         ),
         build_detector=_live_detector,
         build_embedder=_live_embedder,
@@ -196,6 +203,26 @@ MODES: dict[str, ModeSpec] = {
             # nothing to measure. Set to zero to say that plainly rather
             # than leave a live-action number sitting inert.
             min_group_eye_span=0.0,
+            # Both of the next two are live action's numbers, kept after
+            # being measured rather than inherited by accident, which is
+            # what they were until this became a per-mode setting.
+            #
+            # The ceiling is inert here and cannot be fixed by moving it. At
+            # 0.50 on CCIP's scale it sits below where two *different*
+            # characters score, so it never blocks a merge: anything near
+            # the 0.75 floor is already above it. Raising it to 0.90, onto
+            # CCIP's scale, does not reach the merges it was expected to --
+            # the units involved never share a sampled frame -- and costs a
+            # wrong split (animation 2.48% -> 2.52% contamination, the bull
+            # creature cut in two). See Instructions.md 53.
+            cooccurrence_similarity_ceiling=0.50,
+            # The margin rule does reach them, and is still 0.0 because of
+            # what it charges: at 0.05 it clears card 5 and takes animation
+            # to 0.67% and animation2 to 0.97%, while splitting Ben across 4
+            # cards (98% -> 56% of his faces on his main one) and Grandpa
+            # Max across 3. That is not a trade this project can make for
+            # the user without being asked. Instructions.md 53.
+            margin_threshold=0.0,
             # Each link of a track passes the floor, but a track can still
             # run from one character into another a step at a time -- across
             # a dissolve, or a henchman turning into his boss in a crowd.
