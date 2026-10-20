@@ -3917,3 +3917,46 @@ animation has no landmarks, so the test, and this, never run there.
 Kept scans were deliberately left valid (`SCAN_FORMAT` unchanged): a
 scan kept before this keeps its answer, and the corrections made on it,
 until the video is rescanned.
+
+## 53. Two costs that bought nothing (`_Held`, `_best_offset`)
+
+Every command was profiled on real footage to find where FluxCutter's own
+code spends time. Almost none of it does: a scan of test_3 is 52.6s, of
+which grouping is 0.36s; the rest is decoding (38%) and the two models,
+both already tuned (§7i, §18, §47). Export is the encoder (139s of video
+and 28s of sound on a 79-cut reel), `shots` and `evaluate` are decoding
+and models. Two things were waste, and both now produce exactly what they
+did before -- checked by comparing outputs, not by reading:
+
+    export of test_3, person 2, 79 cuts     before    after
+    thumbnails made for sliver trimming      9137      2133
+    time making them                        14.8 s     1.9 s
+    reel, every decoded frame and sample    identical (sha256)
+
+    find_repeats, 91 pairs of kept fingerprints   before    after
+    total                                          2.22 s   0.43 s
+    worst pair (two 22-minute episodes)            0.25 s   0.04 s
+    repeats found                                 identical, every pair
+
+**Thumbnails.** `_write_segment` made a 64x36 colour thumbnail of every
+frame it encoded, but only the opening frames and the last
+SLIVER_FRAMES + 1 are ever compared for cuts (§37). A frame in the
+middle passed through the hold-back queue and was written without its
+thumbnail being looked at. `_Held` makes it the first time it is asked
+for, so the frames compared are the same and so is every decision.
+
+**Offsets.** `_best_offset` tries every offset in 0.05s steps and, for
+each, counts the distinct frames that agree -- some 50,000 `np.unique`
+calls for two episodes. A window can only have as many distinct frames as
+it has matches, so one with no more matches than the best so far cannot
+win, and is no longer counted. Ties still go to the first window, so the
+answer cannot change.
+
+Whole-export times are not quoted: the same export took between 93s and
+195s depending on what else the machine was doing, which swamps 13s.
+
+The largest cost left that is FluxCutter's own choice is fingerprinting
+for repeats (§36): about 13s per 22-minute video, a second full decode of
+a file the scan has already decoded. Taking the fingerprints during the
+scan's decode would remove it, but couples two caches with different
+keys, so it is left for a change of its own.
