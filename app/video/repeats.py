@@ -224,8 +224,16 @@ def _best_offset(when: np.ndarray, offsets: np.ndarray) -> float:
     order = np.argsort(offsets)
     offsets, when = offsets[order], when[order]
     best, support = float(offsets[0]), 0
-    for centre in np.arange(offsets[0], offsets[-1] + 0.05, 0.05):
-        lo, hi = np.searchsorted(offsets, [centre - OFFSET_WINDOW, centre + OFFSET_WINDOW], side="left")
+    centres = np.arange(offsets[0], offsets[-1] + 0.05, 0.05)
+    lows = np.searchsorted(offsets, centres - OFFSET_WINDOW, side="left")
+    highs = np.searchsorted(offsets, centres + OFFSET_WINDOW, side="left")
+    for centre, lo, hi in zip(centres, lows, highs):
+        # A window holding no more matches than the best so far cannot have
+        # more distinct frames than it either. Skipping those leaves the
+        # answer as it was and saves nearly every np.unique: two
+        # 22-minute episodes have some 50,000 windows, almost all sparse.
+        if hi - lo <= support:
+            continue
         count = len(np.unique(when[lo:hi]))
         if count > support:
             best, support = float(centre), count
