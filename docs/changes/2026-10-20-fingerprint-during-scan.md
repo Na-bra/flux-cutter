@@ -32,9 +32,18 @@ So for a folder of 22-minute episodes, expect about 16–19 s less per episode
 the first time you open it. Opening the folder a second time was already
 instant and stays that way.
 
-I haven't quoted a before/after for opening a whole folder. The one pair I ran
-(176.7 s against 107.1 s) differs by far more than the decoding removed, so
-most of that gap was the Mac, not this change.
+Opening a folder of three videos (the 22-minute test video and the two short
+clips) for the first time, measured twice each way, alternating:
+
+| | Before | After |
+|---|---|---|
+| Scanning the three videos | 85.4 s / 85.9 s | 87.0 s / 86.9 s |
+| Looking for repeats | 25.4 s / 25.6 s | 0.0 s / 0.0 s |
+| **Total** | **110.9 s / 111.5 s** | **87.0 s / 86.9 s** |
+
+That's **24 s faster, about 22%**. The scans take about a second longer
+because they now collect the fingerprints, and looking for repeats no longer
+has to read anything.
 
 ## What to know
 

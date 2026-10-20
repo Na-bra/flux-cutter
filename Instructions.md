@@ -3996,8 +3996,14 @@ the old way the first time; that is the case of a folder whose videos were
 each opened alone before. The fingerprint cache is unchanged (same key,
 same format), so fingerprints kept before this are still used.
 
-Opening a three-video folder (test_3, test, test_2) from empty caches no
-longer decodes any of them a second time. Whole-folder times are not
-quoted: the one before/after pair measured, 176.7s against 107.1s, differs
-by far more than the ~25s of decoding removed, so most of it was the
-machine, and the alternating re-measurement was stopped unfinished.
+Opening a three-video folder (test_3, test, test_2) from empty caches,
+measured alternately before and after, each twice:
+
+                          before            after
+    scans                 85.4 / 85.9 s     87.0 / 86.9 s
+    looking for repeats   25.4 / 25.6 s      0.0 /  0.0 s
+    total                110.9 / 111.5 s    87.0 / 86.9 s
+
+24s off a first open, 22%. The scans themselves take about 1.3s longer for
+the fingerprints they now collect. A first, unalternated pair (176.7s
+against 107.1s) had been mostly the machine, which is why it was redone.
