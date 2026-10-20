@@ -48,6 +48,7 @@ def extract_frames(
     container: av.container.InputContainer,
     sample_interval: float = 1.0,
     skip_nonreference: bool = True,
+    watch=None,
 ) -> Iterator[tuple[float, np.ndarray]]:
     """
     Yields frames from a video at approximately regular time intervals.
@@ -79,6 +80,11 @@ def extract_frames(
             from, which is faster and moves sampled timestamps by up
             to a couple of frames. See `skip_nonreference_frames`.
             Pass False to sample the exact frames on the schedule.
+        watch: Shown every decoded frame, sampled or not, through its
+            `add(frame)`; its `finish()` is called once the decode has
+            reached the end of the video, and not if it stops short. How
+            a scan fingerprints the video for repeats without decoding
+            it a second time (`repeats.FingerprintCollector`).
 
     Yields:
         (timestamp, frame) tuples, where timestamp is in seconds and frame
@@ -99,7 +105,7 @@ def extract_frames(
         raise FrameExtractionError("The container does not contain a video stream.")
 
     return _iter_sampled_frames(
-        container, video_stream, sample_interval, skip_nonreference
+        container, video_stream, sample_interval, skip_nonreference, watch
     )
 
 
@@ -108,6 +114,7 @@ def _iter_sampled_frames(
     video_stream,
     sample_interval: float,
     skip_nonreference: bool = True,
+    watch=None,
 ) -> Iterator[tuple[float, np.ndarray]]:
     """The decode loop itself, split out so validation above can stay eager."""
     next_sample_time = 0.0
@@ -126,6 +133,8 @@ def _iter_sampled_frames(
     try:
         container.seek(0)
         for frame in container.decode(video_stream):
+            if watch is not None:
+                watch.add(frame)
             timestamp = float(frame.time)
 
             if timestamp >= next_sample_time:
@@ -149,6 +158,8 @@ def _iter_sampled_frames(
                 while next_sample_time <= timestamp:
                     next_sample_time += sample_interval
 
+        if watch is not None:
+            watch.finish()
     finally:
         if applied and previous_skip is not None:
             try:

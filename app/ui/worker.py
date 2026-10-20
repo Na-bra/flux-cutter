@@ -60,6 +60,7 @@ from app.video.export import (
 )
 from app.video.frames import extract_frames
 from app.video.loader import get_video_info, use_threaded_decoding
+from app.video.repeats import collector_for, fingerprint_dir, keep_collected
 from app.video.timeline import build_appearance_intervals
 
 
@@ -330,6 +331,7 @@ def scan(
     cancel: threading.Event | None = None,
     on_download=None,
     use_cache: bool = True,
+    fingerprint: bool = False,
 ) -> ScanResult:
     """Finds every distinct person in a video.
 
@@ -345,6 +347,10 @@ def scan(
             model is being fetched on first run.
         use_cache: Whether a kept scan of the same video under the same
             settings may be reused, and this one kept (app/scans.py).
+        fingerprint: Also fingerprint the video for repeats while the scan
+            decodes it, unless a fingerprint is kept already. For a folder,
+            which looks for repeats next; it saves decoding each video a
+            second time (app/video/repeats.py).
 
     Raises:
         Cancelled: If `cancel` was set while scanning or downloading.
@@ -394,12 +400,14 @@ def scan(
             on_progress(1.0, duration or 0.0)
     else:
         try:
+            prints = collector_for(video_path, fingerprint_dir()) if fingerprint else None
             result, duration, resolved_min_detections = _scan_footage(
-                source, settings, cancel, on_progress
+                source, settings, cancel, on_progress, prints
             )
         except BaseException:
             source.close()
             raise
+        keep_collected(video_path, fingerprint_dir(), prints)
 
         scan = CachedScan(
             groups=result.grouper.groups,
@@ -566,7 +574,7 @@ def _keep_edited(scan_result: "ScanResult", settings: ScanSettings, gallery) -> 
         pass
 
 
-def _scan_footage(source, settings, cancel, on_progress):
+def _scan_footage(source, settings, cancel, on_progress, prints=None):
     """Runs the pipeline over the footage, returning it with what it needed.
 
     Split out of `scan` only so the container is closed and the descriptor
@@ -582,7 +590,9 @@ def _scan_footage(source, settings, cancel, on_progress):
 
         total_frames = int(duration / settings.sample_interval) if duration else 0
         frames = _tracked_frames(
-            extract_frames(container, sample_interval=settings.sample_interval),
+            extract_frames(
+                container, sample_interval=settings.sample_interval, watch=prints
+            ),
             total_frames,
             cancel,
             on_progress,

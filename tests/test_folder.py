@@ -80,9 +80,10 @@ def season():
 def test_every_video_is_scanned_and_a_bad_one_is_passed_over(tmp_path, monkeypatch):
     for name in ("e1.mp4", "e2.mp4", "e3.mp4"):
         (tmp_path / name).write_bytes(b"x")
-    started, progress = [], []
+    started, progress, fingerprinted = [], [], []
 
-    def fake_scan(path, settings, on_progress, cancel, on_download):
+    def fake_scan(path, settings, on_progress, cancel, on_download, fingerprint):
+        fingerprinted.append(fingerprint)
         if path.name == "e2.mp4":
             raise VideoLoadError("cannot read e2")
         on_progress(0.5, 1.0)
@@ -102,6 +103,21 @@ def test_every_video_is_scanned_and_a_bad_one_is_passed_over(tmp_path, monkeypat
     assert started == [(0, 3, "e1.mp4"), (1, 3, "e2.mp4"), (2, 3, "e3.mp4")]
     # Progress is across the folder, not restarting per video.
     assert progress == [0.167, 0.833]
+    # Repeats are looked for next, so each is fingerprinted as it is scanned.
+    assert fingerprinted == [True, True, True]
+
+
+def test_a_folder_of_one_video_is_not_fingerprinted(tmp_path, monkeypatch):
+    (tmp_path / "e1.mp4").write_bytes(b"x")
+    asked = []
+
+    def fake_scan(path, fingerprint, **kwargs):
+        asked.append(fingerprint)
+        return result(path.name)
+
+    monkeypatch.setattr(folder_module, "scan", fake_scan)
+    scan_folder([tmp_path], SETTINGS)
+    assert asked == [False]
 
 
 def test_cancelling_closes_what_was_already_scanned(tmp_path, monkeypatch):

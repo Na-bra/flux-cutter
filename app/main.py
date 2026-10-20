@@ -45,7 +45,14 @@ from app.video.cutter import (
     probe_clip,
 )
 from app.video.export import merge_for_export
-from app.video.repeats import find_repeats, fingerprint_kept, without_repeats
+from app.video.repeats import (
+    collector_for,
+    find_repeats,
+    fingerprint_dir,
+    fingerprint_kept,
+    keep_collected,
+    without_repeats,
+)
 from app.video.frames import extract_frames
 from app.video.loader import (
     SUPPORTED_EXTENSIONS,
@@ -527,6 +534,7 @@ def scan_or_reuse(
     mode: str,
     min_detections: int | None,
     use_cache: bool = True,
+    fingerprint: bool = False,
 ) -> CachedScan:
     """The scan every grouping command needs, run once and then kept.
 
@@ -574,9 +582,13 @@ def scan_or_reuse(
         min_detections, video_duration, sample_interval
     )
 
+    # For a reel of several videos, which looks for repeats among them:
+    # fingerprinted while the scan decodes, rather than decoded again.
+    prints = collector_for(video_path, fingerprint_dir()) if fingerprint else None
+
     started = time.monotonic()
     result = run_identity_pipeline(
-        extract_frames(container, sample_interval=sample_interval),
+        extract_frames(container, sample_interval=sample_interval, watch=prints),
         confidence_threshold=confidence_threshold,
         padding_ratio=padding_ratio,
         similarity_threshold=similarity_threshold,
@@ -591,6 +603,7 @@ def scan_or_reuse(
         min_detections=resolved_min_detections,
     )
     scan_seconds = time.monotonic() - started
+    keep_collected(video_path, fingerprint_dir(), prints)
 
     scan = CachedScan(
         groups=result.grouper.groups,
@@ -1031,12 +1044,12 @@ def run_export(
 def _without_repeats(plans: list["ExportPlan"]) -> tuple[list["ExportPlan"], dict[Path, float]]:
     """Leaves out what a later video repeats of footage already in the reel.
 
-    See app/video/repeats.py. Fingerprinting costs one more read of each
-    video the first time, and is kept beside the scans after that.
+    See app/video/repeats.py. A video scanned for this reel was
+    fingerprinted during its scan; one whose scan was kept from before
+    costs one more read, the first time. Either way the fingerprint is
+    kept beside the scans after that.
     """
-    from app.scans import scan_cache_dir
-
-    directory = scan_cache_dir() / "fingerprints"
+    directory = fingerprint_dir()
     prints = {}
     for position, plan in enumerate(plans):
         print(f"  checking {plan.video_path.name} for repeated footage...")
@@ -1387,6 +1400,7 @@ def _run_combined(
                     container,
                     video_path,
                     use_cache=use_cache,
+                    fingerprint=not keep_repeats and len(videos) > 1,
                     **_share(export_settings, SCAN_SETTINGS),
                 )
             plan = plan_export(
