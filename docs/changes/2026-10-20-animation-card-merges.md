@@ -74,6 +74,32 @@ A gentler setting (0.02) is a middle point — `animation` 1.62%,
 `animation2` 1.39%, which still passes the issue's bar — and it costs Ben
 and Max about 11% of their faces each, and one extra card apiece.
 
+## Every setting between 0 and 0.05, measured
+
+The pages above tried 0.02 and 0.05. Every margin in between, on both videos,
+with what each costs your main characters:
+
+| Margin | animation | animation2 | Meets #42's bar? | Ben on animation | Ben / Max on animation2 |
+|---|---|---|---|---|---|
+| 0 (now) | 2.48% | 1.83% | — | 1 card | 1 card / 1 card |
+| 0.01 | 2.49% | 1.37% | no, by one face | 1 card | 1 card / 2 cards |
+| 0.015 | 2.52% | 1.39% | no | 2 cards | 2 / 3 |
+| **0.02** | **1.62%** | **1.39%** | **yes** | **2 cards** | **2 / 3** |
+| 0.03 | 0.67% | 1.11% | yes | 3 cards | 3 / 3 |
+| 0.05 | 0.67% | 0.97% | yes | 4 cards | 2 / 3 |
+
+**0.02 is the gentlest setting that meets the bar.** At 0.02 each main
+character's reel loses about a tenth of its length to a second card of the same
+person: Ben on animation goes from 57 s of him to 50 s, and from 263 s to 236 s
+on animation2; Grandpa Max goes from 178 s to 158 s. Each reel is also slightly
+purer. Merging the two cards puts the missing part back.
+
+At 0.03 Ben keeps only 65% of his faces on his main card on animation, which is
+the 0.05 problem starting early.
+
+**Nothing has been changed.** Changing the default would make every animation
+video rescan, because kept scans are keyed on their settings. That's your call.
+
 ## What this does to your videos and your kept scans
 
 **Nothing.** No threshold changed. Your kept scans stay valid, keep their
