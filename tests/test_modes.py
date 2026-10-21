@@ -65,6 +65,7 @@ def test_live_action_thresholds_are_unchanged():
     assert grouping.similarity_threshold == 0.35
     assert grouping.consolidation_threshold == 0.375
     assert grouping.contradiction_floor == 0.25
+    assert grouping.cooccurrence_similarity_ceiling == 0.50
     assert modes.get_mode(modes.LIVE).detection.confidence_threshold == 0.6
 
 
@@ -76,6 +77,20 @@ def test_animation_thresholds_are_independent_of_live_action():
     assert animation.similarity_threshold != live.similarity_threshold
     assert animation.contradiction_floor != live.contradiction_floor
     assert animation.similarity_threshold > live.similarity_threshold
+
+
+def test_the_cooccurrence_rule_is_inert_in_animation():
+    """Pins a known hole rather than a feature, so nobody counts on the rule
+    here or re-measures it by accident.
+
+    A shared frame is read as two characters only while the two faces score
+    below the ceiling. Animation's ceiling sits below its own similarity
+    floor, so every pair that could merge is already above it: the rule can
+    never block a merge. Raising it onto CCIP's scale was measured and made
+    animation worse (Instructions.md 55), so it stays, documented.
+    """
+    animation = modes.get_mode(modes.ANIMATION).grouping
+    assert animation.cooccurrence_similarity_ceiling < animation.similarity_threshold
 
 
 def test_animation_does_not_ask_for_landmark_geometry():
@@ -222,6 +237,8 @@ def _grouping_args(**overrides):
         "min_face_size": None,
         "min_group_eye_span": None,
         "confidence_threshold": None,
+        "cooccurrence_ceiling": None,
+        "margin_threshold": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -264,3 +281,48 @@ def test_an_explicit_threshold_beats_the_mode_default():
     resolve_mode_settings(args)
 
     assert args.similarity_threshold == 0.5
+
+
+def test_an_unset_cooccurrence_ceiling_takes_the_mode_s_own():
+    """It used to default to live action's number in argparse, so animation
+    runs read nearly every shared frame as one character shown twice."""
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION)
+    resolve_mode_settings(args)
+
+    assert args.cooccurrence_ceiling == (
+        modes.get_mode(modes.ANIMATION).grouping.cooccurrence_similarity_ceiling
+    )
+
+
+def test_an_explicit_cooccurrence_ceiling_still_wins():
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION, cooccurrence_ceiling=1.01)
+    resolve_mode_settings(args)
+
+    assert args.cooccurrence_ceiling == 1.01
+
+
+def test_an_unset_margin_takes_the_mode_s_own():
+    """The other flag that defaulted to a live-action module constant, so
+    --margin-threshold could not be made a property of a mode at all."""
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION)
+    resolve_mode_settings(args)
+
+    assert args.margin_threshold == modes.get_mode(modes.ANIMATION).grouping.margin_threshold
+
+
+def test_an_explicit_margin_still_wins():
+    """The escape hatch for the trade this mode declines to make by default:
+    a margin does clean animation's cards, at the cost of splitting the
+    leads across several of them (modes.ANIMATION, Instructions.md 55)."""
+    from app.__main__ import resolve_mode_settings
+
+    args = _grouping_args(mode=modes.ANIMATION, margin_threshold=0.05)
+    resolve_mode_settings(args)
+
+    assert args.margin_threshold == 0.05

@@ -3960,7 +3960,6 @@ for repeats (§36): about 13s per 22-minute video, a second full decode of
 a file the scan has already decoded. Taking the fingerprints during the
 scan's decode would remove it, but couples two caches with different
 keys, so it is left for a change of its own.
-
 ## 54. Fingerprinting while the scan decodes (`FingerprintCollector`)
 
 §53 left one cost that was FluxCutter's own choice: a folder scanned
@@ -4007,3 +4006,163 @@ measured alternately before and after, each twice:
 24s off a first open, 22%. The scans themselves take about 1.3s longer for
 the fingerprints they now collect. A first, unalternated pair (176.7s
 against 107.1s) had been mostly the machine, which is why it was redone.
+
+## 55. Two animation cards that hold two characters, and why they stay
+
+§51 left two cards on `animation2` holding two characters each as whole
+tracks: card 4, a split-off card of Gwen's that also carries 11 faces of
+the black-haired boy with glasses, 4 of Ben and 4 of Grandpa Max; and card
+5, the dark-haired teen with all 11 faces of the boy in a blue shirt. This
+is the search for the setting that separates them. There isn't one, and
+the measurements are here so the next person does not repeat them.
+
+Every number below is `python -m app evaluate animation animation2`, one
+setting moved at a time from animation's own defaults.
+
+### Where the merge happens
+
+Clustering, not consolidation. With consolidation effectively off
+(`consolidation_threshold` 1.0) both cards come out byte for byte the
+same -- card 4 at 70 faces with the same three contaminants, card 5 at
+57. So the two characters are joined by average linkage clearing the
+0.75 similarity floor, and the only thing consolidation contributed was
+a split of Ben's (1 card -> 2).
+
+### Co-occurrence cannot veto it
+
+The co-occurrence rule (§15's `DEFAULT_FORBID_COOCCURRING`) is the only
+hard evidence in the pipeline, and in animation it is **inert**. Its
+ceiling was live action's 0.50, on ArcFace's scale, where two different
+people sit near 0.03; under CCIP two different *characters* sit at a
+median 0.567 (§17). A pair only becomes evidence when it scores *below*
+the ceiling, so at 0.50 nothing that could merge -- everything near the
+0.75 floor -- is ever read as two characters. The rule cannot block a
+merge it is not consulted about.
+
+Moving it onto CCIP's scale does not help, because these particular
+units never share a sampled frame:
+
+    ceiling   animation            animation2
+    0.50      2.48%  3/7  1 split  1.83%  4/14  2 splits
+    0.90      2.52%  3/6  1 split  1.83%  4/15  2 splits
+
+Card 5 is untouched and card 4 loses 2 of its 70 faces. What 0.90 does
+buy is a wrong split: the bull creature drops from 100% to 55% of his
+faces on his own card. So the ceiling stays at 0.50, now as animation's
+own number with this written beside it rather than as live action's
+leaking in through an argparse default.
+
+### Lowering consolidation is much worse
+
+The live-action story (§15) is that enforcing co-occurrence is what made
+it safe to lower consolidation into the gap below the missed merges. That
+reasoning does not carry: there is no gap here. At 0.80, with the ceiling
+at 0.90, whole characters fold together --
+
+    video        contamination   worst card
+    animation    2.48% -> 6.29%  card 1: Ben, plus 12 faces of the man in a suit
+    animation2   1.83% -> 4.45%  card 3: Max (418 faces), plus the teen's 46 and the boy in blue's 11
+
+-- so two different characters' whole-card centroids reach 0.80 on this
+footage. 0.85 is not a cautious value, it is close to the edge.
+
+### Raising the similarity floor does not reach them
+
+    floor   animation            animation2
+    0.75    2.48%  3/7  1 split  1.83%  4/14  2 splits
+    0.80    2.49%  3/7  1 split  1.75%  2/13  1 split
+
+animation2 improves a little (Gwen goes from 3 cards to 2) and animation
+gets marginally worse, but **both named cards come out identical**. Those
+two merges score 0.80 or better in average linkage, which is above the
+threshold at which whole groups are consolidated. Reaching them by floor
+alone would mean 0.85-plus, which the line above shows is where the cast
+starts fusing.
+
+### The margin rule reaches them, and charges for it
+
+`DEFAULT_MARGIN_THRESHOLD`'s own note says to raise it per run "if a
+specific video shows false merges", for "footage with few faces and heavy
+ambiguity". Animation is that footage, and the rule works: a near-tie
+against a *different* identity is exactly how the boy's 11-face track
+beat his own main card for the Gwen fragment.
+
+    margin   animation                   animation2
+    0.00     2.48%  7 cards  1 split     1.83%  14 cards  2 splits
+    0.02     1.62%  8 cards  2 splits    1.39%  17 cards  5 splits
+    0.05     0.67%  10 cards 4 splits    0.97%  18 cards  6 splits
+
+0.05 clears card 5 outright (the boy in blue keeps no card at all, which
+is the cheap error) and both videos pass the bar #42 set. What it costs is
+the leads:
+
+    animation, margin 0.00 -> 0.05      animation2, margin 0.00 -> 0.05
+    Ben      98% -> 56% of his faces    Gwen  90% -> 79%, 3 -> 4 cards
+             on his main card, 4 cards  Ben   98% -> 72%, 1 -> 2 cards
+    henchman 100% -> 72%                Max   98% -> 86%, 1 -> 3 cards
+
+Even at 0.05 card 4 is not clean: the Gwen fragment keeps the boy's 11
+faces. So the margin buys the contamination number by handing the user a
+gallery that shows Ben four times and Grandpa Max three, and still does
+not finish the job.
+
+### Left as it was
+
+Nothing here is shipped. Animation keeps 0.75 / 0.85 / 0.50 / 0.0, and
+every number in `evaluation/baseline.json` is unchanged -- checked by
+running the whole suite. Anyone who wants the purer cards can have them
+per run with `--margin-threshold 0.05`, which is now a real choice: that
+flag and `--cooccurrence-ceiling` used to default to a live-action module
+constant, so a mode could not own them and an animation run quietly used
+live action's number. Both now default to None and resolve through the
+mode, like every other threshold (§17).
+
+The honest conclusion is the one §17 already warned about: CCIP's
+same-character and different-character distributions overlap, and these
+two cards sit inside the overlap at card level, not just at crop level.
+Separating them needs evidence the pipeline does not currently have --
+not a different value for evidence it already weighs.
+
+### The margin between 0 and 0.05, measured
+
+The investigation above measured the margin at 0.02 and 0.05 for the
+videos as a whole. The sweep below fills in the middle and records what
+each value costs the leads: their share of faces on their main card,
+with how many cards they are spread over, and their reel's purity. Only
+animation's margin moved; 0.0 and 0.05 reproduce the numbers above.
+
+    margin   animation   animation2   #42's bar (<1.83%, <=2.48%)
+    0.0       2.48%        1.83%      no -- the starting point
+    0.01      2.49%        1.37%      no -- animation one face over
+    0.015     2.52%        1.39%      no
+    0.02      1.62%        1.39%      yes
+    0.03      0.67%        1.11%      yes
+    0.05      0.67%        0.97%      yes
+
+    main card share (cards), reel purity    0.0            0.02           0.03
+    animation   Ben          (112 faces)    98% (1) 81%    86% (2) 89%    65% (3) 88%
+    animation2  Ben          (529)          98% (1) 81%    87% (2) 84%    82% (3) 85%
+    animation2  Grandpa Max  (362)          98% (1) 84%    86% (3) 85%    86% (3) 85%
+    animation2  Gwen         (602)          90% (3) 85%    87% (3) 85%    87% (3) 85%
+
+    seconds of the lead in their own reel   0.0     0.02    0.03
+    animation   Ben                          57      50      39
+    animation2  Ben                         263     236     222
+    animation2  Grandpa Max                 178     158     158
+
+0.02 is the smallest margin that meets #42's bar. What it costs is 10-12%
+of Ben's and Max's screen time moving to a second card of theirs, each
+reel shorter by that much and a few points purer. Nothing is lost: a
+merge of the two cards puts it back. 0.03 cleans animation further and
+takes a third of Ben's screen time off his main card there, which is
+the 0.05 problem arriving early.
+
+### Chosen: 0.02
+
+The user chose 0.02 as animation's margin, which supersedes "Left as it
+was" above. It is the one setting change in this section. Every animation
+scan's key changes with it, so each animation video is scanned again the
+first time it is opened, and corrections made on the old scan stay with
+that scan. Live action's margin is untouched (0.0, its own mode), and so
+is every live-action number in `evaluation/baseline.json`; animation's two
+entries there are replaced by this run's.
