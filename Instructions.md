@@ -3960,6 +3960,53 @@ for repeats (§36): about 13s per 22-minute video, a second full decode of
 a file the scan has already decoded. Taking the fingerprints during the
 scan's decode would remove it, but couples two caches with different
 keys, so it is left for a change of its own.
+## 54. Fingerprinting while the scan decodes (`FingerprintCollector`)
+
+§53 left one cost that was FluxCutter's own choice: a folder scanned
+every video, then decoded each one again to fingerprint it for repeats
+(§36). `extract_frames` now takes a `watch` that is shown every decoded
+frame, and a `FingerprintCollector` hashes them on the fingerprint's own
+schedule as the scan goes. `fingerprint()` is built on the same collector,
+so the two routes hash the same frames the same way:
+
+    video          standalone   collected during scan   identical
+    test.mp4           2.1 s           0.27 s              yes
+    test_2.MOV         1.2 s           0.16 s              yes
+    animation2.mp4    18.6 s           3.49 s              yes
+    test_3.mp4        22.4 s           2.81 s              yes
+
+The scan and the fingerprinter already decoded with the same settings
+(threaded, non-reference frames skipped), which is why the frames match.
+
+**Only where repeats are looked for.** The collector is not free -- about
+3s on a 22-minute video -- and a single video never uses a fingerprint.
+So it runs for a folder of two or more in the window (`scan_folder`, which
+calls `find_folder_repeats` straight after) and for `batch --combine`
+unless `--keep-repeats`; nowhere else.
+
+**Only a whole fingerprint is kept.** The decode loop calls `finish()`
+after the last frame, and not when it stops short: a cancelled scan, a
+decode error, or a reader that stops iterating leaves the collector
+incomplete and nothing is stored. Half a fingerprint kept would hide every
+repeat in the other half for as long as it was kept.
+
+A video whose scan is reused is not decoded, so it is still fingerprinted
+the old way the first time; that is the case of a folder whose videos were
+each opened alone before. The fingerprint cache is unchanged (same key,
+same format), so fingerprints kept before this are still used.
+
+Opening a three-video folder (test_3, test, test_2) from empty caches,
+measured alternately before and after, each twice:
+
+                          before            after
+    scans                 85.4 / 85.9 s     87.0 / 86.9 s
+    looking for repeats   25.4 / 25.6 s      0.0 /  0.0 s
+    total                110.9 / 111.5 s    87.0 / 86.9 s
+
+24s off a first open, 22%. The scans themselves take about 1.3s longer for
+the fingerprints they now collect. A first, unalternated pair (176.7s
+against 107.1s) had been mostly the machine, which is why it was redone.
+
 ## 55. Two animation cards that hold two characters, and why they stay
 
 §51 left two cards on `animation2` holding two characters each as whole

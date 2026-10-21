@@ -104,31 +104,69 @@ def _hash(gray32: np.ndarray) -> tuple[int, bool]:
     return value, float(gray32.std()) >= MIN_DETAIL
 
 
+class FingerprintCollector:
+    """Fingerprints frames as some other reader decodes them.
+
+    A scan already decodes every frame of the video, and fingerprinting
+    used to decode them all again: about 13s for 22 minutes of 720p, the
+    first time a folder was opened. Handed to `extract_frames`, this hashes
+    the frames the scan decodes instead. `fingerprint` uses it too, so the
+    two routes cannot disagree about which frames are hashed or how.
+
+    The result is only whole once the decode has reached the end of the
+    file, which the reader says by calling `finish`; a scan that was
+    cancelled or failed partway leaves `complete` False and nothing kept.
+    """
+
+    def __init__(self, interval: float = FINGERPRINT_INTERVAL):
+        self.interval = interval
+        self.complete = False
+        self._times: list[float] = []
+        self._hashes: list[int] = []
+        self._usable: list[bool] = []
+        self._due = 0.0
+
+    def add(self, frame) -> None:
+        if frame.time is None or frame.time < self._due:
+            return
+        gray = frame.reformat(width=32, height=32, format="gray").to_ndarray()
+        value, detailed = _hash(gray)
+        self._times.append(frame.time)
+        self._hashes.append(value)
+        self._usable.append(detailed)
+        self._due = frame.time + self.interval - 1e-6
+
+    def finish(self) -> None:
+        self.complete = True
+
+    def fingerprints(self) -> Fingerprints:
+        return Fingerprints(
+            np.asarray(self._times, dtype=np.float64),
+            np.asarray(self._hashes, dtype=np.uint64),
+            np.asarray(self._usable, dtype=bool),
+        )
+
+
 def fingerprint(path: Path, interval: float = FINGERPRINT_INTERVAL) -> Fingerprints:
     """Hashes a frame every `interval` seconds. About 13s for 11 minutes of 720p."""
+    collector = FingerprintCollector(interval)
     container = av.open(str(path))
     try:
         stream = container.streams.video[0]
         stream.thread_type = "AUTO"
         skip_nonreference_frames(stream)
-        times, hashes, usable = [], [], []
-        due = 0.0
         for frame in container.decode(stream):
-            if frame.time is None or frame.time < due:
-                continue
-            gray = frame.reformat(width=32, height=32, format="gray").to_ndarray()
-            value, detailed = _hash(gray)
-            times.append(frame.time)
-            hashes.append(value)
-            usable.append(detailed)
-            due = frame.time + interval - 1e-6
+            collector.add(frame)
     finally:
         container.close()
-    return Fingerprints(
-        np.asarray(times, dtype=np.float64),
-        np.asarray(hashes, dtype=np.uint64),
-        np.asarray(usable, dtype=bool),
-    )
+    return collector.fingerprints()
+
+
+def fingerprint_dir() -> Path:
+    """Where fingerprints are kept: beside the scans."""
+    from app.scans import scan_cache_dir
+
+    return scan_cache_dir() / "fingerprints"
 
 
 def _cache_name(path: Path) -> str | None:
@@ -163,16 +201,37 @@ def fingerprint_kept(path: Path, directory: Path) -> Fingerprints:
     if kept is not None:
         return kept
     made = fingerprint(path)
-    name = _cache_name(path)
-    if name is not None:
-        try:
-            directory.mkdir(parents=True, exist_ok=True)
-            temporary = directory / f"{name}.tmp.npz"
-            np.savez(temporary, times=made.times, hashes=made.hashes, usable=made.usable)
-            temporary.replace(directory / f"{name}.npz")
-        except OSError:
-            pass
+    _keep(path, directory, made)
     return made
+
+
+def collector_for(path: Path, directory: Path) -> FingerprintCollector | None:
+    """A collector to fingerprint `path` during a decode that is happening
+    anyway, or None when a fingerprint of it is already kept."""
+    if cached_fingerprint(path, directory) is not None:
+        return None
+    return FingerprintCollector()
+
+
+def keep_collected(
+    path: Path, directory: Path, collector: FingerprintCollector | None
+) -> None:
+    """Keeps what a collector gathered, if it saw the whole video."""
+    if collector is not None and collector.complete:
+        _keep(path, directory, collector.fingerprints())
+
+
+def _keep(path: Path, directory: Path, made: Fingerprints) -> None:
+    name = _cache_name(path)
+    if name is None:
+        return
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        temporary = directory / f"{name}.tmp.npz"
+        np.savez(temporary, times=made.times, hashes=made.hashes, usable=made.usable)
+        temporary.replace(directory / f"{name}.npz")
+    except OSError:
+        pass
 
 
 def find_repeats(later: Fingerprints, earlier: Fingerprints) -> list[Repeat]:

@@ -276,7 +276,7 @@ def scanned(monkeypatch):
 
     calls = []
 
-    def fake_scan_footage(source, settings, cancel, on_progress):
+    def fake_scan_footage(source, settings, cancel, on_progress, prints=None):
         calls.append(settings)
         crop = np.full((4, 4, 3), 3, dtype=np.uint8)
         group = FaceIdentityGroup(group_id=1, observations=[observation(1.0)])
