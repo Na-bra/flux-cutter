@@ -46,7 +46,13 @@ from app.video.cutter import (
     probe_clip,
 )
 from app.video.loader import VideoLoadError
-from app.video.repeats import Repeat, find_repeats, fingerprint_kept, without_repeats
+from app.video.repeats import (
+    Repeat,
+    find_repeats,
+    fingerprint_dir,
+    fingerprint_kept,
+    without_repeats,
+)
 
 
 @dataclass
@@ -128,6 +134,8 @@ def scan_folder(
                     on_progress=progress,
                     cancel=cancel,
                     on_download=on_download,
+                    # Looked for straight after, in find_folder_repeats.
+                    fingerprint=len(videos) > 1,
                 )
             )
         except Cancelled:
@@ -145,17 +153,15 @@ def scan_folder(
     )
 
 
-def fingerprint_dir() -> Path:
-    return scan_cache_dir() / "fingerprints"
-
-
 def find_folder_repeats(
     results: list[ScanResult], on_status=None, cancel: threading.Event | None = None
 ) -> dict[tuple[int, int], list[Repeat]]:
     """What each video repeats of every earlier one: recaps, openings.
 
-    Fingerprinting reads each video once more, about 13s for 11 minutes of
-    720p, and keeps the result, so a folder opened again pays nothing. A
+    A video scanned just now was fingerprinted during its scan; one whose
+    scan was kept from before is read once more, about 13s for 11 minutes
+    of 720p. Either way the result is kept, so a folder opened again pays
+    nothing. A
     video that cannot be fingerprinted is simply never taken for a repeat --
     at worst its footage appears twice, as it did before this existed.
     """

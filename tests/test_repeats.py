@@ -15,9 +15,12 @@ from app.video.repeats import (
     MAX_BITS,
     Fingerprints,
     Repeat,
+    cached_fingerprint,
+    collector_for,
     find_repeats,
     fingerprint,
     fingerprint_kept,
+    keep_collected,
     without_repeats,
 )
 from app.video.timeline import AppearanceInterval
@@ -224,3 +227,60 @@ def test_a_fingerprint_is_made_once_and_kept(tmp_path, monkeypatch):
 
     assert made == [episode]
     np.testing.assert_array_equal(first.hashes, second.hashes)
+
+
+# ------------------------------------------- fingerprinting during a scan
+
+
+def scanned(path: Path, collector, stop_after: int | None = None) -> None:
+    """Reads `path` the way a scan does, showing the collector every frame."""
+    from app.video.frames import extract_frames
+    from app.video.loader import load_video
+
+    with load_video(path) as container:
+        for n, _ in enumerate(extract_frames(container, sample_interval=1.0, watch=collector)):
+            if stop_after is not None and n + 1 >= stop_after:
+                break
+
+
+def test_a_scan_fingerprints_exactly_what_a_second_read_would(tmp_path):
+    episode = tmp_path / "episode.mp4"
+    write_textured(episode, seconds=20)
+    collector = collector_for(episode, tmp_path / "prints")
+
+    scanned(episode, collector)
+
+    assert collector.complete
+    alone, during = fingerprint(episode), collector.fingerprints()
+    np.testing.assert_array_equal(during.times, alone.times)
+    np.testing.assert_array_equal(during.hashes, alone.hashes)
+    np.testing.assert_array_equal(during.usable, alone.usable)
+
+
+def test_a_scan_that_stops_short_keeps_no_fingerprint(tmp_path):
+    episode = tmp_path / "episode.mp4"
+    write_textured(episode, seconds=20)
+    collector = collector_for(episode, tmp_path / "prints")
+
+    scanned(episode, collector, stop_after=5)
+    keep_collected(episode, tmp_path / "prints", collector)
+
+    # Half a fingerprint kept would hide every repeat in the other half.
+    assert not collector.complete
+    assert cached_fingerprint(episode, tmp_path / "prints") is None
+
+
+def test_a_finished_scan_keeps_its_fingerprint_and_the_next_one_skips_it(tmp_path, monkeypatch):
+    from app.video import repeats
+
+    episode = tmp_path / "episode.mp4"
+    write_textured(episode, seconds=6)
+    collector = collector_for(episode, tmp_path / "prints")
+    scanned(episode, collector)
+    keep_collected(episode, tmp_path / "prints", collector)
+
+    monkeypatch.setattr(repeats, "fingerprint", lambda path: pytest.fail("decoded again"))
+    kept = fingerprint_kept(episode, tmp_path / "prints")
+
+    np.testing.assert_array_equal(kept.hashes, collector.fingerprints().hashes)
+    assert collector_for(episode, tmp_path / "prints") is None

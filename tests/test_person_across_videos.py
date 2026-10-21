@@ -362,7 +362,8 @@ def test_settings_are_shared_out_to_the_stage_that_uses_them(season, monkeypatch
         combine_path=season.tmp / "jamie.mp4", use_cache=False,
     )
 
-    assert seen["scan"] == {"mode": "live", "use_cache": False}
+    # A combined reel looks for repeats, so its scans fingerprint as they go.
+    assert seen["scan"] == {"mode": "live", "use_cache": False, "fingerprint": True}
     assert set(seen["plan"]) == {
         "mode", "bridge_gap_seconds", "reference", "select_name", "reference_threshold",
     }
