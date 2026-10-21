@@ -69,10 +69,10 @@
   "coverage": 1.0,
   "precision": 0.9767,
   "recall": 0.7143,
-  "contamination": 0.0248,
-  "contaminated_cards": 3,
-  "cards": 7,
-  "splits": 1,
+  "contamination": 0.0162,
+  "contaminated_cards": 2,
+  "cards": 8,
+  "splits": 2,
   "people": {
    "gwen": {
     "faces": 117,
@@ -83,10 +83,10 @@
    },
    "ben": {
     "faces": 112,
-    "completeness": 0.9821,
-    "timing": 0.9825,
-    "reel_purity": 0.8127,
-    "reel_shows_others": 2.72
+    "completeness": 0.8571,
+    "timing": 0.8608,
+    "reel_purity": 0.8926,
+    "reel_shows_others": 2.47
    },
    "max": {
     "faces": 48,
@@ -97,17 +97,17 @@
    },
    "goggles": {
     "faces": 18,
-    "completeness": 1.0,
-    "timing": 1.0,
-    "reel_purity": 0.5425,
-    "reel_shows_others": 0.8
+    "completeness": 0.7222,
+    "timing": 0.7202,
+    "reel_purity": 0.6798,
+    "reel_shows_others": 0.52
    },
    "suit-man": {
     "faces": 13,
     "completeness": 0.9231,
-    "timing": 0.8635,
-    "reel_purity": 0.5666,
-    "reel_shows_others": 2.57
+    "timing": 0.9235,
+    "reel_purity": 0.801,
+    "reel_shows_others": 0.5
    },
    "bull": {
     "faces": 11,
@@ -118,10 +118,10 @@
    },
    "blue-shirt": {
     "faces": 3,
-    "completeness": 1.0,
-    "timing": 0.2026,
-    "reel_purity": 0.1329,
-    "reel_shows_others": 7.57
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
    },
    "extra-2": {
     "faces": 2,
@@ -167,31 +167,31 @@
   "coverage": 1.0,
   "precision": 0.9605,
   "recall": 0.5,
-  "contamination": 0.0183,
-  "contaminated_cards": 4,
-  "cards": 14,
-  "splits": 2,
+  "contamination": 0.0139,
+  "contaminated_cards": 2,
+  "cards": 17,
+  "splits": 5,
   "people": {
    "gwen": {
     "faces": 602,
-    "completeness": 0.9037,
-    "timing": 0.9095,
-    "reel_purity": 0.8504,
+    "completeness": 0.8688,
+    "timing": 0.8742,
+    "reel_purity": 0.8473,
     "reel_shows_others": 13.83
    },
    "ben": {
     "faces": 529,
-    "completeness": 0.9849,
-    "timing": 0.9849,
-    "reel_purity": 0.8091,
-    "reel_shows_others": 17.66
+    "completeness": 0.8696,
+    "timing": 0.8678,
+    "reel_purity": 0.8409,
+    "reel_shows_others": 12.91
    },
    "max": {
     "faces": 362,
-    "completeness": 0.9807,
-    "timing": 0.978,
-    "reel_purity": 0.8372,
-    "reel_shows_others": 11.02
+    "completeness": 0.8591,
+    "timing": 0.8578,
+    "reel_purity": 0.846,
+    "reel_shows_others": 10.26
    },
    "boy-black-glasses": {
     "faces": 54,
@@ -217,9 +217,9 @@
    "camper": {
     "faces": 32,
     "completeness": 1.0,
-    "timing": 0.8861,
-    "reel_purity": 0.6481,
-    "reel_shows_others": 2.25
+    "timing": 1.0,
+    "reel_purity": 0.7761,
+    "reel_shows_others": 0.5
    },
    "boy-brown-glasses": {
     "faces": 31,

@@ -4108,6 +4108,14 @@ of Ben's and Max's screen time moving to a second card of theirs, each
 reel shorter by that much and a few points purer. Nothing is lost: a
 merge of the two cards puts it back. 0.03 cleans animation further and
 takes a third of Ben's screen time off his main card there, which is
-the 0.05 problem arriving early. Animation's margin stays 0.0 until the
-user chooses: changing it changes every animation scan's key, so every
-kept animation scan would be redone.
+the 0.05 problem arriving early.
+
+### Chosen: 0.02
+
+The user chose 0.02 as animation's margin, which supersedes "Left as it
+was" above. It is the one setting change in this section. Every animation
+scan's key changes with it, so each animation video is scanned again the
+first time it is opened, and corrections made on the old scan stay with
+that scan. Live action's margin is untouched (0.0, its own mode), and so
+is every live-action number in `evaluation/baseline.json`; animation's two
+entries there are replaced by this run's.

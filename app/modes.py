@@ -216,13 +216,14 @@ MODES: dict[str, ModeSpec] = {
             # wrong split (animation 2.48% -> 2.52% contamination, the bull
             # creature cut in two). See Instructions.md 55.
             cooccurrence_similarity_ceiling=0.50,
-            # The margin rule does reach them, and is still 0.0 because of
-            # what it charges: at 0.05 it clears card 5 and takes animation
-            # to 0.67% and animation2 to 0.97%, while splitting Ben across 4
-            # cards (98% -> 56% of his faces on his main one) and Grandpa
-            # Max across 3. That is not a trade this project can make for
-            # the user without being asked. Instructions.md 55.
-            margin_threshold=0.0,
+            # The margin rule does reach them, at a price in the leads that
+            # grows quickly with it. 0.02 is the smallest value that meets
+            # #42's bar (animation 2.48% -> 1.62%, animation2 1.83% -> 1.39%
+            # contamination), and costs Ben and Grandpa Max about a tenth of
+            # their faces, moved to a second card of their own -- a merge
+            # puts it back. 0.05 split Ben across 4 cards (98% -> 56% on his
+            # main one). Chosen by the user over 0.0, Instructions.md 55.
+            margin_threshold=0.02,
             # Each link of a track passes the floor, but a track can still
             # run from one character into another a step at a time -- across
             # a dissolve, or a henchman turning into his boss in a crowd.

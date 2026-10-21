@@ -1,10 +1,9 @@
 # Why two animation cards still hold two characters
 
-**Status:** on branch `fix/mode-owned-margin-and-ceiling`. An investigation,
-plus one fix that changes no result: every number in the evaluation is exactly
-what it was. The nightly run did the work. It's been moved here without the
-measuring script it committed but never ran. There's a choice for you at the
-bottom.
+**Status:** on branch `fix/mode-owned-margin-and-ceiling`. You chose 0.02
+for animation's margin (see "Every setting between 0 and 0.05" below), and it's
+now the default. The nightly run did the investigation; it's been moved here
+without the measuring script it committed but never ran.
 
 This is issue #42. On `animation2`, two cards each hold two characters:
 
@@ -99,23 +98,26 @@ purer. Merging the two cards puts the missing part back.
 At 0.03 Ben keeps only 65% of his faces on his main card on animation, which is
 the 0.05 problem starting early.
 
-**Nothing has been changed.** Changing the default would make every animation
-video rescan, because kept scans are keyed on their settings. That's your call.
+**You chose 0.02, and it's now animation's default.**
 
 ## What this does to your videos and your kept scans
 
-**Nothing.** No threshold changed. Your kept scans stay valid, keep their
-answers, and keep every name and correction you have made on them. Nothing
-needs rescanning.
+- **Animation videos are scanned again** the first time you open each one,
+  because its kept scan was made with the old setting. Corrections and names
+  you made on the old scan stay with that old scan.
+  Names you've saved as people are matched against the new cards as usual.
+- Expect Ben, Grandpa Max and other main characters to sometimes show up on
+  **two cards**. Merging them puts their whole reel back together.
+- **Live-action videos are untouched**: same setting, same kept scans.
 
-## Try it yourself on one scan
+## Going back for one scan
 
-Both of these are per-run flags, so they change nothing permanently:
+To scan one animation video the old way, without the margin:
 
-    python -m app group your-video.mp4 --mode animation --margin-threshold 0.05
+    python -m app group your-video.mp4 --mode animation --margin-threshold 0
 
 A run with a different `--margin-threshold` is kept as a separate scan, so
-your existing one is untouched and you can compare them and go back.
+you can compare the two and switch between them.
 
 ## The numbers, before and after
 
@@ -149,5 +151,7 @@ changes no result anywhere — that is what the identical table above shows.
 
 ## How to undo it
 
-Revert the commit. Nothing is stored differently and no result changed, so
-there's nothing else to undo.
+Revert the commit that made 0.02 the default, or set `margin_threshold` back
+to `0.0` for animation in `app/modes.py`. Your old animation scans are kept
+unless the scan cache has since dropped them for space (it removes the oldest
+first), so going back usually needs no rescanning.
