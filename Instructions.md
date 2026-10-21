@@ -4033,39 +4033,3 @@ same-character and different-character distributions overlap, and these
 two cards sit inside the overlap at card level, not just at crop level.
 Separating them needs evidence the pipeline does not currently have --
 not a different value for evidence it already weighs.
-
-### The margin between 0 and 0.05, measured
-
-The investigation above measured the margin at 0.02 and 0.05 for the
-videos as a whole. The sweep below fills in the middle and records what
-each value costs the leads: their share of faces on their main card,
-with how many cards they are spread over, and their reel's purity. Only
-animation's margin moved; 0.0 and 0.05 reproduce the numbers above.
-
-    margin   animation   animation2   #42's bar (<1.83%, <=2.48%)
-    0.0       2.48%        1.83%      no -- the starting point
-    0.01      2.49%        1.37%      no -- animation one face over
-    0.015     2.52%        1.39%      no
-    0.02      1.62%        1.39%      yes
-    0.03      0.67%        1.11%      yes
-    0.05      0.67%        0.97%      yes
-
-    main card share (cards), reel purity    0.0            0.02           0.03
-    animation   Ben          (112 faces)    98% (1) 81%    86% (2) 89%    65% (3) 88%
-    animation2  Ben          (529)          98% (1) 81%    87% (2) 84%    82% (3) 85%
-    animation2  Grandpa Max  (362)          98% (1) 84%    86% (3) 85%    86% (3) 85%
-    animation2  Gwen         (602)          90% (3) 85%    87% (3) 85%    87% (3) 85%
-
-    seconds of the lead in their own reel   0.0     0.02    0.03
-    animation   Ben                          57      50      39
-    animation2  Ben                         263     236     222
-    animation2  Grandpa Max                 178     158     158
-
-0.02 is the smallest margin that meets #42's bar. What it costs is 10-12%
-of Ben's and Max's screen time moving to a second card of theirs, each
-reel shorter by that much and a few points purer. Nothing is lost: a
-merge of the two cards puts it back. 0.03 cleans animation further and
-takes a third of Ben's screen time off his main card there, which is
-the 0.05 problem arriving early. Animation's margin stays 0.0 until the
-user chooses: changing it changes every animation scan's key, so every
-kept animation scan would be redone.
