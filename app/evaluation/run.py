@@ -35,6 +35,7 @@ class Pass:
     unassigned: list
     duration: float
     interval: float
+    groups: list = None
 
 
 def run_pass(video: Path, mode: str, interval: float) -> Pass:
@@ -76,7 +77,69 @@ def run_pass(video: Path, mode: str, interval: float) -> Pass:
         unassigned=list(result.grouper.unassigned),
         duration=duration or result.last_timestamp,
         interval=interval,
+        groups=groups,
     )
+
+
+def _track_report(groups, truth) -> None:
+    """TEMPORARY diagnostic: every card's tracks, and where each one fits best."""
+    import os
+    from collections import Counter
+
+    import numpy as np
+
+    from app.evaluation.truth import NOT_PEOPLE, Matcher
+
+    if not (ROOT / "output" / "track-report").exists():
+        return
+    del os
+
+    matcher = Matcher(truth)
+    cards = sorted(groups, key=lambda g: -g.size)
+
+    def total(observations):
+        return np.stack([o.embedding for o in observations]).astype(np.float64).sum(axis=0)
+
+    def unit(vector):
+        norm = float(np.linalg.norm(vector))
+        return vector / norm if norm else vector
+
+    def labels(observations):
+        counts = Counter(matcher.label(o) for o in observations)
+        return " ".join(
+            f"{label}:{n}" for label, n in sorted(counts.items(), key=lambda x: -x[1])
+        )
+
+    card_sums = [total(card.observations) for card in cards]
+    print(f"\n===== track report: {truth.video} =====")
+    for index, card in enumerate(cards):
+        tracks = card.tracks
+        print(f"\ncard {index + 1}  {card.size} faces  {len(tracks)} tracks  [{labels(card.observations)}]")
+        if len(tracks) < 2:
+            continue
+        for track in sorted(tracks, key=len):
+            track_sum = total(track)
+            rest_sum = card_sums[index] - track_sum
+            rest_size = card.size - len(track)
+            own_link = float(track_sum @ rest_sum) / (len(track) * rest_size)
+            own_centroid = float(unit(track_sum) @ unit(rest_sum))
+            rivals = []
+            for other, other_card in enumerate(cards):
+                if other == index:
+                    continue
+                link = float(track_sum @ card_sums[other]) / (len(track) * other_card.size)
+                centroid = float(unit(track_sum) @ unit(card_sums[other]))
+                rivals.append((centroid, link, other + 1))
+            rivals.sort(reverse=True)
+            best = rivals[0]
+            start = min(o.source_timestamp for o in track)
+            end = max(o.source_timestamp for o in track)
+            print(
+                f"    track {len(track):>4} faces  {start:>7.1f}-{end:>7.1f}s  "
+                f"own link {own_link:+.3f} cent {own_centroid:+.3f}  |  "
+                f"best card {best[2]:>2} cent {best[0]:+.3f} link {best[1]:+.3f}  "
+                f"[{labels(track)}]"
+            )
 
 
 @dataclass(frozen=True)
@@ -100,6 +163,7 @@ def load_suite(path: Path = SUITE) -> list[SuiteEntry]:
 def evaluate_entry(entry: SuiteEntry) -> Evaluation:
     truth = GroundTruth.load(entry.truth)
     result = run_pass(entry.video, truth.mode, truth.interval)
+    _track_report(result.groups, truth)
     return evaluate(result.cards, result.unassigned, truth, result.duration, result.interval)
 
 
