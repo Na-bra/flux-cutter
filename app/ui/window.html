@@ -512,7 +512,7 @@
   const $ = (id) => document.getElementById(id);
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", drawn: { video: null, folder: null } };
+  let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", planFoot: "", drawn: { video: null, folder: null } };
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -1093,6 +1093,7 @@
         (r.indexes.length > 1 ? " Any scene with any of them." : "") +
         (r.repeated ? " Leaves out " + r.repeated +
           " that later videos repeat of footage already in the reel." : "");
+      state.planFoot = $("foot").textContent;
       showPackOfSelection();
       return;
     }
@@ -1120,6 +1121,7 @@
     $("foot").textContent =
       "Cuts " + r.cuts + " segments and joins them into one file." +
       (r.indexes.length > 1 ? " Any scene with any of them." : "");
+    state.planFoot = $("foot").textContent;
     showSuggestion();
     refreshCuts();
     showPackOfSelection();
@@ -1243,7 +1245,9 @@
       (d.dropped ? " · " + d.dropped + " dropped" : "");
     $("cutsReset").disabled = !d.dropped && !d.edited;
     $("pickedCuts").textContent = d.kept;
-    $("pickedLen").textContent = d.reel;
+    // A pack comes out a little shorter than its scenes are planned
+    // (scenepack.EDGE_LOSS_SECONDS), so its rail gives what it will be.
+    $("pickedLen").textContent = d.pack ? "about " + d.pack.about : d.reel;
     showPack(d);
     // The footnote describes the plan; once the list has been edited it
     // is the list that gets cut, and saying so is the difference between
@@ -1251,6 +1255,9 @@
     if (d.pack) {
       $("foot").textContent = "Writes a folder: one clip for each of the " + d.kept +
         " scene" + (d.kept === 1 ? "" : "s") + ", and a reel of them all (about " + d.pack.about + ").";
+    } else if (!d.dropped && !d.edited && state.planFoot) {
+      // Back from a pack to the plan: the plan's own note, not the pack's.
+      $("foot").textContent = state.planFoot;
     } else if (d.dropped || d.edited) {
       $("foot").textContent = "Cuts the list as you edited it — " + d.kept +
         " cut" + (d.kept === 1 ? "" : "s") + ", about " + d.reel + " of footage.";
@@ -1265,9 +1272,10 @@
     $("exportBtn").textContent = pack ? "Export scene pack" : "Export reel";
     $("packNote").hidden = !pack;
     if (!pack) return;
-    $("packNote").textContent = pack.scenes + " clearest scene" + (pack.scenes === 1 ? "" : "s") +
-      ", about " + pack.about + " of " + pack.length +
-      (pack.short ? ". There are only " + pack.short + " of them to choose from." : ".");
+    const noun = pack.scenes === 1 ? "scene" : "scenes";
+    $("packNote").textContent = pack.short
+      ? pack.scenes + " " + noun + ", all there is of them: about " + pack.about + ", short of " + pack.length + "."
+      : pack.scenes + " clearest " + noun + ", about " + pack.about + " of " + pack.length + ".";
   }
 
   async function setPack() {

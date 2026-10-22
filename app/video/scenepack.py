@@ -158,10 +158,17 @@ def expected_seconds(cuts: list[Cut], edge_loss: float = EDGE_LOSS_SECONDS) -> f
     return sum(max(0.0, cut.seconds - edge_loss) for cut in kept(cuts))
 
 
-def available_seconds(cuts: list[Cut], seen: dict[int, list[Seen]], interval: dict[int, float]) -> float:
-    """How long a pack could be: every kept scene the person is seen in."""
+def available_seconds(
+    cuts: list[Cut],
+    seen: dict[int, list[Seen]],
+    interval: dict[int, float],
+    edge_loss: float = EDGE_LOSS_SECONDS,
+) -> float:
+    """How long a pack could come out: every kept scene they are seen in,
+    once cut -- measured the way `expected_seconds` measures a pack, so the
+    two can be compared and said in one breath."""
     return sum(
-        cut.seconds
+        max(0.0, cut.seconds - edge_loss)
         for cut in kept(cuts)
         if clarity(cut, seen.get(cut.video, []), interval.get(cut.video, 1.0)).score > 0
     )

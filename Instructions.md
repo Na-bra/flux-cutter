@@ -4220,3 +4220,22 @@ In the middle frame of each of the 1:00 pack's 14 clips the lead is on
 screen in 13, mostly in close or medium shot; the fourteenth is the
 reverse shot of his conversation, the padding a reel has too.
 
+
+### Driven in the window
+
+Opened for real on test.mp4 (pywebview, driven from a script, looked at in
+screenshots): the field sits in the rail without overflow at 1280 wide;
+typing 0:20 turned the button into "Export scene pack"; a length of "soon"
+was refused with the box put back; the export wrote the reel and three
+numbered clips. It found three things the bridge's tests had not:
+
+- **The pack's footnote outlived the pack.** Emptying the box left "Writes
+  a folder…" under a button that now exported a reel. The page keeps the
+  plan's own footnote (`state.planFoot`) and puts it back.
+- **Two lengths for one pack.** The rail said "reel length 0:14" (planned)
+  beside "about 0:12" (what it comes out). With a pack on, the rail now
+  says "about".
+- **"About 0:12 … only 0:14 of them".** The shortfall was measured as
+  planned seconds and the pack as cut seconds; `available_seconds` now
+  takes the edge loss off too, and the note reads "3 scenes, all there is
+  of them: about 0:12, short of 0:20".

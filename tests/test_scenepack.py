@@ -94,7 +94,7 @@ def test_a_scene_they_are_never_seen_in_is_never_chosen():
     chosen = pick(cuts, seen, 60)
 
     assert chosen[1].dropped
-    assert available_seconds(cuts, {0: seen}, {0: INTERVAL}) == 10
+    assert available_seconds(cuts, {0: seen}, {0: INTERVAL}, edge_loss=0.0) == 10
 
 
 def test_a_scene_mostly_of_other_people_ranks_below_one_mostly_of_them():

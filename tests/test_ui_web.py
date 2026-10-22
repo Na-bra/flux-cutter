@@ -1874,7 +1874,8 @@ def test_a_pack_longer_than_the_footage_says_how_much_there_is(bridge, monkeypat
     packed = bridge.set_scene_pack("10:00")
 
     assert packed["dropped"] == 0
-    assert packed["pack"]["short"] == packed["reel"]
+    # Said as the length it would come out, the same as "about".
+    assert packed["pack"]["short"] == packed["pack"]["about"]
 
 
 def test_the_pack_length_carries_over_to_the_next_person_chosen(bridge, monkeypatch):
