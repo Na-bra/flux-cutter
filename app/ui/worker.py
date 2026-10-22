@@ -50,7 +50,7 @@ from app.scans import find as find_scan
 from app.scans import save as save_scan
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.modes import DEFAULT_MODE, get_mode
-from app.video.cutter import cut_segments
+from app.video.cutter import Clip, cut_clips, cut_segments
 from app.video.source import VideoSource
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
@@ -61,7 +61,7 @@ from app.video.export import (
 from app.video.frames import extract_frames
 from app.video.loader import get_video_info, use_threaded_decoding
 from app.video.repeats import collector_for, fingerprint_dir, keep_collected
-from app.video.timeline import build_appearance_intervals
+from app.video.timeline import AppearanceInterval, build_appearance_intervals
 
 
 class Cancelled(Exception):
@@ -980,3 +980,97 @@ def export(
         include_audio=settings.include_audio,
         on_segment=report,
     )
+
+
+def pack_directory(base: Path) -> Path:
+    """Where a scene pack goes: `base`, or the first free "base (2)" after it.
+
+    A pack is a folder of clips named by scene, so writing a second pack
+    into the first one's folder would not replace it -- it would leave a
+    mix of both that no one could tell apart. An empty folder is fine.
+    """
+    candidate, number = base, 1
+    while candidate.exists() and any(candidate.iterdir()):
+        number += 1
+        candidate = base.with_name(f"{base.name} ({number})")
+    return candidate
+
+
+def export_scene_pack(
+    scenes: list[tuple[object, AppearanceInterval]],
+    names: list[str],
+    directory: Path,
+    reel_name: str,
+    settings: ExportSettings | None = None,
+    on_progress=None,
+    cancel: threading.Event | None = None,
+) -> list[Path]:
+    """Writes a scene pack: one reel of the scenes, then a clip of each.
+
+    Args:
+        scenes: (source, segment) for each scene, in the order they play.
+            A source is what `cut_segments` takes: a path or a VideoSource.
+        names: Each scene's clip file name (app.video.scenepack.clip_names).
+        directory: The pack's folder, created here.
+        reel_name: The reel's file name inside it.
+        on_progress: Called as (fraction, steps done, steps in all), where
+            the reel's scenes and the clips are one step each.
+        cancel: Set it to stop after the scene being cut. Everything this
+            call wrote is then removed, as a cancelled reel leaves nothing.
+
+    Returns:
+        The reel, then the clips.
+
+    Raises:
+        Cancelled: If `cancel` was set.
+        CutterError: If a source cannot be read or the scenes cannot share
+            one reel.
+    """
+    settings = settings or ExportSettings()
+    total = len(scenes) * 2
+    done = 0
+
+    def step() -> None:
+        nonlocal done
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        done += 1
+        if on_progress is not None:
+            on_progress(done / total, done, total)
+
+    reel: list[Clip] = []
+    for source, segment in scenes:
+        if reel and reel[-1].video is source:
+            reel[-1].segments.append(segment)
+        else:
+            reel.append(Clip(source, [segment]))
+
+    options = dict(
+        video_encoder=settings.video_encoder,
+        audio_encoder=settings.audio_encoder,
+        quality=settings.quality,
+        include_audio=settings.include_audio,
+    )
+    created = not directory.exists()
+    directory.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    try:
+        reel_path = directory / reel_name
+        written.append(reel_path)
+        cut_clips(reel, reel_path, on_segment=lambda *_: step(), **options)
+        for (source, segment), name in zip(scenes, names):
+            clip_path = directory / name
+            written.append(clip_path)
+            cut_segments(source, [segment], clip_path, **options)
+            step()
+    except BaseException:
+        for path in written:
+            path.unlink(missing_ok=True)
+        if created:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        raise
+    return written
+

@@ -461,6 +461,15 @@
         <button class="ghost" id="cutsBtn" style="height:26px;padding:0 10px;font-size:.74rem;margin-top:10px;width:100%">Edit cuts…</button>
       </div>
 
+      <!-- A scene pack: the clearest scenes up to a length, written as one
+           clip per scene and a reel of them all. Empty is a whole reel. -->
+      <div class="field">
+        <label for="pack">Scene pack length</label>
+        <input type="text" id="pack" placeholder="Off — e.g. 1:00"
+               title="Keep only their clearest scenes, up to this long, and export them as a folder of clips plus one reel. Seconds or minutes: 90, 1:30, 2m. Empty for the whole reel.">
+        <p class="footnote" id="packNote" hidden></p>
+      </div>
+
       <div class="field">
         <label>Folder</label>
         <div class="control">
@@ -503,7 +512,7 @@
   const $ = (id) => document.getElementById(id);
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, drawn: { video: null, folder: null } };
+  let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", drawn: { video: null, folder: null } };
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -682,7 +691,7 @@
     state.busy = kind;
     $("actionBtn").textContent = "Cancel";
     $("exportBtn").disabled = true;
-    ["mode","interval","enc","q","fname","fmt","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
+    ["mode","interval","enc","q","fname","fmt","pack","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
     document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
     document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = true);
   }
@@ -692,7 +701,7 @@
     $("actionBtn").textContent = "Scan for people";
     $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
-    ["mode","interval","enc","q","fname","fmt","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
+    ["mode","interval","enc","q","fname","fmt","pack","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
     document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = false);
   }
@@ -708,6 +717,11 @@
   window.onExported = (d) => {
     idle(); setBar(1);
     const left = (d.leftOut || []).map(l => esc(l.video) + " (" + esc(l.reason) + ")");
+    if (d.pack) {
+      status("<b>Scene pack saved.</b> " + d.pack.clips + " clip" + (d.pack.clips === 1 ? "" : "s") +
+        " and a reel of them in " + esc(d.path));
+      return;
+    }
     status("<b>Reel saved.</b> " + esc(d.path) +
       (left.length ? " Left out: " + left.join(", ") + "." : ""));
   };
@@ -1079,6 +1093,7 @@
         (r.indexes.length > 1 ? " Any scene with any of them." : "") +
         (r.repeated ? " Leaves out " + r.repeated +
           " that later videos repeat of footage already in the reel." : "");
+      showPackOfSelection();
       return;
     }
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
@@ -1107,6 +1122,7 @@
       (r.indexes.length > 1 ? " Any scene with any of them." : "");
     showSuggestion();
     refreshCuts();
+    showPackOfSelection();
   });
 
   // Frames from the reel itself, so the numbers above are not the only
@@ -1228,15 +1244,54 @@
     $("cutsReset").disabled = !d.dropped && !d.edited;
     $("pickedCuts").textContent = d.kept;
     $("pickedLen").textContent = d.reel;
+    showPack(d);
     // The footnote describes the plan; once the list has been edited it
     // is the list that gets cut, and saying so is the difference between
     // trusting the reel and checking it afterwards.
-    if (d.dropped || d.edited) {
+    if (d.pack) {
+      $("foot").textContent = "Writes a folder: one clip for each of the " + d.kept +
+        " scene" + (d.kept === 1 ? "" : "s") + ", and a reel of them all (about " + d.pack.about + ").";
+    } else if (d.dropped || d.edited) {
       $("foot").textContent = "Cuts the list as you edited it — " + d.kept +
         " cut" + (d.kept === 1 ? "" : "s") + ", about " + d.reel + " of footage.";
     }
     // Nothing left to cut is not an export.
     $("exportBtn").disabled = !d.kept || !!state.busy;
+  }
+
+  // A pack changes what the export button makes, so it says so.
+  function showPack(d) {
+    const pack = d.pack;
+    $("exportBtn").textContent = pack ? "Export scene pack" : "Export reel";
+    $("packNote").hidden = !pack;
+    if (!pack) return;
+    $("packNote").textContent = pack.scenes + " clearest scene" + (pack.scenes === 1 ? "" : "s") +
+      ", about " + pack.about + " of " + pack.length +
+      (pack.short ? ". There are only " + pack.short + " of them to choose from." : ".");
+  }
+
+  async function setPack() {
+    const d = await pywebview.api.set_scene_pack($("pack").value);
+    if (!d.accepted) {
+      if (d.reason) status("<b>" + esc(d.reason) + "</b>");
+      $("pack").value = state.pack || "";
+      return;
+    }
+    state.pack = d.pack ? d.pack.length : "";
+    $("pack").value = state.pack;
+    if (!$("cuts").hidden) drawCuts(d); else showCutSummary(d);
+  }
+
+  $("pack").addEventListener("change", setPack);
+  $("pack").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("pack").blur(); }
+  });
+
+  // A new selection keeps the pack length, so its rail is the pack's.
+  async function showPackOfSelection() {
+    if (!state.pack) return;
+    const d = await pywebview.api.cut_list();
+    if (d.accepted) showCutSummary(d);
   }
 
   async function openCuts() {
