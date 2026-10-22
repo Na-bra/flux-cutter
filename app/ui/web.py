@@ -43,6 +43,8 @@ from app.ui.worker import (
     available_encoders,
     default_encoder,
     export,
+    export_scene_pack,
+    pack_directory,
     plan_export,
     quality_for,
     scan,
@@ -68,7 +70,7 @@ from app.ui.folder import (
     repeated_seconds,
     scan_folder,
 )
-from app.video import cuts
+from app.video import cuts, scenepack
 from app.video.cutter import (
     DEFAULT_EXPORT_FORMAT,
     EXPORT_FORMATS,
@@ -78,7 +80,7 @@ from app.video.cutter import (
 )
 from app.video.loader import PICKER_PATTERN, SUPPORTED_EXTENSIONS, VideoLoadError
 from app.video.source import SourceMismatch
-from app.video.timeline import format_timestamp
+from app.video.timeline import AppearanceInterval, format_timestamp
 
 DEFAULT_OUTPUT_DIR = Path.home() / "Movies"
 DEFAULT_FILENAME = "reel.mp4"
@@ -248,6 +250,13 @@ class Bridge:
         # changes, because it describes that selection's reel and nothing
         # else; an export cuts this rather than planning again.
         self._cuts: list[cuts.Cut] = []
+        # The list as planned, before a scene pack chose from it: what a
+        # new pack length is chosen from again, rather than from the last
+        # pack's choice (app/video/scenepack.py).
+        self._plan: list[cuts.Cut] = []
+        # The scene pack's length in seconds, or None for a whole reel. It
+        # outlives the selection, so choosing someone else gives their pack.
+        self._pack_seconds: float | None = None
         # Which selection the list belongs to: a cut's video number means
         # a position in the folder in one view and nothing at all in the
         # other, and both views can hold a selection at once.
@@ -708,7 +717,7 @@ class Bridge:
         self._preview_token += 1
         self._cuts_view = "video"
         if not self._selected:
-            self._cuts = []
+            self._set_plan([])
             return {
                 "accepted": True,
                 "indexes": [],
@@ -723,8 +732,9 @@ class Bridge:
         # Edits belong to the reel they were made on, so a new selection
         # starts from the plan rather than carrying the last one's
         # dropped rows onto cuts that have nothing to do with them.
-        self._cuts = cuts.cuts_from_plans([(0, segments)])
-        reel_seconds = sum(s.end_time - s.start_time for s in segments)
+        self._set_plan(cuts.cuts_from_plans([(0, segments)]))
+        planned = len(cuts.kept(self._cuts))
+        reel_seconds = cuts.reel_seconds(self._cuts)
         detections = sum(chosen.detection_count for chosen in self._selected)
 
         self._start_preview()
@@ -733,7 +743,7 @@ class Bridge:
             "accepted": True,
             "token": self._preview_token,
             "indexes": [chosen.index for chosen in self._selected],
-            "cuts": len(segments),
+            "cuts": planned,
             "reel": _clock(reel_seconds),
             # Screen time is summed over the people chosen, so two of them
             # in one shot count twice -- which is why it can exceed the
@@ -744,7 +754,8 @@ class Bridge:
             "filename": self._suggest_filename(self._selected, current_filename),
             "summary": (
                 f"{self._selection_name()} selected - "
-                f"{len(segments)} cuts, about {_clock(reel_seconds)} of footage."
+                f"{planned} cuts, about {_clock(reel_seconds)} of footage"
+                f"{' in its scene pack' if self._pack_seconds is not None else ''}."
             ),
         }
 
@@ -1072,27 +1083,97 @@ class Bridge:
             "planned": len(self._cuts),
             "reel": _clock(cuts.reel_seconds(self._cuts)),
             "edited": any(cut.changed for cut in self._cuts),
+            "pack": self._pack_payload(),
+        }
+
+    def _pack_payload(self) -> dict | None:
+        if self._pack_seconds is None:
+            return None
+        seen, interval = self._faces_by_video()
+        available = scenepack.available_seconds(self._plan, seen, interval)
+        return {
+            "length": _clock(self._pack_seconds),
+            # What the scenes should come out as once cut, which is a
+            # little shorter than they are planned (scenepack.EDGE_LOSS_SECONDS).
+            "about": _clock(scenepack.expected_seconds(self._cuts)),
+            "scenes": len(cuts.kept(self._cuts)),
+            # Short of the length asked for, because there is not that
+            # much of them: said, so a 40s pack asked to be a minute is not
+            # mistaken for a bug.
+            "short": _clock(available) if available < self._pack_seconds - scenepack.MIN_SCENE_SECONDS else None,
         }
 
     def _rebuild_cuts(self) -> None:
         """The plan for whatever is selected now, with nothing edited."""
         if self._cuts_view == "folder":
             chosen = self._cast_selected
-            self._cuts = (
+            self._set_plan(
                 cuts.cuts_from_plans(plan_cast_by_video(self._folder, chosen))
                 if chosen is not None and self._folder is not None
                 else []
             )
             return
         if self._scan_result is None or not self._selected:
-            self._cuts = []
+            self._set_plan([])
             return
         _, segments = plan_export(
             self._selected,
             video_duration=self._scan_result.video_duration,
             sample_interval=self._scan_result.sample_interval,
         )
-        self._cuts = cuts.cuts_from_plans([(0, segments)])
+        self._set_plan(cuts.cuts_from_plans([(0, segments)]))
+
+    def _set_plan(self, planned: list[cuts.Cut]) -> None:
+        """Takes a new plan, and the scene pack chosen from it if one is on."""
+        self._plan = planned
+        self._cuts = self._packed(planned)
+
+    def _packed(self, planned: list[cuts.Cut]) -> list[cuts.Cut]:
+        if self._pack_seconds is None or not planned:
+            return planned
+        seen, interval = self._faces_by_video()
+        return scenepack.choose(planned, seen, interval, self._pack_seconds)
+
+    def _faces_by_video(self) -> tuple[dict, dict]:
+        """The selection's faces and sampling interval, by cut video number."""
+        if self._cuts_view == "folder":
+            chosen = self._cast_selected
+            if chosen is None or self._folder is None:
+                return {}, {}
+            cards: dict[int, list] = {}
+            for video, card in chosen.appearances:
+                cards.setdefault(video, []).append(card)
+            return (
+                {video: scenepack.faces_seen(group) for video, group in cards.items()},
+                {video: self._folder.videos[video].sample_interval for video in cards},
+            )
+        if self._scan_result is None:
+            return {}, {}
+        return (
+            {0: scenepack.faces_seen(self._selected)},
+            {0: self._scan_result.sample_interval},
+        )
+
+    def set_scene_pack(self, length: str) -> dict:
+        """Turns the scene pack on at a length, or off with an empty one.
+
+        The pack is chosen from the plan, not from the list as it stands,
+        so a second length is a fresh choice rather than a choice from the
+        first one's leftovers. Edits made to the list are given up for the
+        same reason, as "Back to the plan" gives them up.
+        """
+        if self._busy():
+            return {"accepted": False, "reason": "Wait for this to finish first."}
+        try:
+            seconds = scenepack.parse_length(length or "")
+        except ValueError:
+            return {
+                "accepted": False,
+                "reason": "A scene pack length is seconds or minutes, like 90 or 1:30.",
+            }
+        self._pack_seconds = seconds
+        self._cuts = self._packed(self._plan)
+        return self._cut_payload()
 
     def _cut_segments(self) -> list:
         """One video's cut list as segments to encode.
@@ -1164,10 +1245,62 @@ class Bridge:
         )
         if export_format in EXPORT_FORMATS:
             self._format = export_format
+        if self._pack_seconds is not None:
+            return self._start_pack(folder, filename, settings)
         self._start(
             self._export_worker, output_path(folder, filename, self._format), settings, segments
         )
         return {"started": True}
+
+    def _start_pack(self, folder: str, filename: str, settings: ExportSettings) -> dict:
+        """Starts writing the scene pack the cut list now holds.
+
+        The pack is a folder named as the reel would have been, holding the
+        reel and one clip per scene. Its scenes are read from the list here,
+        before the worker starts, as an ordinary export reads its cuts.
+        """
+        reel = output_path(folder, filename, self._format)
+        folder_view = self._cuts_view == "folder"
+        scenes = []
+        for cut in cuts.kept(self._cuts):
+            result = self._scan_for(cut.video)
+            if result is None:
+                return {"started": False, "reason": "A video in this pack is no longer open."}
+            scenes.append(
+                (result.source or result.video_path, AppearanceInterval(cut.start, cut.end))
+            )
+        videos = (
+            [result.video_path.name for result in self._folder.videos]
+            if folder_view and self._folder is not None
+            else None
+        )
+        names = scenepack.clip_names(reel.stem, self._format, self._cuts, videos)
+        directory = pack_directory(reel.with_suffix(""))
+        self._start(self._pack_worker, scenes, names, directory, reel.name, settings)
+        return {"started": True}
+
+    def _pack_worker(self, scenes, names, directory: Path, reel_name: str, settings) -> None:
+        def report(fraction: float, done: int, total: int) -> None:
+            self._emit("onExportProgress", {"fraction": fraction, "done": done, "total": total})
+
+        try:
+            export_scene_pack(
+                scenes,
+                names,
+                directory,
+                reel_name,
+                settings=settings,
+                on_progress=report,
+                cancel=self._cancel,
+            )
+        except Cancelled:
+            self._emit("onExportCancelled")
+            return
+        except Exception as error:
+            self._emit("onFailed", {"title": "Scene pack failed", "detail": str(error)})
+            return
+
+        self._emit("onExported", {"path": str(directory), "pack": {"clips": len(names)}})
 
     def _ensure_source_available(self) -> bool:
         """Makes sure the scanned footage can still be read, asking if not.
@@ -1423,13 +1556,13 @@ class Bridge:
         else:
             self._cast_chosen = sorted(self._cast_chosen + [clicked], key=lambda p: p.index)
         if not self._cast_chosen:
-            self._cuts = []
+            self._set_plan([])
             return {"accepted": True, "indexes": [], "summary": "Choose a person to export."}
 
         chosen = self._cast_selected
         plans = plan_cast_by_video(self._folder, chosen)
-        self._cuts = cuts.cuts_from_plans(plans)
-        planned = len(self._cuts)
+        self._set_plan(cuts.cuts_from_plans(plans))
+        planned = len(cuts.kept(self._cuts))
         reel = cuts.reel_seconds(self._cuts)
         repeated = repeated_seconds(self._folder, chosen)
         self._start_cast_preview()
@@ -1647,6 +1780,8 @@ class Bridge:
         )
         if export_format in EXPORT_FORMATS:
             self._format = export_format
+        if self._pack_seconds is not None:
+            return self._start_pack(folder, filename, settings)
         self._start(
             self._folder_export_worker, output_path(folder, filename, self._format), settings, plans
         )

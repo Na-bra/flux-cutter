@@ -1843,3 +1843,109 @@ def test_the_export_is_written_in_the_format_the_window_shows(bridge, monkeypatc
 def test_a_format_that_is_not_offered_is_refused(bridge):
     assert bridge.set_export_format("webm", "reel.mp4") == {"accepted": False}
     assert [f["id"] for f in bridge.initial_state()["formats"]] == ["mp4", "mkv", "mov"]
+
+
+# ------------------------------------------------------------ scene pack
+
+from app.video import scenepack  # noqa: E402
+
+
+def test_a_scene_pack_keeps_scenes_up_to_the_length_and_says_so(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    whole = bridge.cut_list()
+
+    packed = bridge.set_scene_pack("0:08")
+
+    assert packed["accepted"] is True
+    assert packed["pack"]["length"] == "0:08"
+    assert packed["kept"] < whole["kept"]
+    assert packed["pack"]["scenes"] == packed["kept"]
+    # Never over; under by no more than what is too short to be a scene.
+    about = scenepack.expected_seconds(bridge._cuts)
+    assert 8.0 - scenepack.MIN_SCENE_SECONDS < about <= 8.0
+    assert packed["pack"]["about"] == web._clock(about)
+    # The rows stay, dropped, so a scene can be put back by hand.
+    assert len(packed["cuts"]) == len(whole["cuts"])
+
+
+def test_a_pack_longer_than_the_footage_says_how_much_there_is(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+
+    packed = bridge.set_scene_pack("10:00")
+
+    assert packed["dropped"] == 0
+    # Said as the length it would come out, the same as "about".
+    assert packed["pack"]["short"] == packed["pack"]["about"]
+
+
+def test_the_pack_length_carries_over_to_the_next_person_chosen(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    bridge.set_scene_pack("8")
+
+    chosen = bridge.select_person(1, "")
+
+    assert bridge.cut_list()["pack"]["length"] == "0:08"
+    assert chosen["cuts"] == bridge.cut_list()["kept"]
+
+
+def test_an_empty_length_turns_the_pack_off(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    whole = bridge.cut_list()
+    bridge.set_scene_pack("8")
+
+    off = bridge.set_scene_pack("")
+
+    assert off["pack"] is None
+    assert off["kept"] == whole["kept"] and off["reel"] == whole["reel"]
+
+
+def test_a_second_length_is_chosen_from_the_plan_not_the_first_pack(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    # Four 3s scenes: 4s keeps one (the 1s left is too short to fill).
+    assert bridge.set_scene_pack("4")["kept"] == 1
+
+    longer = bridge.set_scene_pack("9")
+
+    assert sum(c.seconds for c in bridge._cuts if not c.dropped) == pytest.approx(9.0)
+    assert longer["kept"] == 3
+
+
+def test_what_is_not_a_length_is_refused_and_changes_nothing(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    before = bridge.cut_list()
+
+    answer = bridge.set_scene_pack("a minute")
+
+    assert answer["accepted"] is False and "1:30" in answer["reason"]
+    assert bridge.cut_list() == before
+
+
+def test_exporting_a_pack_writes_a_folder_of_clips_and_a_reel(bridge, monkeypatch, tmp_path):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    bridge.set_scene_pack("8")
+
+    answer = bridge.start_export(str(tmp_path), "ben.mp4", "libx264", "Standard", "mp4")
+
+    assert answer["started"] is True
+    target, (scenes, names, directory, reel_name, _settings) = started[0]
+    assert target == bridge._pack_worker
+    assert directory == tmp_path / "ben" and reel_name == "ben.mp4"
+    assert len(scenes) == len(names) == bridge.cut_list()["kept"]
+    assert names[0].startswith("ben 001 (") and names[0].endswith(").mp4")
+    planned = sum(segment.end_time - segment.start_time for _, segment in scenes)
+    about = planned - len(scenes) * scenepack.EDGE_LOSS_SECONDS
+    assert 8.0 - scenepack.MIN_SCENE_SECONDS < about <= 8.0
+
+
+def test_without_a_pack_the_export_is_still_one_reel(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(target))
+
+    bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
+
+    assert started == [bridge._export_worker]

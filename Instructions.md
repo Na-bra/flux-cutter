@@ -4166,3 +4166,76 @@ first time it is opened, and corrections made on the old scan stay with
 that scan. Live action's margin is untouched (0.0, its own mode), and so
 is every live-action number in `evaluation/baseline.json`; animation's two
 entries there are replaced by this run's.
+
+## 56. Scene packs (`app/video/scenepack.py`)
+
+A reel answers "everything this person is in"; a scene pack answers "this
+long of them, at their best" -- one clip per scene, which is what an editor
+works from, and a reel of the same scenes. Window only, as asked.
+
+### A choice from the cut list, not a second planner
+
+The scenes are the cuts the reel would have had (§41). A pack keeps the
+clearest and drops the rest, so the cut list shows the choice and every
+edit there reaches the export unchanged. The window keeps the plan beside
+the list (`_plan`), so a second length is chosen from the plan, not from
+the first pack's leftovers, and a new selection gets its own pack at the
+same length.
+
+### Clearest
+
+A scene scores the mean of the person's faces in it under the measure
+that picks a card's picture (`_observation_quality`: confidence, size,
+sharpness, likeness to the card), times the share of the scene they are
+seen in -- padding and bridging put the other side of every conversation
+into a reel (§31), and a scene that is mostly that is a poor scene of
+them however good its one face. Scenes go in best first, whole while they
+fit; the first that does not is trimmed around its best face to fill the
+length. Less than MIN_SCENE_SECONDS (2s) left is not filled; a scene they
+are never seen in is never chosen.
+
+### The length is the length written
+
+Planned seconds are not written seconds. The cutter trims slivers of the
+neighbouring shot at both edges (§37) and ends on a whole frame:
+
+    test_3, lead, 1:00 pack      planned   written
+    before the allowance          60.0 s    52.9 s   (13 scenes, -0.17..-0.87 s each, mean -0.55)
+    with EDGE_LOSS_SECONDS 0.55   68.0 s    60.02 s  (14 scenes)
+    animation, lead, 0:30 pack    32.0 s    30.40 s  (4 scenes; not the video it was measured on)
+
+So each scene is counted 0.55s short of its plan, and the window says
+"about" the length it will come out.
+
+### Writing it
+
+`worker.export_scene_pack` cuts the reel (`cut_clips`, so a folder's pack
+spans videos like a folder reel), then each scene alone. A pack goes into
+a folder named as the reel would have been; a folder already holding files
+is never written into (`pack_directory` takes `name (2)`), since two packs'
+clips would mix past telling apart. Cancelling or failing removes what the
+run wrote, as a cancelled reel leaves nothing.
+
+In the middle frame of each of the 1:00 pack's 14 clips the lead is on
+screen in 13, mostly in close or medium shot; the fourteenth is the
+reverse shot of his conversation, the padding a reel has too.
+
+
+### Driven in the window
+
+Opened for real on test.mp4 (pywebview, driven from a script, looked at in
+screenshots): the field sits in the rail without overflow at 1280 wide;
+typing 0:20 turned the button into "Export scene pack"; a length of "soon"
+was refused with the box put back; the export wrote the reel and three
+numbered clips. It found three things the bridge's tests had not:
+
+- **The pack's footnote outlived the pack.** Emptying the box left "Writes
+  a folder…" under a button that now exported a reel. The page keeps the
+  plan's own footnote (`state.planFoot`) and puts it back.
+- **Two lengths for one pack.** The rail said "reel length 0:14" (planned)
+  beside "about 0:12" (what it comes out). With a pack on, the rail now
+  says "about".
+- **"About 0:12 … only 0:14 of them".** The shortfall was measured as
+  planned seconds and the pack as cut seconds; `available_seconds` now
+  takes the edge loss off too, and the note reads "3 scenes, all there is
+  of them: about 0:12, short of 0:20".
