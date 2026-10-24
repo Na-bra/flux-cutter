@@ -1848,69 +1848,73 @@ def test_a_format_that_is_not_offered_is_refused(bridge):
 # ------------------------------------------------------------ scene pack
 
 from app.video import scenepack  # noqa: E402
+from app.video.shots import Shot  # noqa: E402
+
+# A shot around each of APPEARANCES' four moments (10-12s, 30-32s ...), and
+# others between them: each moment is a 2.5s piece of whole shot.
+CUTS_AT = [10, 13, 30, 33, 50, 53, 70, 73]
 
 
-def test_a_scene_pack_keeps_scenes_up_to_the_length_and_says_so(bridge, monkeypatch):
+def fake_shots(_path=None, _interval=None):
+    edges = [0.0, *map(float, CUTS_AT), 120.0]
+    return [
+        Shot(index=i, start_time=edges[i], end_time=edges[i + 1],
+             earliest_start=max(0.0, edges[i] - 0.5) if i else 0.0)
+        for i in range(len(edges) - 1)
+    ]
+
+
+@pytest.fixture
+def with_shots(monkeypatch):
+    monkeypatch.setattr(web, "known_shots", fake_shots)
+
+
+def test_a_scene_pack_is_whole_shots_about_the_length_asked(bridge, monkeypatch, with_shots):
     picked(bridge, monkeypatch)
-    whole = bridge.cut_list()
 
-    packed = bridge.set_scene_pack("0:08")
+    packed = bridge.set_scene_pack("0:05")
 
-    assert packed["accepted"] is True
-    assert packed["pack"]["length"] == "0:08"
-    assert packed["kept"] < whole["kept"]
-    assert packed["pack"]["scenes"] == packed["kept"]
-    # Never over; under by no more than what is too short to be a scene.
-    about = scenepack.expected_seconds(bridge._cuts)
-    assert 8.0 - scenepack.MIN_SCENE_SECONDS < about <= 8.0
-    assert packed["pack"]["about"] == web._clock(about)
-    # The rows stay, dropped, so a scene can be put back by hand.
-    assert len(packed["cuts"]) == len(whole["cuts"])
+    assert packed["accepted"] is True and packed["pack"]["length"] == "0:05"
+    assert packed["pack"]["pieces"] == packed["kept"] == 2
+    kept_cuts = [c for c in bridge._cuts if not c.dropped]
+    # Each piece is a shot from its first sample to its last.
+    assert {(c.start, c.end) for c in kept_cuts} <= {(10.0, 12.5), (30.0, 32.5), (50.0, 52.5), (70.0, 72.5)}
+    assert abs(scenepack.expected_seconds(bridge._cuts) - 5) <= scenepack.slack(5)
+    # The pieces not taken are rows too, dropped, to swap in by hand.
+    assert len(packed["cuts"]) == 4 and packed["dropped"] == 2
 
 
-def test_a_pack_longer_than_the_footage_says_how_much_there_is(bridge, monkeypatch):
+def test_a_pack_longer_than_the_footage_says_how_much_there_is(bridge, monkeypatch, with_shots):
     picked(bridge, monkeypatch)
 
     packed = bridge.set_scene_pack("10:00")
 
     assert packed["dropped"] == 0
-    # Said as the length it would come out, the same as "about".
     assert packed["pack"]["short"] == packed["pack"]["about"]
 
 
-def test_the_pack_length_carries_over_to_the_next_person_chosen(bridge, monkeypatch):
+def test_the_pack_length_carries_over_to_the_next_person_chosen(bridge, monkeypatch, with_shots):
     picked(bridge, monkeypatch)
-    bridge.set_scene_pack("8")
+    bridge.set_scene_pack("5")
 
     chosen = bridge.select_person(1, "")
 
-    assert bridge.cut_list()["pack"]["length"] == "0:08"
-    assert chosen["cuts"] == bridge.cut_list()["kept"]
+    assert bridge.cut_list()["pack"]["length"] == "0:05"
+    assert chosen["cuts"] == bridge.cut_list()["kept"] == 2
 
 
-def test_an_empty_length_turns_the_pack_off(bridge, monkeypatch):
+def test_an_empty_length_turns_the_pack_off(bridge, monkeypatch, with_shots):
     picked(bridge, monkeypatch)
     whole = bridge.cut_list()
-    bridge.set_scene_pack("8")
+    bridge.set_scene_pack("5")
 
     off = bridge.set_scene_pack("")
 
     assert off["pack"] is None
-    assert off["kept"] == whole["kept"] and off["reel"] == whole["reel"]
+    assert off["cuts"] == whole["cuts"] and off["reel"] == whole["reel"]
 
 
-def test_a_second_length_is_chosen_from_the_plan_not_the_first_pack(bridge, monkeypatch):
-    picked(bridge, monkeypatch)
-    # Four 3s scenes: 4s keeps one (the 1s left is too short to fill).
-    assert bridge.set_scene_pack("4")["kept"] == 1
-
-    longer = bridge.set_scene_pack("9")
-
-    assert sum(c.seconds for c in bridge._cuts if not c.dropped) == pytest.approx(9.0)
-    assert longer["kept"] == 3
-
-
-def test_what_is_not_a_length_is_refused_and_changes_nothing(bridge, monkeypatch):
+def test_what_is_not_a_length_is_refused_and_changes_nothing(bridge, monkeypatch, with_shots):
     picked(bridge, monkeypatch)
     before = bridge.cut_list()
 
@@ -1920,24 +1924,73 @@ def test_what_is_not_a_length_is_refused_and_changes_nothing(bridge, monkeypatch
     assert bridge.cut_list() == before
 
 
-def test_exporting_a_pack_writes_a_folder_of_clips_and_a_reel(bridge, monkeypatch, tmp_path):
+def test_a_pack_exports_as_one_video_of_its_pieces(bridge, monkeypatch, with_shots):
     picked(bridge, monkeypatch)
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     started = []
     monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
-    bridge.set_scene_pack("8")
+    bridge.set_scene_pack("5")
 
-    answer = bridge.start_export(str(tmp_path), "ben.mp4", "libx264", "Standard", "mp4")
+    answer = bridge.start_export("/tmp", "ben.mp4", "libx264", "Standard", "mp4")
 
     assert answer["started"] is True
-    target, (scenes, names, directory, reel_name, _settings) = started[0]
-    assert target == bridge._pack_worker
-    assert directory == tmp_path / "ben" and reel_name == "ben.mp4"
-    assert len(scenes) == len(names) == bridge.cut_list()["kept"]
-    assert names[0].startswith("ben 001 (") and names[0].endswith(").mp4")
-    planned = sum(segment.end_time - segment.start_time for _, segment in scenes)
-    about = planned - len(scenes) * scenepack.EDGE_LOSS_SECONDS
-    assert 8.0 - scenepack.MIN_SCENE_SECONDS < about <= 8.0
+    target, (path, _settings, segments) = started[0]
+    assert target == bridge._export_worker and path.name == "ben.mp4"
+    assert [(s.start_time, s.end_time) for s in segments] == [
+        (c.start, c.end) for c in bridge._cuts if not c.dropped
+    ]
+
+
+def test_without_shots_the_pack_waits_and_finds_them_in_the_background(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+
+    waiting = bridge.set_scene_pack("5")
+
+    assert waiting["pack"] == {"length": "0:05", "waiting": True}
+    assert started and started[0][0] == bridge._shots_worker
+    assert bridge.start_export("/tmp", "ben.mp4", "libx264", "Standard")["started"] is False
+
+    # The job finds them; the pack follows.
+    monkeypatch.setattr(web, "find_shots", lambda result, **_: fake_shots())
+    bridge._shots_worker(*started[0][1])
+
+    ready = bridge.window.emitted("onPackReady")
+    assert ready["pack"]["pieces"] == 2 and "waiting" not in ready["pack"]
+
+
+def test_shots_found_this_session_are_used_even_if_they_could_not_be_kept(bridge, monkeypatch):
+    """A video moved since its scan cannot be keyed on disk; its pack must
+    not wait for shots already found."""
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(web, "find_shots", lambda result, **_: fake_shots())
+
+    bridge.set_scene_pack("5")
+    again = bridge.set_scene_pack("8")
+
+    assert "waiting" not in again["pack"] and again["pack"]["pieces"] >= 2
+
+
+def test_cancelling_the_search_for_shots_leaves_no_pack(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    bridge.set_scene_pack("5")
+
+    def cancelled(result, **_):
+        raise web.Cancelled()
+
+    monkeypatch.setattr(web, "find_shots", cancelled)
+    bridge._shots_worker(*started[0])
+
+    ready = bridge.window.emitted("onPackReady")
+    assert ready["cancelled"] is True and ready["pack"] is None
+    assert bridge.cut_list()["pack"] is None
 
 
 def test_without_a_pack_the_export_is_still_one_reel(bridge, monkeypatch):
@@ -1949,3 +2002,40 @@ def test_without_a_pack_the_export_is_still_one_reel(bridge, monkeypatch):
     bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
 
     assert started == [bridge._export_worker]
+
+
+def test_the_wait_for_shots_is_announced_before_it_starts_whatever_starts_it(bridge, monkeypatch):
+    """Found in review: a folder edit could start the search with nothing on
+    the page saying so. Now the bridge says so itself, first."""
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    order = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: order.append("started"))
+    monkeypatch.setattr(bridge, "_emit", lambda name, payload=None: order.append(name))
+
+    bridge.set_scene_pack("5")
+    bridge.select_person(1, "")  # a new selection, pack still on
+
+    assert order[:2] == ["onPackWaiting", "started"]
+    assert order.count("onPackWaiting") == order.count("started") == 2
+
+
+def test_two_meaning_two_minutes_is_refused_with_a_hint(bridge, monkeypatch, with_shots):
+    picked(bridge, monkeypatch)
+
+    answer = bridge.set_scene_pack("2")
+
+    assert answer["accepted"] is False and "2:00" in answer["reason"]
+    assert bridge.cut_list()["pack"] is None
+
+
+def test_a_video_with_no_shots_at_all_does_not_leave_the_pack_waiting(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(web, "find_shots", lambda result, **_: [])
+
+    answer = bridge.set_scene_pack("5")
+
+    assert "waiting" not in bridge.cut_list()["pack"]
+    assert answer["accepted"] is True

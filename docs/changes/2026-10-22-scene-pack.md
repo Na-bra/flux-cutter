@@ -1,6 +1,6 @@
 # Scene packs: someone's clearest scenes, as clips, at a length you choose
 
-**Status:** on branch `feature/scene-pack`, waiting for you to merge.
+**Status:** shipped in v1.16.0, then replaced: a scene pack is now one video of whole shots. See [2026-10-24](2026-10-24-scene-pack-one-video.md).
 
 ## What it does
 

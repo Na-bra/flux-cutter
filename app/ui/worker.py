@@ -50,7 +50,8 @@ from app.scans import find as find_scan
 from app.scans import save as save_scan
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.modes import DEFAULT_MODE, get_mode
-from app.video.cutter import Clip, cut_clips, cut_segments
+from app.video.cutter import cut_segments
+from app.video.shots import ShotDetector, keep_shots, kept_shots
 from app.video.source import VideoSource
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
@@ -59,7 +60,7 @@ from app.video.export import (
     merge_for_export,
 )
 from app.video.frames import extract_frames
-from app.video.loader import get_video_info, use_threaded_decoding
+from app.video.loader import get_video_info, load_video, use_threaded_decoding
 from app.video.repeats import collector_for, fingerprint_dir, keep_collected
 from app.video.timeline import AppearanceInterval, build_appearance_intervals
 
@@ -272,6 +273,10 @@ class ScanResult:
     reused: bool = False
     # How long the original scan took, when this was reused.
     original_seconds: float = 0.0
+    # Where the camera cuts (app/video/shots.py), for scene packs: found by
+    # this scan, or kept from an earlier one of the same footage. None when
+    # not known yet -- `find_shots` finds them.
+    shots: list | None = None
 
     def close(self) -> None:
         """Releases the footage handle. Safe to call more than once."""
@@ -403,7 +408,7 @@ def scan(
     else:
         try:
             prints = collector_for(video_path, fingerprint_dir()) if fingerprint else None
-            result, duration, resolved_min_detections = _scan_footage(
+            result, duration, resolved_min_detections, shots = _scan_footage(
                 source, settings, cancel, on_progress, prints
             )
         except BaseException:
@@ -452,6 +457,13 @@ def scan(
         source=source,
         reused=kept is not None,
         original_seconds=scan.scan_seconds,
+        shots=(
+            shots
+            if kept is None
+            else kept_shots(video_path, settings.sample_interval)
+            if _same_footage(source, video_path)
+            else None
+        ),
     )
 
 
@@ -591,13 +603,19 @@ def _scan_footage(source, settings, cancel, on_progress, prints=None):
         )
 
         total_frames = int(duration / settings.sample_interval) if duration else 0
-        frames = _tracked_frames(
-            extract_frames(
-                container, sample_interval=settings.sample_interval, watch=prints
+        # Where the camera cuts, from the frames the scan reads anyway: a
+        # scene pack is built from whole shots (app/video/scenepack.py).
+        shots = ShotDetector()
+        frames = _shot_fed(
+            _tracked_frames(
+                extract_frames(
+                    container, sample_interval=settings.sample_interval, watch=prints
+                ),
+                total_frames,
+                cancel,
+                on_progress,
             ),
-            total_frames,
-            cancel,
-            on_progress,
+            shots,
         )
 
         result = run_identity_pipeline(
@@ -622,7 +640,80 @@ def _scan_footage(source, settings, cancel, on_progress, prints=None):
     if not duration:
         duration = result.last_timestamp
 
-    return result, duration, resolved_min_detections
+    # Reached only by a scan that read the whole video: a cancelled one
+    # raised above, so no half-found list of shots is ever kept. Returned as
+    # well as kept, so a video moved mid-scan, or a scan folder that cannot
+    # be written, does not cost the first pack a second read.
+    found = shots.finish(duration)
+    if _same_footage(source, source.path):
+        keep_shots(source.path, settings.sample_interval, found)
+
+    return result, duration, resolved_min_detections, found
+
+
+def _same_footage(source, path: Path) -> bool:
+    """Whether the file at `path` is still the footage `source` reads.
+
+    Kept shots are keyed by the path, but a held descriptor follows the
+    file, not the name: a different video saved under the same name since
+    the scan would otherwise lend its shots to this one, or be given this
+    one's. Checked the way `_preview_container` checks before reading.
+    """
+    if source is None:
+        return True
+    try:
+        return path.is_file() and path.stat().st_size == source.size
+    except OSError:
+        return False
+
+
+def _shot_fed(frames, detector: ShotDetector):
+    """Passes the scan's samples through, showing each to the shot detector."""
+    for timestamp, frame in frames:
+        detector.add(timestamp, frame)
+        yield timestamp, frame
+
+
+def find_shots(
+    scan_result: "ScanResult", on_progress=None, cancel: threading.Event | None = None
+) -> list:
+    """A scanned video's shots: kept from its scan, or found now and kept.
+
+    Found now only for a scan kept from before shots were recorded, or one
+    whose file has changed under its name since. That
+    reads the video once more at the scan's own interval -- about half a
+    minute for 22 minutes of 720p -- and is never needed again.
+
+    Raises:
+        Cancelled: If `cancel` was set while reading.
+    """
+    known = known_shots(scan_result)
+    if known is not None:
+        return known
+    interval = scan_result.sample_interval
+    detector = ShotDetector()
+    source = scan_result.source
+    with (source.open() if source is not None else load_video(scan_result.video_path)) as container:
+        duration = scan_result.video_duration
+        total = int(duration / interval) if duration else 0
+        for timestamp, frame in _tracked_frames(
+            extract_frames(container, sample_interval=interval), total, cancel, on_progress
+        ):
+            detector.add(timestamp, frame)
+    shots = detector.finish(scan_result.video_duration)
+    if _same_footage(source, scan_result.video_path):
+        keep_shots(scan_result.video_path, interval, shots)
+    return shots
+
+
+def known_shots(scan_result: "ScanResult") -> list | None:
+    """A scanned video's shots if they are known without reading it: carried
+    by the scan, or kept for the same footage. None if they must be found."""
+    if scan_result.shots is not None:
+        return scan_result.shots
+    if not _same_footage(scan_result.source, scan_result.video_path):
+        return None
+    return kept_shots(scan_result.video_path, scan_result.sample_interval)
 
 
 def combined_group(people: list[Person]) -> FaceIdentityGroup:
@@ -980,97 +1071,3 @@ def export(
         include_audio=settings.include_audio,
         on_segment=report,
     )
-
-
-def pack_directory(base: Path) -> Path:
-    """Where a scene pack goes: `base`, or the first free "base (2)" after it.
-
-    A pack is a folder of clips named by scene, so writing a second pack
-    into the first one's folder would not replace it -- it would leave a
-    mix of both that no one could tell apart. An empty folder is fine.
-    """
-    candidate, number = base, 1
-    while candidate.exists() and any(candidate.iterdir()):
-        number += 1
-        candidate = base.with_name(f"{base.name} ({number})")
-    return candidate
-
-
-def export_scene_pack(
-    scenes: list[tuple[object, AppearanceInterval]],
-    names: list[str],
-    directory: Path,
-    reel_name: str,
-    settings: ExportSettings | None = None,
-    on_progress=None,
-    cancel: threading.Event | None = None,
-) -> list[Path]:
-    """Writes a scene pack: one reel of the scenes, then a clip of each.
-
-    Args:
-        scenes: (source, segment) for each scene, in the order they play.
-            A source is what `cut_segments` takes: a path or a VideoSource.
-        names: Each scene's clip file name (app.video.scenepack.clip_names).
-        directory: The pack's folder, created here.
-        reel_name: The reel's file name inside it.
-        on_progress: Called as (fraction, steps done, steps in all), where
-            the reel's scenes and the clips are one step each.
-        cancel: Set it to stop after the scene being cut. Everything this
-            call wrote is then removed, as a cancelled reel leaves nothing.
-
-    Returns:
-        The reel, then the clips.
-
-    Raises:
-        Cancelled: If `cancel` was set.
-        CutterError: If a source cannot be read or the scenes cannot share
-            one reel.
-    """
-    settings = settings or ExportSettings()
-    total = len(scenes) * 2
-    done = 0
-
-    def step() -> None:
-        nonlocal done
-        if cancel is not None and cancel.is_set():
-            raise Cancelled()
-        done += 1
-        if on_progress is not None:
-            on_progress(done / total, done, total)
-
-    reel: list[Clip] = []
-    for source, segment in scenes:
-        if reel and reel[-1].video is source:
-            reel[-1].segments.append(segment)
-        else:
-            reel.append(Clip(source, [segment]))
-
-    options = dict(
-        video_encoder=settings.video_encoder,
-        audio_encoder=settings.audio_encoder,
-        quality=settings.quality,
-        include_audio=settings.include_audio,
-    )
-    created = not directory.exists()
-    directory.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-    try:
-        reel_path = directory / reel_name
-        written.append(reel_path)
-        cut_clips(reel, reel_path, on_segment=lambda *_: step(), **options)
-        for (source, segment), name in zip(scenes, names):
-            clip_path = directory / name
-            written.append(clip_path)
-            cut_segments(source, [segment], clip_path, **options)
-            step()
-    except BaseException:
-        for path in written:
-            path.unlink(missing_ok=True)
-        if created:
-            try:
-                directory.rmdir()
-            except OSError:
-                pass
-        raise
-    return written
-
