@@ -1,40 +1,62 @@
-"""A scene pack: someone's clearest scenes, up to a length the user chooses.
+"""A scene pack: one video of someone's clearest shots, about as long as asked.
 
-A reel is everything a person is in. A scene pack is the opposite question
--- "give me a minute of Ben" -- answered with the scenes that show them
-best, delivered as one file per scene (what an editor works from) and one
-reel of the same scenes.
+A scene pack is what an editor starts from when making a short for TikTok
+or YouTube: one continuous video of one character, which they then cut to
+music and put their own transitions on. So it has to be raw material that
+cuts cleanly -- not a reel, which keeps everything a person is in, and not
+a folder of three-second clips.
 
-It is a cut list, not a second planner. The scenes are the cuts the reel
-would have had (app/video/cuts.py); a pack keeps the clearest of them and
-drops the rest, so the window can show the choice in the same list, and
-whatever is dropped or nudged there afterwards is what gets exported.
+What makes it cut cleanly is that it is made of whole shots. Every piece
+starts on the show's own cut into a shot and ends on its cut out of one, so
+a join in the pack is a join the show already made, and an editor's cut
+can land on any of them. Back-to-back shots the character holds are kept
+together as one piece -- a conversation plays as the show edited it --
+which also keeps the pack from strobing through a flash of every face.
 
-Like the cut list, this holds no footage and opens nothing: a scene's
-clarity comes from the faces the scan already measured.
+Shots come from app/video/shots.py, found from the scan's own samples. A
+shot qualifies when the character is in most of it; a run of qualifying
+shots is a piece; pieces are taken clearest first until the pack is about
+the length asked for, and played in story order. Plain cuts, no dissolves:
+the transitions are the editor's to make.
+
+Like the cut list it fills (app/video/cuts.py), this holds no footage and
+opens nothing: clarity comes from the faces the scan already measured.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from pathlib import Path
+from dataclasses import dataclass
 
 from app.faces.grouper import _observation_quality
 from app.video.cuts import Cut, kept
 
-# Below this, what is left of the length asked for is not filled. A scene
-# trimmed to a second is a flash, not a scene; the pack comes out up to
-# this much short instead.
-MIN_SCENE_SECONDS = 2.0
+# A shot counts as theirs when they are seen in at least this share of its
+# samples. Below it the shot is mostly someone else -- the other side of the
+# conversation -- which is the footage an editor has to cut around.
+MIN_PRESENCE = 0.5
 
-# What the encode takes off each scene, on average. The cutter leaves out
-# up to 12 frames of the neighbouring shot at either edge (cutter.py,
-# SLIVER_FRAMES) and ends on a whole frame, and on the test episode's
-# 60-second pack that was 0.17-0.87s a scene, 0.55s on average: 13 scenes
-# came out 52.9s. So each scene is counted as this much shorter than
-# planned, and the pack is planned long by that much to come out the
-# length asked for.
-EDGE_LOSS_SECONDS = 0.55
+# A piece shorter than this is a flash, not a shot anyone can use.
+MIN_PIECE_SECONDS = 1.5
+
+# Pieces at least this long are taken before any shorter one, clearest
+# first within each. Clearest-first alone favours quick close-ups: a 2:00
+# pack of test_3's lead was 28 pieces, 12 of them 3s or under, which plays
+# as a strobe. Taking these first made it 17 pieces, median 5.0s, none
+# under 3s, for 6% of clarity (0.494 -> 0.464). Shorter pieces still fill
+# a pack the longer ones cannot -- someone with little screen time.
+PREFERRED_PIECE_SECONDS = 3.0
+
+# How far from the length asked the pack may land, to end on a whole shot
+# rather than mid-shot: this many seconds, or this share of the length if
+# that is more. A 2:00 pack comes out between 1:54 and 2:06.
+SLACK_SECONDS = 2.0
+SLACK_SHARE = 0.05
+
+# What the encode takes off each piece: it ends on a whole frame, and its
+# sliver trimming (cutter.py) can still take a frame or two where a shot
+# boundary was found late. Measured on whole-shot pieces; see
+# Instructions.md 57.
+EDGE_LOSS_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -46,11 +68,52 @@ class Seen:
 
 
 @dataclass(frozen=True)
-class Clarity:
-    """How well a scene shows the person, and its clearest moment."""
+class ShotScore:
+    """One shot, as far as a pack is concerned.
 
+    `start` and `end` are the part of it known to be this shot: from its
+    first sample to its last. The camera cut lies somewhere in the sampling
+    interval either side, and a piece leaves that interval out rather than
+    risk a frame of the neighbouring shot.
+    """
+
+    start: float
+    end: float
+    presence: float
     score: float
     best: float | None
+
+    @property
+    def seconds(self) -> float:
+        return self.end - self.start
+
+
+@dataclass(frozen=True)
+class Piece:
+    """Back-to-back shots the character holds, played as one stretch."""
+
+    video: int
+    shots: tuple[ShotScore, ...]
+
+    @property
+    def start(self) -> float:
+        return self.shots[0].start
+
+    @property
+    def end(self) -> float:
+        return self.shots[-1].end
+
+    @property
+    def seconds(self) -> float:
+        return self.end - self.start
+
+    @property
+    def score(self) -> float:
+        """The shots' scores, each weighted by how long it lasts."""
+        total = sum(shot.seconds for shot in self.shots)
+        if total <= 0:
+            return 0.0
+        return sum(shot.score * shot.seconds for shot in self.shots) / total
 
 
 def faces_seen(people) -> list[Seen]:
@@ -71,126 +134,174 @@ def faces_seen(people) -> list[Seen]:
     return sorted(seen, key=lambda face: face.time)
 
 
-def clarity(cut: Cut, seen: list[Seen], interval: float) -> Clarity:
-    """How clearly `cut` shows the person.
-
-    The mean quality of their faces in it, times how much of it they are
-    seen in. Mean rather than best, because one sharp frame in a scene
-    spent looking at someone else's shoulder is not a clear scene; the
-    share seen, because padding and bridged gaps put stretches of other
-    people into every reel (Instructions.md 31), and a scene that is mostly
-    those is a poor scene of this person however good its one face is.
-    """
-    faces = [face for face in seen if cut.start <= face.time <= cut.end]
-    if not faces or cut.seconds <= 0:
-        return Clarity(0.0, None)
-    presence = min(1.0, len(faces) * interval / cut.seconds)
-    mean = sum(face.quality for face in faces) / len(faces)
-    best = max(faces, key=lambda face: face.quality).time
-    return Clarity(mean * presence, best)
-
-
-def choose(
-    cuts: list[Cut],
-    seen: dict[int, list[Seen]],
-    interval: dict[int, float],
-    seconds: float,
-    edge_loss: float = EDGE_LOSS_SECONDS,
-) -> list[Cut]:
-    """The clearest scenes, adding up to `seconds` once cut, as a cut list.
+def score_shots(shots, seen: list[Seen], interval: float) -> list[ShotScore]:
+    """Each shot's share of the character and how clearly it shows them.
 
     Args:
-        cuts: The reel's cut list. Cuts already dropped stay dropped.
-        seen: Each video's faces of the person, by the cut's `video`.
-        interval: Each video's sampling interval, by the same key.
-        seconds: How long the pack should be.
-        edge_loss: What cutting takes off each scene (EDGE_LOSS_SECONDS);
-            each one is counted as that much shorter than it is planned.
+        shots: The video's shots (app.video.shots.Shot), in order.
+        seen: The character's faces in that video.
+        interval: The sampling interval the shots and faces were found at.
 
-    Scenes are taken clearest first, whole, while they fit. The first one
-    that does not is trimmed to what is left, around its clearest moment,
-    so the pack comes out the length asked for rather than a scene short
-    of it -- unless what is left is under MIN_SCENE_SECONDS. A scene in
-    which the person is never seen is never chosen. The list keeps its
-    order, which is the order the footage plays in, so the reel of a pack
-    is still in story order however the scenes were ranked.
+    A shot's samples are those from its first up to the next shot's first.
+    Presence counts the moments the character is seen, not their faces --
+    two of their cards in one frame are still one moment.
     """
-    scores = {
-        position: clarity(cut, seen.get(cut.video, []), interval.get(cut.video, 1.0))
-        for position, cut in enumerate(cuts)
-        if not cut.dropped
-    }
+    scored = []
+    for position, shot in enumerate(shots):
+        following = shots[position + 1] if position + 1 < len(shots) else None
+        samples_end = following.start_time if following is not None else shot.end_time
+        # Its last sample: the one before the next shot's first. The video's
+        # end is not a sample, so the last shot runs to it.
+        known_end = following.earliest_start if following is not None else shot.end_time
+        if known_end - shot.start_time <= 0:
+            continue
+        faces = [face for face in seen if shot.start_time <= face.time < samples_end]
+        samples = max(1, round((samples_end - shot.start_time) / interval))
+        moments = len({round(face.time, 3) for face in faces})
+        presence = min(1.0, moments / samples)
+        if faces:
+            quality = sum(face.quality for face in faces) / len(faces)
+            best = max(faces, key=lambda face: face.quality).time
+        else:
+            quality, best = 0.0, None
+        scored.append(ShotScore(shot.start_time, known_end, presence, quality * presence, best))
+    return scored
+
+
+def find_pieces(
+    scored: list[ShotScore],
+    video: int = 0,
+    within: list[tuple[float, float]] | None = None,
+) -> list[Piece]:
+    """Runs of back-to-back shots the character holds, as pieces.
+
+    Args:
+        scored: One video's shots, from `score_shots`.
+        video: Which video they are from, for the cut list.
+        within: Keep only pieces at least half inside these spans. The
+            window passes the reel's plan, which a folder has already
+            cleared of footage an earlier episode showed (repeats.py), so a
+            recap is not packed twice.
+    """
+    runs: list[list[ShotScore]] = []
+    for shot in scored:
+        if shot.presence < MIN_PRESENCE:
+            continue
+        # Back to back: this shot's first sample follows the last one's
+        # within a sampling interval or so, with no shot of someone else
+        # between them.
+        if runs and shot.start - runs[-1][-1].end <= _gap_allowance(runs[-1][-1]):
+            runs[-1].append(shot)
+        else:
+            runs.append([shot])
+
+    pieces = []
+    for run in runs:
+        piece = Piece(video, tuple(run))
+        if piece.seconds < MIN_PIECE_SECONDS:
+            continue
+        if within is not None and _inside(piece.start, piece.end, within) < 0.5 * piece.seconds:
+            continue
+        pieces.append(piece)
+    return pieces
+
+
+def _gap_allowance(shot: ShotScore) -> float:
+    # The gap a cut leaves between one shot's last sample and the next one's
+    # first is a single sampling interval; 1.5s covers any interval the
+    # window offers without bridging a whole shot of someone else.
+    return 1.5
+
+
+def _inside(start: float, end: float, spans: list[tuple[float, float]]) -> float:
+    return sum(max(0.0, min(end, hi) - max(start, lo)) for lo, hi in spans)
+
+
+def slack(seconds: float) -> float:
+    """How far from `seconds` a pack may land to end on a whole shot."""
+    return max(SLACK_SECONDS, SLACK_SHARE * seconds)
+
+
+def choose(pieces: list[Piece], seconds: float, edge_loss: float = EDGE_LOSS_SECONDS) -> list[Cut]:
+    """The clearest pieces, about `seconds` long once cut, as a cut list.
+
+    Pieces of PREFERRED_PIECE_SECONDS or more are taken first, then
+    shorter ones; within each, clearest first, while they fit. One
+    too long to fit loses shots from whichever end is the weaker until it
+    does, so it still starts and ends on the show's cuts; only a single
+    shot longer than what is left is cut inside, around its clearest face.
+    Taking stops once the pack is within the slack of the length.
+
+    The list holds every piece in story order -- the ones not taken as
+    dropped rows, so an editor can swap one in by hand -- with a shortened
+    piece shown as changed from the whole run it came from.
+    """
+    margin = slack(seconds)
     ranked = sorted(
-        (position for position, score in scores.items() if score.score > 0),
-        key=lambda position: (-scores[position].score, position),
+        range(len(pieces)),
+        key=lambda i: (
+            pieces[i].seconds < PREFERRED_PIECE_SECONDS,
+            -pieces[i].score,
+            pieces[i].video,
+            pieces[i].start,
+        ),
     )
 
-    spans: dict[int, tuple[float, float]] = {}
-    remaining = seconds
-    for position in ranked:
-        if remaining < MIN_SCENE_SECONDS:
+    taken: dict[int, tuple[float, float]] = {}
+    total = 0.0
+    for i in ranked:
+        if total >= seconds - margin:
             break
-        cut = cuts[position]
-        if cut.seconds - edge_loss <= remaining:
-            spans[position] = (cut.start, cut.end)
-            remaining -= max(0.0, cut.seconds - edge_loss)
-        else:
-            spans[position] = _around(cut, scores[position].best, remaining + edge_loss)
-            remaining = 0.0
+        room = seconds + margin - total
+        span = _fitted(pieces[i], room + edge_loss, seconds - total + edge_loss)
+        if span is None:
+            continue
+        taken[i] = span
+        total += max(0.0, span[1] - span[0] - edge_loss)
 
+    order = sorted(range(len(pieces)), key=lambda i: (pieces[i].video, pieces[i].start))
     return [
-        replace(cut, start=spans[position][0], end=spans[position][1])
-        if position in spans
-        else replace(cut, dropped=True)
-        for position, cut in enumerate(cuts)
+        Cut(
+            video=pieces[i].video,
+            start=taken[i][0] if i in taken else pieces[i].start,
+            end=taken[i][1] if i in taken else pieces[i].end,
+            planned_start=pieces[i].start,
+            planned_end=pieces[i].end,
+            dropped=i not in taken,
+        )
+        for i in order
     ]
 
 
-def _around(cut: Cut, moment: float | None, length: float) -> tuple[float, float]:
-    """`length` seconds of `cut`, centred on `moment` where the cut allows."""
-    centre = moment if moment is not None else (cut.start + cut.end) / 2
-    start = min(max(centre - length / 2, cut.start), cut.end - length)
-    return start, start + length
+def _fitted(piece: Piece, room: float, wanted: float) -> tuple[float, float] | None:
+    """The piece, or as much of it as fits in `room`, on shot boundaries."""
+    shots = list(piece.shots)
+    while len(shots) > 1 and shots[-1].end - shots[0].start > room:
+        # Lose the weaker end.
+        if shots[0].score < shots[-1].score:
+            shots.pop(0)
+        else:
+            shots.pop()
+    start, end = shots[0].start, shots[-1].end
+    if end - start > room:
+        # One shot longer than what is left: the only cut inside a shot.
+        length = min(room, max(wanted, MIN_PIECE_SECONDS))
+        centre = shots[0].best if shots[0].best is not None else (start + end) / 2
+        start = min(max(centre - length / 2, shots[0].start), shots[0].end - length)
+        end = start + length
+    if end - start < MIN_PIECE_SECONDS:
+        return None
+    return start, end
 
 
 def expected_seconds(cuts: list[Cut], edge_loss: float = EDGE_LOSS_SECONDS) -> float:
-    """How long the kept scenes should come out, once cut."""
+    """How long the kept pieces should come out, once cut."""
     return sum(max(0.0, cut.seconds - edge_loss) for cut in kept(cuts))
 
 
-def available_seconds(
-    cuts: list[Cut],
-    seen: dict[int, list[Seen]],
-    interval: dict[int, float],
-    edge_loss: float = EDGE_LOSS_SECONDS,
-) -> float:
-    """How long a pack could come out: every kept scene they are seen in,
-    once cut -- measured the way `expected_seconds` measures a pack, so the
-    two can be compared and said in one breath."""
-    return sum(
-        max(0.0, cut.seconds - edge_loss)
-        for cut in kept(cuts)
-        if clarity(cut, seen.get(cut.video, []), interval.get(cut.video, 1.0)).score > 0
-    )
-
-
-def clip_names(
-    stem: str, export_format: str, cuts: list[Cut], videos: list[str] | None = None
-) -> list[str]:
-    """A file name for each kept scene, in the order they play.
-
-    Numbered so a folder sorts in story order, and stamped with where the
-    scene starts, so an editor can find it in the episode: "Ben 003
-    (4m07s).mp4", or with the video's name in a folder's pack.
-    """
-    names = []
-    for number, cut in enumerate(kept(cuts), start=1):
-        minutes, rest = divmod(int(cut.start), 60)
-        at = f"{minutes}m{rest:02d}s"
-        if videos is not None:
-            at = f"{Path(videos[cut.video]).stem} {at}"
-        names.append(f"{stem} {number:03d} ({at}).{export_format}")
-    return names
+def available_seconds(pieces: list[Piece], edge_loss: float = EDGE_LOSS_SECONDS) -> float:
+    """How long a pack could come out: every piece, whole, once cut."""
+    return sum(max(0.0, piece.seconds - edge_loss) for piece in pieces)
 
 
 def parse_length(text: str) -> float | None:

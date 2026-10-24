@@ -461,12 +461,12 @@
         <button class="ghost" id="cutsBtn" style="height:26px;padding:0 10px;font-size:.74rem;margin-top:10px;width:100%">Edit cuts…</button>
       </div>
 
-      <!-- A scene pack: the clearest scenes up to a length, written as one
-           clip per scene and a reel of them all. Empty is a whole reel. -->
+      <!-- A scene pack: one video of their clearest shots, about this long,
+           cut only where the show cuts. Empty is a whole reel. -->
       <div class="field">
         <label for="pack">Scene pack length</label>
         <input type="text" id="pack" placeholder="Off — e.g. 1:00"
-               title="Keep only their clearest scenes, up to this long, and export them as a folder of clips plus one reel. Seconds or minutes: 90, 1:30, 2m. Empty for the whole reel.">
+               title="One video of their clearest shots, about this long, with every cut where the show cuts: raw footage to edit. Seconds or minutes: 90, 1:30, 2m. Empty for the whole reel.">
         <p class="footnote" id="packNote" hidden></p>
       </div>
 
@@ -718,8 +718,7 @@
     idle(); setBar(1);
     const left = (d.leftOut || []).map(l => esc(l.video) + " (" + esc(l.reason) + ")");
     if (d.pack) {
-      status("<b>Scene pack saved.</b> " + d.pack.clips + " clip" + (d.pack.clips === 1 ? "" : "s") +
-        " and a reel of them in " + esc(d.path));
+      status("<b>Scene pack saved.</b> " + esc(d.path));
       return;
     }
     status("<b>Reel saved.</b> " + esc(d.path) +
@@ -1247,14 +1246,17 @@
     $("pickedCuts").textContent = d.kept;
     // A pack comes out a little shorter than its scenes are planned
     // (scenepack.EDGE_LOSS_SECONDS), so its rail gives what it will be.
-    $("pickedLen").textContent = d.pack ? "about " + d.pack.about : d.reel;
+    $("pickedLen").textContent = d.pack && d.pack.about ? "about " + d.pack.about : d.reel;
     showPack(d);
     // The footnote describes the plan; once the list has been edited it
     // is the list that gets cut, and saying so is the difference between
     // trusting the reel and checking it afterwards.
-    if (d.pack) {
-      $("foot").textContent = "Writes a folder: one clip for each of the " + d.kept +
-        " scene" + (d.kept === 1 ? "" : "s") + ", and a reel of them all (about " + d.pack.about + ").";
+    if (d.pack && d.pack.waiting) {
+      $("foot").textContent = "Finding where the camera cuts, to build the pack from whole shots.";
+    } else if (d.pack) {
+      $("foot").textContent = "Writes one video, about " + d.pack.about + " long: " + d.kept +
+        " piece" + (d.kept === 1 ? "" : "s") + " of their clearest shots, in story order, " +
+        "each starting and ending where the show cuts.";
     } else if (!d.dropped && !d.edited && state.planFoot) {
       // Back from a pack to the plan: the plan's own note, not the pack's.
       $("foot").textContent = state.planFoot;
@@ -1262,8 +1264,8 @@
       $("foot").textContent = "Cuts the list as you edited it — " + d.kept +
         " cut" + (d.kept === 1 ? "" : "s") + ", about " + d.reel + " of footage.";
     }
-    // Nothing left to cut is not an export.
-    $("exportBtn").disabled = !d.kept || !!state.busy;
+    // Nothing left to cut is not an export, and nor is a pack still waiting.
+    $("exportBtn").disabled = !d.kept || !!state.busy || !!(d.pack && d.pack.waiting);
   }
 
   // A pack changes what the export button makes, so it says so.
@@ -1272,11 +1274,36 @@
     $("exportBtn").textContent = pack ? "Export scene pack" : "Export reel";
     $("packNote").hidden = !pack;
     if (!pack) return;
-    const noun = pack.scenes === 1 ? "scene" : "scenes";
+    if (pack.waiting) {
+      $("packNote").textContent = "Finding where the camera cuts…";
+      return;
+    }
+    const noun = pack.pieces === 1 ? "piece" : "pieces";
     $("packNote").textContent = pack.short
-      ? pack.scenes + " " + noun + ", all there is of them: about " + pack.about + ", short of " + pack.length + "."
-      : pack.scenes + " clearest " + noun + ", about " + pack.about + " of " + pack.length + ".";
+      ? pack.pieces + " " + noun + ", all there is of them in whole shots: about " + pack.about +
+        ", short of " + pack.length + "."
+      : pack.pieces + " " + noun + " of their clearest shots, about " + pack.about + " of " + pack.length + ".";
   }
+
+  // Shots are found in the background for a video scanned before they were
+  // recorded; the pack arrives here when they are.
+  function waitForPack(d) {
+    if (!(d.pack && d.pack.waiting)) return;
+    busy("pack");
+    status("<b>Finding where the camera cuts…</b> Once per video.");
+  }
+
+  window.onPackReady = (d) => {
+    idle(); setBar(0);
+    if (d.cancelled || !d.pack) {
+      state.pack = ""; $("pack").value = "";
+      status(d.cancelled ? "<b>Scene pack cancelled.</b>" : "<b>No scene pack.</b>");
+    } else {
+      status("<b>Scene pack ready.</b> " + d.pack.pieces + " piece" + (d.pack.pieces === 1 ? "" : "s") +
+        ", about " + d.pack.about + ".");
+    }
+    if (!$("cuts").hidden) drawCuts(d); else showCutSummary(d);
+  };
 
   async function setPack() {
     const d = await pywebview.api.set_scene_pack($("pack").value);
@@ -1288,6 +1315,7 @@
     state.pack = d.pack ? d.pack.length : "";
     $("pack").value = state.pack;
     if (!$("cuts").hidden) drawCuts(d); else showCutSummary(d);
+    waitForPack(d);
   }
 
   $("pack").addEventListener("change", setPack);
@@ -1299,7 +1327,9 @@
   async function showPackOfSelection() {
     if (!state.pack) return;
     const d = await pywebview.api.cut_list();
-    if (d.accepted) showCutSummary(d);
+    if (!d.accepted) return;
+    showCutSummary(d);
+    waitForPack(d);
   }
 
   async function openCuts() {

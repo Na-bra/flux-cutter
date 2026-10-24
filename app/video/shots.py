@@ -80,8 +80,10 @@ whatever interval a scan uses.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import cv2
@@ -360,3 +362,85 @@ def describe(shots: list[Shot]) -> list[str]:
         f"{format_timestamp(shot.end_time)} ({shot.duration:.2f}s)"
         for shot in shots
     ]
+
+
+# ------------------------------------------------------------ kept shots
+#
+# A scene pack is built from whole shots (app/video/scenepack.py), so the
+# window needs a video's shots whenever someone asks for one. They are found
+# during the scan, from the frames it already reads, and kept beside the
+# scans; a video whose scan was kept from before this has them found once,
+# on the first pack that needs them.
+
+# Bumped when what is kept changes shape, so an old file is never read as
+# a new one.
+SHOTS_FORMAT = 1
+
+
+def shots_dir() -> Path:
+    """Where shots are kept: beside the scans."""
+    from app.scans import scan_cache_dir
+
+    return scan_cache_dir() / "shots"
+
+
+def _shots_name(path: Path, sample_interval: float, settings: ShotSettings) -> str | None:
+    """The file a video's shots are kept in.
+
+    Keyed by the file as it is now -- where it is, its size and when it
+    last changed -- and by what the shots depend on: the sampling interval
+    they were found at and the detector's settings. A different interval
+    finds the same cuts at a different precision, so it is kept apart.
+    """
+    try:
+        resolved = Path(path).resolve()
+        stat = resolved.stat()
+    except OSError:
+        return None
+    identity = (
+        f"{resolved}|{stat.st_size}|{stat.st_mtime_ns}|{float(sample_interval)}|"
+        f"{settings.enabled}|{settings.threshold}|{settings.min_shot_seconds}|{SHOTS_FORMAT}"
+    )
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def kept_shots(
+    path: Path,
+    sample_interval: float,
+    settings: ShotSettings | None = None,
+    directory: Path | None = None,
+) -> list[Shot] | None:
+    """The shots kept for this video as it is now, or None."""
+    name = _shots_name(path, sample_interval, settings or ShotSettings())
+    if name is None:
+        return None
+    try:
+        records = json.loads(((directory or shots_dir()) / f"{name}.json").read_text())
+        return [Shot(**record) for record in records]
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def keep_shots(
+    path: Path,
+    sample_interval: float,
+    shots: list[Shot],
+    settings: ShotSettings | None = None,
+    directory: Path | None = None,
+) -> None:
+    """Keeps a video's shots for next time. Nothing is raised: a shot list
+    that cannot be kept is found again when it is next needed."""
+    if not shots:
+        return
+    name = _shots_name(path, sample_interval, settings or ShotSettings())
+    if name is None:
+        return
+    target = directory or shots_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        temporary = target / f"{name}.tmp"
+        temporary.write_text(json.dumps([asdict(shot) for shot in shots]))
+        temporary.replace(target / f"{name}.json")
+    except OSError:
+        pass
+

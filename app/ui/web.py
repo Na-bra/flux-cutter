@@ -43,8 +43,7 @@ from app.ui.worker import (
     available_encoders,
     default_encoder,
     export,
-    export_scene_pack,
-    pack_directory,
+    find_shots,
     plan_export,
     quality_for,
     scan,
@@ -79,8 +78,9 @@ from app.video.cutter import (
     probe_clip,
 )
 from app.video.loader import PICKER_PATTERN, SUPPORTED_EXTENSIONS, VideoLoadError
+from app.video.shots import kept_shots
 from app.video.source import SourceMismatch
-from app.video.timeline import AppearanceInterval, format_timestamp
+from app.video.timeline import format_timestamp
 
 DEFAULT_OUTPUT_DIR = Path.home() / "Movies"
 DEFAULT_FILENAME = "reel.mp4"
@@ -257,6 +257,14 @@ class Bridge:
         # The scene pack's length in seconds, or None for a whole reel. It
         # outlives the selection, so choosing someone else gives their pack.
         self._pack_seconds: float | None = None
+        # The pieces the current pack was chosen from, for saying how much
+        # there was; and whether it is waiting on shots still being found.
+        self._pack_pieces: list[scenepack.Piece] = []
+        self._pack_waiting = False
+        # Shots found this session, by (video path, interval): kept on disk
+        # too, but a video moved since its scan cannot be keyed there, and
+        # without these its pack would wait for shots already found.
+        self._shots_found: dict[tuple[str, float], list] = {}
         # Which selection the list belongs to: a cut's video number means
         # a position in the folder in one view and nothing at all in the
         # other, and both views can hold a selection at once.
@@ -1089,18 +1097,22 @@ class Bridge:
     def _pack_payload(self) -> dict | None:
         if self._pack_seconds is None:
             return None
-        seen, interval = self._faces_by_video()
-        available = scenepack.available_seconds(self._plan, seen, interval)
+        if self._pack_waiting:
+            return {"length": _clock(self._pack_seconds), "waiting": True}
+        available = scenepack.available_seconds(self._pack_pieces)
         return {
             "length": _clock(self._pack_seconds),
-            # What the scenes should come out as once cut, which is a
-            # little shorter than they are planned (scenepack.EDGE_LOSS_SECONDS).
+            # What the pieces come out as once cut (scenepack.EDGE_LOSS_SECONDS).
             "about": _clock(scenepack.expected_seconds(self._cuts)),
-            "scenes": len(cuts.kept(self._cuts)),
-            # Short of the length asked for, because there is not that
-            # much of them: said, so a 40s pack asked to be a minute is not
-            # mistaken for a bug.
-            "short": _clock(available) if available < self._pack_seconds - scenepack.MIN_SCENE_SECONDS else None,
+            "pieces": len(cuts.kept(self._cuts)),
+            # Short of the length asked for, because there is not that much
+            # of them in whole shots: said, so a 40s pack asked to be a
+            # minute is not mistaken for a bug.
+            "short": (
+                _clock(available)
+                if available < self._pack_seconds - scenepack.slack(self._pack_seconds)
+                else None
+            ),
         }
 
     def _rebuild_cuts(self) -> None:
@@ -1129,10 +1141,88 @@ class Bridge:
         self._cuts = self._packed(planned)
 
     def _packed(self, planned: list[cuts.Cut]) -> list[cuts.Cut]:
+        """The scene pack for this plan, if one is on; else the plan itself.
+
+        Built from the shots of the videos the plan cuts from, and kept to
+        the plan's footage, so a folder's pack leaves out what its reel
+        left out as repeated (scenepack.find_pieces). A video whose shots
+        are not known yet -- scanned before shots were recorded -- has them
+        found in the background, and the pack follows when they are.
+        """
+        self._pack_pieces = []
+        self._pack_waiting = False
         if self._pack_seconds is None or not planned:
             return planned
+        videos = sorted({cut.video for cut in cuts.kept(planned)})
+        shots = {}
+        for video in videos:
+            result = self._scan_for(video)
+            if result is None:
+                continue
+            shots[video] = self._shots_found.get(
+                (str(result.video_path), result.sample_interval)
+            ) or kept_shots(result.video_path, result.sample_interval)
+        missing = [video for video, found in shots.items() if found is None]
+        if missing:
+            self._pack_waiting = True
+            if not self._busy():
+                self._start(self._shots_worker, missing)
+            return planned
         seen, interval = self._faces_by_video()
-        return scenepack.choose(planned, seen, interval, self._pack_seconds)
+        within: dict[int, list[tuple[float, float]]] = {}
+        for cut in cuts.kept(planned):
+            within.setdefault(cut.video, []).append((cut.start, cut.end))
+        self._pack_pieces = [
+            piece
+            for video in videos
+            if video in shots
+            for piece in scenepack.find_pieces(
+                scenepack.score_shots(shots[video], seen.get(video, []), interval.get(video, 1.0)),
+                video,
+                within.get(video, []),
+            )
+        ]
+        return scenepack.choose(self._pack_pieces, self._pack_seconds)
+
+    def _shots_worker(self, videos: list[int]) -> None:
+        """Finds the shots a pack needs, then shows the pack."""
+        try:
+            for position, video in enumerate(videos):
+                result = self._scan_for(video)
+                if result is None:
+                    continue
+                self._emit(
+                    "onStatus",
+                    {
+                        "text": f"Finding where the camera cuts in {result.video_path.name}"
+                        + (f" ({position + 1} of {len(videos)})" if len(videos) > 1 else "")
+                        + "…"
+                    },
+                )
+
+                def report(fraction: float, timestamp: float, _position=position) -> None:
+                    self._emit(
+                        "onScanProgress",
+                        {"fraction": (_position + fraction) / len(videos), "timestamp": timestamp},
+                    )
+
+                self._shots_found[(str(result.video_path), result.sample_interval)] = find_shots(
+                    result, on_progress=report, cancel=self._cancel
+                )
+        except Cancelled:
+            # No pack, rather than a pack of the videos that were done.
+            self._pack_seconds = None
+            self._cuts = self._packed(self._plan)
+            self._emit("onPackReady", {**self._cut_payload(), "cancelled": True})
+            return
+        except Exception as error:
+            self._pack_seconds = None
+            self._cuts = self._packed(self._plan)
+            self._emit("onPackReady", self._cut_payload())
+            self._emit("onFailed", {"title": "Could not find the camera cuts", "detail": str(error)})
+            return
+        self._cuts = self._packed(self._plan)
+        self._emit("onPackReady", self._cut_payload())
 
     def _faces_by_video(self) -> tuple[dict, dict]:
         """The selection's faces and sampling interval, by cut video number."""
@@ -1157,10 +1247,11 @@ class Bridge:
     def set_scene_pack(self, length: str) -> dict:
         """Turns the scene pack on at a length, or off with an empty one.
 
-        The pack is chosen from the plan, not from the list as it stands,
-        so a second length is a fresh choice rather than a choice from the
-        first one's leftovers. Edits made to the list are given up for the
-        same reason, as "Back to the plan" gives them up.
+        The pack is chosen afresh from the plan's shots each time, so a
+        second length is not a choice from the first one's leftovers, and
+        edits made to the list are given up as "Back to the plan" gives
+        them up. While shots are still being found the answer says it is
+        waiting, and "onPackReady" brings the pack when it is ready.
         """
         if self._busy():
             return {"accepted": False, "reason": "Wait for this to finish first."}
@@ -1235,6 +1326,8 @@ class Bridge:
         if not self._ensure_source_available():
             return {"started": False, "reason": None}
 
+        if self._pack_waiting:
+            return {"started": False, "reason": "Still finding where the camera cuts."}
         segments = self._cut_segments()
         if not segments:
             return {"started": False, "reason": "Every cut has been dropped."}
@@ -1245,62 +1338,10 @@ class Bridge:
         )
         if export_format in EXPORT_FORMATS:
             self._format = export_format
-        if self._pack_seconds is not None:
-            return self._start_pack(folder, filename, settings)
         self._start(
             self._export_worker, output_path(folder, filename, self._format), settings, segments
         )
         return {"started": True}
-
-    def _start_pack(self, folder: str, filename: str, settings: ExportSettings) -> dict:
-        """Starts writing the scene pack the cut list now holds.
-
-        The pack is a folder named as the reel would have been, holding the
-        reel and one clip per scene. Its scenes are read from the list here,
-        before the worker starts, as an ordinary export reads its cuts.
-        """
-        reel = output_path(folder, filename, self._format)
-        folder_view = self._cuts_view == "folder"
-        scenes = []
-        for cut in cuts.kept(self._cuts):
-            result = self._scan_for(cut.video)
-            if result is None:
-                return {"started": False, "reason": "A video in this pack is no longer open."}
-            scenes.append(
-                (result.source or result.video_path, AppearanceInterval(cut.start, cut.end))
-            )
-        videos = (
-            [result.video_path.name for result in self._folder.videos]
-            if folder_view and self._folder is not None
-            else None
-        )
-        names = scenepack.clip_names(reel.stem, self._format, self._cuts, videos)
-        directory = pack_directory(reel.with_suffix(""))
-        self._start(self._pack_worker, scenes, names, directory, reel.name, settings)
-        return {"started": True}
-
-    def _pack_worker(self, scenes, names, directory: Path, reel_name: str, settings) -> None:
-        def report(fraction: float, done: int, total: int) -> None:
-            self._emit("onExportProgress", {"fraction": fraction, "done": done, "total": total})
-
-        try:
-            export_scene_pack(
-                scenes,
-                names,
-                directory,
-                reel_name,
-                settings=settings,
-                on_progress=report,
-                cancel=self._cancel,
-            )
-        except Cancelled:
-            self._emit("onExportCancelled")
-            return
-        except Exception as error:
-            self._emit("onFailed", {"title": "Scene pack failed", "detail": str(error)})
-            return
-
-        self._emit("onExported", {"path": str(directory), "pack": {"clips": len(names)}})
 
     def _ensure_source_available(self) -> bool:
         """Makes sure the scanned footage can still be read, asking if not.
@@ -1371,7 +1412,7 @@ class Bridge:
             self._emit("onFailed", {"title": "Export failed", "detail": str(error)})
             return
 
-        self._emit("onExported", {"path": str(output_path)})
+        self._emit("onExported", {"path": str(output_path), "pack": self._pack_seconds is not None})
 
     # -------------------------------------------------------------- folder
 
@@ -1770,6 +1811,8 @@ class Bridge:
         if self._folder is None or self._cast_selected is None:
             return {"started": False, "reason": "Choose a person first."}
 
+        if self._pack_waiting:
+            return {"started": False, "reason": "Still finding where the camera cuts."}
         plans = cuts.plans_from_cuts(self._cuts)
         if not plans:
             return {"started": False, "reason": "Every cut has been dropped."}
@@ -1780,8 +1823,6 @@ class Bridge:
         )
         if export_format in EXPORT_FORMATS:
             self._format = export_format
-        if self._pack_seconds is not None:
-            return self._start_pack(folder, filename, settings)
         self._start(
             self._folder_export_worker, output_path(folder, filename, self._format), settings, plans
         )
