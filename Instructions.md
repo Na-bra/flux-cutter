@@ -4336,3 +4336,20 @@ shipped; all are fixed and each has a regression test:
 
 Re-measured after the fixes, the two packs above came out the same:
 117.6s in 17 pieces, every join clean; 50.1s for animation.
+
+### Known limits
+
+On test.mp4, a 23s trailer of ~1s shots, a 0:10 pack of Person 1 was one
+1.5s piece out of a 14s reel. Two causes, both by design rather than by
+accident: most shots are under MIN_PIECE_SECONDS, and the detector missed
+the cut between 1s and 11s, so a shot of Person 1 (1.5-4.5s) and one of
+Person 2 (7.5-10.5s) read as one 10s shot, 35% and 40% each -- below
+MIN_PRESENCE for both. Splitting a shot by who is in it would put pack
+edges where the show does not cut, which is the thing a pack must not do;
+a missed cut costs footage, never a stranger in the pack.
+
+Driven in the window (test.mp4): "2" refused with the 2:00 hint; 0:10 gave
+"1 piece, all there is of them in whole shots: about 0:01, short of 0:10";
+the export wrote one file, test-person-1.mp4, 1.5s, announced as "Scene
+pack saved"; emptying the box put back "Export reel" and the reel's note.
+

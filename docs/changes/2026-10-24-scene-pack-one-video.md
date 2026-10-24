@@ -65,6 +65,18 @@ same 2:00 pack 28 pieces, 12 of them 3 seconds or less. Taking 3-second-plus
 pieces first made it 17 pieces with a median of 5 seconds, for 6% less
 clarity.
 
+## Where it gives less than you'd expect
+
+- **Very fast-cut footage.** A trailer or a montage where most shots last
+  about a second gives little, because a piece needs at least 1.5 seconds of
+  their own shots. On the 23-second test trailer, a 14-second reel of one
+  person became a 1.5-second pack. Episodes are fine: the 22-minute test
+  episode gave 2 minutes easily.
+- **A camera cut FluxCutter missed.** If two people's shots are read as one
+  shot, it's mostly neither of them, so neither of them gets it. The trailer
+  above has one of these. It errs on the side of leaving footage out rather
+  than putting someone else in your pack.
+
 ## What it doesn't change
 
 - With the length box empty, exporting a reel is exactly as before.
