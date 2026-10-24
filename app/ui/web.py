@@ -44,6 +44,7 @@ from app.ui.worker import (
     default_encoder,
     export,
     find_shots,
+    known_shots,
     plan_export,
     quality_for,
     scan,
@@ -78,7 +79,6 @@ from app.video.cutter import (
     probe_clip,
 )
 from app.video.loader import PICKER_PATTERN, SUPPORTED_EXTENSIONS, VideoLoadError
-from app.video.shots import kept_shots
 from app.video.source import SourceMismatch
 from app.video.timeline import format_timestamp
 
@@ -1159,13 +1159,19 @@ class Bridge:
             result = self._scan_for(video)
             if result is None:
                 continue
-            shots[video] = self._shots_found.get(
-                (str(result.video_path), result.sample_interval)
-            ) or kept_shots(result.video_path, result.sample_interval)
+            found = known_shots(result)
+            if found is None:
+                found = self._shots_found.get((str(result.video_path), result.sample_interval))
+            shots[video] = found
         missing = [video for video, found in shots.items() if found is None]
         if missing:
             self._pack_waiting = True
             if not self._busy():
+                # Said before the job starts, whatever started it -- a pack
+                # length, a new selection, an edit in folder view -- so the
+                # page always shows the wait and its Cancel, and always
+                # hears it before the "onPackReady" that ends it.
+                self._emit("onPackWaiting", {"length": _clock(self._pack_seconds)})
                 self._start(self._shots_worker, missing)
             return planned
         seen, interval = self._faces_by_video()
@@ -1261,6 +1267,13 @@ class Bridge:
             return {
                 "accepted": False,
                 "reason": "A scene pack length is seconds or minutes, like 90 or 1:30.",
+            }
+        if seconds is not None and seconds < scenepack.MIN_PACK_SECONDS:
+            # A bare "2" is two seconds; whoever typed it meant minutes.
+            return {
+                "accepted": False,
+                "reason": f"A scene pack is at least {_clock(scenepack.MIN_PACK_SECONDS)}. "
+                "For two minutes, type 2:00 or 2m.",
             }
         self._pack_seconds = seconds
         self._cuts = self._packed(self._plan)
@@ -1854,6 +1867,7 @@ class Bridge:
             "onExported",
             {
                 "path": str(output),
+                "pack": self._pack_seconds is not None,
                 "leftOut": [{"video": path.name, "reason": reason} for path, reason in left_out],
             },
         )

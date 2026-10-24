@@ -1866,7 +1866,7 @@ def fake_shots(_path=None, _interval=None):
 
 @pytest.fixture
 def with_shots(monkeypatch):
-    monkeypatch.setattr(web, "kept_shots", fake_shots)
+    monkeypatch.setattr(web, "known_shots", fake_shots)
 
 
 def test_a_scene_pack_is_whole_shots_about_the_length_asked(bridge, monkeypatch, with_shots):
@@ -1943,7 +1943,7 @@ def test_a_pack_exports_as_one_video_of_its_pieces(bridge, monkeypatch, with_sho
 
 def test_without_shots_the_pack_waits_and_finds_them_in_the_background(bridge, monkeypatch):
     picked(bridge, monkeypatch)
-    monkeypatch.setattr(web, "kept_shots", lambda *a: None)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
     started = []
     monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
 
@@ -1965,7 +1965,7 @@ def test_shots_found_this_session_are_used_even_if_they_could_not_be_kept(bridge
     """A video moved since its scan cannot be keyed on disk; its pack must
     not wait for shots already found."""
     picked(bridge, monkeypatch)
-    monkeypatch.setattr(web, "kept_shots", lambda *a: None)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
     monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
     monkeypatch.setattr(web, "find_shots", lambda result, **_: fake_shots())
 
@@ -1977,7 +1977,7 @@ def test_shots_found_this_session_are_used_even_if_they_could_not_be_kept(bridge
 
 def test_cancelling_the_search_for_shots_leaves_no_pack(bridge, monkeypatch):
     picked(bridge, monkeypatch)
-    monkeypatch.setattr(web, "kept_shots", lambda *a: None)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
     started = []
     monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
     bridge.set_scene_pack("5")
@@ -2002,3 +2002,40 @@ def test_without_a_pack_the_export_is_still_one_reel(bridge, monkeypatch):
     bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
 
     assert started == [bridge._export_worker]
+
+
+def test_the_wait_for_shots_is_announced_before_it_starts_whatever_starts_it(bridge, monkeypatch):
+    """Found in review: a folder edit could start the search with nothing on
+    the page saying so. Now the bridge says so itself, first."""
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    order = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: order.append("started"))
+    monkeypatch.setattr(bridge, "_emit", lambda name, payload=None: order.append(name))
+
+    bridge.set_scene_pack("5")
+    bridge.select_person(1, "")  # a new selection, pack still on
+
+    assert order[:2] == ["onPackWaiting", "started"]
+    assert order.count("onPackWaiting") == order.count("started") == 2
+
+
+def test_two_meaning_two_minutes_is_refused_with_a_hint(bridge, monkeypatch, with_shots):
+    picked(bridge, monkeypatch)
+
+    answer = bridge.set_scene_pack("2")
+
+    assert answer["accepted"] is False and "2:00" in answer["reason"]
+    assert bridge.cut_list()["pack"] is None
+
+
+def test_a_video_with_no_shots_at_all_does_not_leave_the_pack_waiting(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(web, "find_shots", lambda result, **_: [])
+
+    answer = bridge.set_scene_pack("5")
+
+    assert "waiting" not in bridge.cut_list()["pack"]
+    assert answer["accepted"] is True

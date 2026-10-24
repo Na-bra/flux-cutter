@@ -4239,3 +4239,100 @@ numbered clips. It found three things the bridge's tests had not:
   planned seconds and the pack as cut seconds; `available_seconds` now
   takes the edge loss off too, and the note reads "3 scenes, all there is
   of them: about 0:12, short of 0:20".
+
+## 57. A scene pack is one video of whole shots
+
+§56 shipped the wrong thing. A scene pack, to the editors FluxCutter is
+for, is one continuous video of one character that they cut to music --
+not a folder of clips -- and it has to cut cleanly. §56's pieces were
+padded appearance spans trimmed to fit, so they opened and closed
+mid-shot and averaged 3s: a strobe of fragments.
+
+### Built from shots
+
+Pieces are now runs of whole shots (`scenepack.score_shots`,
+`find_pieces`). A shot's usable span is its first sample to its last --
+`start_time` to the next shot's `earliest_start` -- because the cut lies
+somewhere in the sampling interval between, and leaving that interval out
+is what guarantees no frame of the neighbouring shot. A shot is theirs
+when they are seen in at least half its samples (moments, not faces: two
+of their cards in one frame count once). Back-to-back qualifying shots are
+one piece; pieces under 1.5s are dropped; pieces must lie at least half
+inside the reel's plan, so a folder's pack leaves out what the reel left
+out as repeated.
+
+`choose` takes pieces of 3s or more first, then shorter, clearest first
+within each, while they fit within `slack` (2s or 5%). A run too long
+loses its weaker end shot until it fits; only a single shot longer than
+what is left is cut inside, around its best face. The cut list holds every
+piece, the untaken ones dropped, so one can be swapped by hand; export is
+the ordinary cut-list export, one file.
+
+    test_3, lead, 2:00          clearest first   3s pieces first
+    pieces                            28               17
+    median piece                      3.0 s            5.0 s
+    pieces of 3s or less              12               0
+    clarity (time-weighted)           0.494            0.464
+
+### Where the shots come from
+
+The window's scan feeds `ShotDetector` the samples it already reads
+(`worker._shot_fed`) and keeps the shots when it completes
+(`shots.keep_shots`, keyed by file identity, interval and settings, beside
+the scans). 3.3s of 75s on test_3 (2712 samples, 560 shots). A scan kept
+from before has them found on the first pack that needs them
+(`worker.find_shots`, one more read at the scan's interval: 13.6s for
+animation.mp4), in the background with progress and Cancel; the pack
+arrives by `onPackReady`. Shots found in a session are also held in
+memory, since a video moved since its scan cannot be keyed on disk.
+
+### Measured
+
+    video, length asked     came out   pieces   joins clean (source frames either side)
+    test_3, 2:00            117.6 s    17       16/16  (min change 12.4, median 37.3)
+    animation, 1:00          50.1 s    10        8/9   (one 8.5: two similar shots)
+
+animation has only 50s of the lead in whole shots, and the panel says so
+("all there is of them in whole shots: about 0:50, short of 1:00"). No two
+picture changes in the 2:00 pack fall within 12 frames of each other, so
+no piece carries a sliver of another shot. The export took 32s.
+
+The folder-of-clips writer (`export_scene_pack`, `pack_directory`,
+`clip_names`) is gone.
+
+
+### What review found
+
+Two independent reviews, each finding checked by a separate attempt to
+refute it with the real functions, confirmed eight defects before this
+shipped; all are fixed and each has a regression test:
+
+- **Runs joined across someone else's shot.** "Back to back" was a time
+  gap (1.5s), and a 0.75-1.25s cutaway at 0.25s sampling fell inside it,
+  packing the other side of the conversation into the character's piece.
+  Runs now join only consecutive shot numbers; a one-sample shot of
+  someone else breaks a run too.
+- **At 2s sampling no two shots ever joined**, the same rule's other edge.
+- **A too-long run kept a sliver and was rejected.** Trimming by score
+  alone dropped a 38s shot to keep a 1s one. It now keeps the longest
+  stretch of whole shots that fits, and cuts inside a shot only when none
+  does, choosing the clearest shot that can hold what is wanted.
+- **Packs of 2s or less took nothing** -- the slack covered the whole
+  length. The margin is now at most half the length, and lengths under
+  MIN_PACK_SECONDS (5s) are refused: "2" means two minutes to whoever
+  typed it, and the refusal says to type 2:00.
+- **A folder edit could start the search for shots silently.** The bridge
+  now announces "onPackWaiting" itself, before any job starts, so the
+  page always shows the wait and its Cancel.
+- **A folder's pack was announced as "Reel saved."**
+- **Kept shots were keyed by the file at the path now**, while the scan
+  reads through a held descriptor: a different video saved under the same
+  name could lend its shots, or be given these. Kept shots are now used
+  and written only while the file at the path is the scanned size, as
+  `_preview_container` already checks.
+- **Shots the scan found were only kept on disk**, so a video moved
+  mid-scan or an unwritable scan folder cost the first pack a second read.
+  The scan now carries its shots (`ScanResult.shots`).
+
+Re-measured after the fixes, the two packs above came out the same:
+117.6s in 17 pieces, every join clean; 50.1s for animation.

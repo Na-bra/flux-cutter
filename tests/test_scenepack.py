@@ -113,6 +113,43 @@ def test_a_piece_outside_the_plan_is_left_out():
     assert [p.start for p in pieces] == [20.0]
 
 
+def test_a_quick_cutaway_to_someone_else_ends_the_run():
+    """Found in review: runs used to join across any gap under 1.5s, so a
+    0.75s reaction shot of someone else was packed inside the piece."""
+    shots = [
+        Shot(index=0, start_time=0.0, end_time=3.0),
+        Shot(index=1, start_time=3.0, end_time=3.75, earliest_start=2.75),
+        Shot(index=2, start_time=3.75, end_time=8.0, earliest_start=3.5),
+    ]
+    seen = [Seen(round(t * 0.25, 2), 0.8) for t in range(0, 12)] + [Seen(round(3.75 + t * 0.25, 2), 0.8) for t in range(17)]
+
+    pieces = find_pieces(score_shots(shots, seen, 0.25))
+
+    assert [(p.start, p.end) for p in pieces] == [(0.0, 2.75), (3.75, 8.0)]
+
+
+def test_at_a_slow_interval_their_back_to_back_shots_still_join():
+    """Found in review: at 2s sampling the gap between two of their shots is
+    a whole interval, and a time-based rule never joined them."""
+    edges = [0.0, 6.0, 12.0, 20.0]
+    shots = [Shot(index=i, start_time=edges[i], end_time=edges[i + 1],
+                  earliest_start=max(0.0, edges[i] - 2.0) if i else 0.0) for i in range(3)]
+    seen = [Seen(float(t), 0.8) for t in range(0, 12, 2)]
+
+    pieces = find_pieces(score_shots(shots, seen, 2.0))
+
+    assert len(pieces) == 1 and len(pieces[0].shots) == 2
+
+
+def test_a_one_sample_shot_of_someone_else_still_breaks_the_run():
+    shots = shots_at(5, 5.5, 12)  # shot 1 is a single sample
+    seen = seen_in(0, 5) + seen_in(5.5, 12)
+
+    pieces = pieces_of(shots, seen)
+
+    assert len(pieces) == 2
+
+
 # ------------------------------------------------------------ choosing
 
 
@@ -194,6 +231,42 @@ def test_only_a_single_shot_longer_than_the_pack_is_cut_inside_around_its_best_f
     assert abs(chosen[0].seconds - 10) <= slack(10)
 
 
+def test_a_long_run_keeps_its_long_shot_not_a_sliver_beside_it():
+    """Found in review: trimming by score alone dropped the 38s shot, kept a
+    1s one, rejected that as too short and left the pack empty."""
+    shots = [Shot(index=0, start_time=0.0, end_time=1.5),
+             Shot(index=1, start_time=1.5, end_time=40.0, earliest_start=1.0)]
+    seen = seen_in(0, 1.5, 0.9) + seen_in(1.5, 40, 0.85)
+    pieces = pieces_of(shots, seen)
+
+    chosen = kept(choose(pieces, 20, edge_loss=0.0))
+
+    assert len(chosen) == 1
+    assert abs(chosen[0].seconds - 20) <= slack(20)
+    assert chosen[0].start >= 1.5  # inside the long shot
+
+
+def test_a_long_run_keeps_the_longest_stretch_of_whole_shots_that_fits():
+    shots = shots_at(2, 10, 13, 25, 40)
+    seen = seen_in(0, 25, 0.8)
+    pieces = pieces_of(shots, seen)
+
+    chosen = kept(choose(pieces, 12, edge_loss=0.0))
+
+    # Shots 0-2 (0-12.5s) fit in 12s plus 2s of slack; adding shot 3 would
+    # not, and no other stretch of whole shots that fits is longer.
+    assert [(c.start, c.end) for c in chosen] == [(0.0, 12.5)]
+
+
+@pytest.mark.parametrize("seconds", [3, 4])
+def test_a_very_short_pack_still_takes_something(seconds):
+    """Found in review: with 2s of slack, a pack of 2s or less counted as
+    done before anything was taken."""
+    pieces = three_shots_of_different_clarity()
+
+    assert kept(choose(pieces, seconds, edge_loss=0.0))
+
+
 def test_less_than_asked_gives_all_of_it_and_says_how_much_there_was():
     pieces = three_shots_of_different_clarity()
 
@@ -264,3 +337,52 @@ def test_a_scanned_videos_shots_are_found_once_and_kept(tmp_path, monkeypatch):
 
     assert [round(shot.start_time) for shot in first] == [0, 3, 6, 9]
     assert again == first and read == []  # the second time, nothing was decoded
+
+
+def test_shots_the_scan_carries_are_used_without_reading_or_looking(tmp_path, monkeypatch):
+    """Found in review: shots the scan found were only ever kept on disk, so
+    a video moved mid-scan cost its first pack a second read."""
+    from pathlib import Path
+
+    from app.ui import worker
+    from app.ui.worker import ScanResult, find_shots, known_shots
+
+    carried = [Shot(index=0, start_time=0.0, end_time=9.0)]
+    result = ScanResult(video_path=Path(tmp_path / "gone.mp4"), video_duration=9.0,
+                        sample_interval=0.5, shots=carried)
+    monkeypatch.setattr(worker, "kept_shots", lambda *a: pytest.fail("looked on disk"))
+    monkeypatch.setattr(worker, "extract_frames", lambda *a, **k: pytest.fail("read the video"))
+
+    assert known_shots(result) is carried and find_shots(result) is carried
+
+
+def test_another_videos_kept_shots_are_not_lent_to_this_footage(tmp_path, monkeypatch):
+    """Found in review: shots were keyed by whatever file is at the path now,
+    while the scan reads its footage through a held descriptor."""
+    pytest.importorskip("av")
+    import os
+    from pathlib import Path
+
+    from tests.test_shots import write_scenes
+    from app.ui.worker import ScanResult, find_shots
+    from app.video import shots as shots_module
+    from app.video.source import VideoSource
+
+    monkeypatch.setattr(shots_module, "shots_dir", lambda: tmp_path / "shots")
+    scanned, other = tmp_path / "scanned.mp4", tmp_path / "other.mp4"
+    write_scenes(scanned, cuts_at=[4.0], seconds=8)
+    write_scenes(other, cuts_at=[2.0, 5.0], seconds=11)
+    path = tmp_path / "episode.mp4"
+    os.replace(scanned, path)
+    source = VideoSource(path, keep_open=True)
+    # Another video is saved under the same name, with shots of its own.
+    os.replace(other, path)
+    shots_module.keep_shots(path, 0.5, [Shot(index=0, start_time=0.0, end_time=1.0)])
+    try:
+        result = ScanResult(video_path=Path(path), video_duration=8.0, sample_interval=0.5, source=source)
+        found = find_shots(result)
+    finally:
+        source.close()
+
+    assert [round(shot.start_time) for shot in found] == [0, 4]   # the footage read
+    assert shots_module.kept_shots(path, 0.5)[0].end_time == 1.0  # the other's left alone

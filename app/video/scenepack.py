@@ -52,6 +52,11 @@ PREFERRED_PIECE_SECONDS = 3.0
 SLACK_SECONDS = 2.0
 SLACK_SHARE = 0.05
 
+# The shortest pack worth asking for. A bare "2" is two seconds, and almost
+# certainly meant two minutes; refusing it says so instead of making an
+# empty pack.
+MIN_PACK_SECONDS = 5.0
+
 # What the encode takes off each piece: it ends on a whole frame, and its
 # sliver trimming (cutter.py) can still take a frame or two where a shot
 # boundary was found late. Measured on whole-shot pieces; see
@@ -77,6 +82,7 @@ class ShotScore:
     risk a frame of the neighbouring shot.
     """
 
+    index: int
     start: float
     end: float
     presence: float
@@ -144,7 +150,10 @@ def score_shots(shots, seen: list[Seen], interval: float) -> list[ShotScore]:
 
     A shot's samples are those from its first up to the next shot's first.
     Presence counts the moments the character is seen, not their faces --
-    two of their cards in one frame are still one moment.
+    two of their cards in one frame are still one moment. Every shot is
+    scored, even one a single sample long: it has no usable span, but it is
+    still someone's shot, and whether it is theirs decides whether the
+    shots either side of it are back to back (`find_pieces`).
     """
     scored = []
     for position, shot in enumerate(shots):
@@ -153,8 +162,7 @@ def score_shots(shots, seen: list[Seen], interval: float) -> list[ShotScore]:
         # Its last sample: the one before the next shot's first. The video's
         # end is not a sample, so the last shot runs to it.
         known_end = following.earliest_start if following is not None else shot.end_time
-        if known_end - shot.start_time <= 0:
-            continue
+        known_end = max(known_end, shot.start_time)
         faces = [face for face in seen if shot.start_time <= face.time < samples_end]
         samples = max(1, round((samples_end - shot.start_time) / interval))
         moments = len({round(face.time, 3) for face in faces})
@@ -164,7 +172,7 @@ def score_shots(shots, seen: list[Seen], interval: float) -> list[ShotScore]:
             best = max(faces, key=lambda face: face.quality).time
         else:
             quality, best = 0.0, None
-        scored.append(ShotScore(shot.start_time, known_end, presence, quality * presence, best))
+        scored.append(ShotScore(shot.index, shot.start_time, known_end, presence, quality * presence, best))
     return scored
 
 
@@ -187,10 +195,11 @@ def find_pieces(
     for shot in scored:
         if shot.presence < MIN_PRESENCE:
             continue
-        # Back to back: this shot's first sample follows the last one's
-        # within a sampling interval or so, with no shot of someone else
-        # between them.
-        if runs and shot.start - runs[-1][-1].end <= _gap_allowance(runs[-1][-1]):
+        # Back to back means the very next shot. Decided by the shots' own
+        # numbers, never by how close in time they are: a cutaway to
+        # someone else can be shorter than any gap one could allow, and
+        # would be packed inside the character's piece (found in review).
+        if runs and shot.index == runs[-1][-1].index + 1:
             runs[-1].append(shot)
         else:
             runs.append([shot])
@@ -204,13 +213,6 @@ def find_pieces(
             continue
         pieces.append(piece)
     return pieces
-
-
-def _gap_allowance(shot: ShotScore) -> float:
-    # The gap a cut leaves between one shot's last sample and the next one's
-    # first is a single sampling interval; 1.5s covers any interval the
-    # window offers without bridging a whole shot of someone else.
-    return 1.5
 
 
 def _inside(start: float, end: float, spans: list[tuple[float, float]]) -> float:
@@ -236,7 +238,9 @@ def choose(pieces: list[Piece], seconds: float, edge_loss: float = EDGE_LOSS_SEC
     dropped rows, so an editor can swap one in by hand -- with a shortened
     piece shown as changed from the whole run it came from.
     """
-    margin = slack(seconds)
+    # Never more than half the length either side, or a pack of a few
+    # seconds would count as done before anything was taken.
+    margin = min(slack(seconds), seconds / 2)
     ranked = sorted(
         range(len(pieces)),
         key=lambda i: (
@@ -274,24 +278,41 @@ def choose(pieces: list[Piece], seconds: float, edge_loss: float = EDGE_LOSS_SEC
 
 
 def _fitted(piece: Piece, room: float, wanted: float) -> tuple[float, float] | None:
-    """The piece, or as much of it as fits in `room`, on shot boundaries."""
-    shots = list(piece.shots)
-    while len(shots) > 1 and shots[-1].end - shots[0].start > room:
-        # Lose the weaker end.
-        if shots[0].score < shots[-1].score:
-            shots.pop(0)
-        else:
-            shots.pop()
-    start, end = shots[0].start, shots[-1].end
-    if end - start > room:
-        # One shot longer than what is left: the only cut inside a shot.
-        length = min(room, max(wanted, MIN_PIECE_SECONDS))
-        centre = shots[0].best if shots[0].best is not None else (start + end) / 2
-        start = min(max(centre - length / 2, shots[0].start), shots[0].end - length)
-        end = start + length
-    if end - start < MIN_PIECE_SECONDS:
-        return None
-    return start, end
+    """The piece, or as much of it as fits in `room`, on shot boundaries.
+
+    A piece too long keeps the longest stretch of its whole shots that fits
+    -- the clearer of two that tie -- so it still starts and ends where the
+    show cuts. Only when no stretch of whole shots fits is one shot cut
+    inside: the clearest that can hold what is wanted, around its best face.
+    """
+    if piece.seconds <= room:
+        return piece.start, piece.end
+    shots = piece.shots
+    best_key, best_span = None, None
+    for first in range(len(shots)):
+        for last in range(first, len(shots)):
+            span = shots[last].end - shots[first].start
+            if span > room:
+                break
+            if span < MIN_PIECE_SECONDS:
+                continue
+            key = (span, Piece(piece.video, shots[first : last + 1]).score)
+            if best_key is None or key > best_key:
+                best_key, best_span = key, (shots[first].start, shots[last].end)
+    if best_span is not None:
+        return best_span
+
+    length = min(room, max(wanted, MIN_PIECE_SECONDS))
+    holding = [shot for shot in shots if shot.seconds >= length]
+    if not holding:
+        longest = max(shots, key=lambda shot: shot.seconds)
+        if longest.seconds < MIN_PIECE_SECONDS:
+            return None
+        holding, length = [longest], longest.seconds
+    shot = max(holding, key=lambda candidate: candidate.score)
+    centre = shot.best if shot.best is not None else (shot.start + shot.end) / 2
+    start = min(max(centre - length / 2, shot.start), shot.end - length)
+    return start, start + length
 
 
 def expected_seconds(cuts: list[Cut], edge_loss: float = EDGE_LOSS_SECONDS) -> float:

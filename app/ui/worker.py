@@ -273,6 +273,10 @@ class ScanResult:
     reused: bool = False
     # How long the original scan took, when this was reused.
     original_seconds: float = 0.0
+    # Where the camera cuts (app/video/shots.py), for scene packs: found by
+    # this scan, or kept from an earlier one of the same footage. None when
+    # not known yet -- `find_shots` finds them.
+    shots: list | None = None
 
     def close(self) -> None:
         """Releases the footage handle. Safe to call more than once."""
@@ -404,7 +408,7 @@ def scan(
     else:
         try:
             prints = collector_for(video_path, fingerprint_dir()) if fingerprint else None
-            result, duration, resolved_min_detections = _scan_footage(
+            result, duration, resolved_min_detections, shots = _scan_footage(
                 source, settings, cancel, on_progress, prints
             )
         except BaseException:
@@ -453,6 +457,13 @@ def scan(
         source=source,
         reused=kept is not None,
         original_seconds=scan.scan_seconds,
+        shots=(
+            shots
+            if kept is None
+            else kept_shots(video_path, settings.sample_interval)
+            if _same_footage(source, video_path)
+            else None
+        ),
     )
 
 
@@ -630,10 +641,30 @@ def _scan_footage(source, settings, cancel, on_progress, prints=None):
         duration = result.last_timestamp
 
     # Reached only by a scan that read the whole video: a cancelled one
-    # raised above, so no half-found list of shots is ever kept.
-    keep_shots(source.path, settings.sample_interval, shots.finish(duration))
+    # raised above, so no half-found list of shots is ever kept. Returned as
+    # well as kept, so a video moved mid-scan, or a scan folder that cannot
+    # be written, does not cost the first pack a second read.
+    found = shots.finish(duration)
+    if _same_footage(source, source.path):
+        keep_shots(source.path, settings.sample_interval, found)
 
-    return result, duration, resolved_min_detections
+    return result, duration, resolved_min_detections, found
+
+
+def _same_footage(source, path: Path) -> bool:
+    """Whether the file at `path` is still the footage `source` reads.
+
+    Kept shots are keyed by the path, but a held descriptor follows the
+    file, not the name: a different video saved under the same name since
+    the scan would otherwise lend its shots to this one, or be given this
+    one's. Checked the way `_preview_container` checks before reading.
+    """
+    if source is None:
+        return True
+    try:
+        return path.is_file() and path.stat().st_size == source.size
+    except OSError:
+        return False
 
 
 def _shot_fed(frames, detector: ShotDetector):
@@ -648,17 +679,18 @@ def find_shots(
 ) -> list:
     """A scanned video's shots: kept from its scan, or found now and kept.
 
-    Found now only for a scan kept from before shots were recorded. That
+    Found now only for a scan kept from before shots were recorded, or one
+    whose file has changed under its name since. That
     reads the video once more at the scan's own interval -- about half a
     minute for 22 minutes of 720p -- and is never needed again.
 
     Raises:
         Cancelled: If `cancel` was set while reading.
     """
+    known = known_shots(scan_result)
+    if known is not None:
+        return known
     interval = scan_result.sample_interval
-    shots = kept_shots(scan_result.video_path, interval)
-    if shots is not None:
-        return shots
     detector = ShotDetector()
     source = scan_result.source
     with (source.open() if source is not None else load_video(scan_result.video_path)) as container:
@@ -669,8 +701,19 @@ def find_shots(
         ):
             detector.add(timestamp, frame)
     shots = detector.finish(scan_result.video_duration)
-    keep_shots(scan_result.video_path, interval, shots)
+    if _same_footage(source, scan_result.video_path):
+        keep_shots(scan_result.video_path, interval, shots)
     return shots
+
+
+def known_shots(scan_result: "ScanResult") -> list | None:
+    """A scanned video's shots if they are known without reading it: carried
+    by the scan, or kept for the same footage. None if they must be found."""
+    if scan_result.shots is not None:
+        return scan_result.shots
+    if not _same_footage(scan_result.source, scan_result.video_path):
+        return None
+    return kept_shots(scan_result.video_path, scan_result.sample_interval)
 
 
 def combined_group(people: list[Person]) -> FaceIdentityGroup:

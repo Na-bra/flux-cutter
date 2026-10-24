@@ -289,7 +289,7 @@ def scanned(monkeypatch):
             frame_index=1,
         )
         group.observations = [group.representative_observation]
-        return FakePipelineResult([group]), 120.0, 3
+        return FakePipelineResult([group]), 120.0, 3, []
 
     monkeypatch.setattr(worker_module, "_scan_footage", fake_scan_footage)
     monkeypatch.setattr(worker_module, "fetch_models", lambda **kwargs: None)

@@ -372,8 +372,9 @@ def describe(shots: list[Shot]) -> list[str]:
 # scans; a video whose scan was kept from before this has them found once,
 # on the first pack that needs them.
 
-# Bumped when what is kept changes shape, so an old file is never read as
-# a new one.
+# Bumped when what is kept changes shape, or when how shots are found
+# changes (the module's constants above), so a file kept by an older rule
+# is never read as a current one.
 SHOTS_FORMAT = 1
 
 

@@ -1286,12 +1286,12 @@
   }
 
   // Shots are found in the background for a video scanned before they were
-  // recorded; the pack arrives here when they are.
-  function waitForPack(d) {
-    if (!(d.pack && d.pack.waiting)) return;
+  // recorded. Python says so before it starts, whatever started it, and the
+  // pack arrives with "onPackReady" when they are found.
+  window.onPackWaiting = () => {
     busy("pack");
     status("<b>Finding where the camera cuts…</b> Once per video.");
-  }
+  };
 
   window.onPackReady = (d) => {
     idle(); setBar(0);
@@ -1315,7 +1315,6 @@
     state.pack = d.pack ? d.pack.length : "";
     $("pack").value = state.pack;
     if (!$("cuts").hidden) drawCuts(d); else showCutSummary(d);
-    waitForPack(d);
   }
 
   $("pack").addEventListener("change", setPack);
@@ -1329,7 +1328,6 @@
     const d = await pywebview.api.cut_list();
     if (!d.accepted) return;
     showCutSummary(d);
-    waitForPack(d);
   }
 
   async function openCuts() {
