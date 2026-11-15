@@ -4353,3 +4353,54 @@ Driven in the window (test.mp4): "2" refused with the 2:00 hint; 0:10 gave
 the export wrote one file, test-person-1.mp4, 1.5s, announced as "Scene
 pack saved"; emptying the box put back "Export reel" and the reel's note.
 
+## 58. A pack's edges on the exact frame (`shots.exact_cut`, `worker.snap_to_cuts`)
+
+§57's pieces run from a shot's first sample to its last, so each edge
+gives up to one sampling interval of the shot's own footage. `exact_cut`
+reads the frames of that one interval -- the cut lies in
+(`earliest_start`, `start_time`] -- and takes the largest step between
+consecutive 64x36 thumbnails as the cut, if it is at least 12 (the cutter's
+CUT_DIFFERENCE) and 2.5 times any other step there. Otherwise None, and
+the edge stays on its sample.
+
+All 1036 boundaries of a 44-minute 720p episode at 0.5s sampling:
+
+    one clear cut                       955 (92%)
+    cost                                46 ms each (a seek, ~70 frames)
+    cut found before its first sample   0.25 s on average, 0.50 s at most
+
+### Only at export, only for the pieces exported
+
+Refining every boundary would be a second full decode (48s here). A pack
+needs only its own pieces' edges, so `snap_to_cuts` runs in the export
+worker just before the encode (`Bridge._export_worker`,
+`_folder_export_worker`, when a pack is on). `exact_edges` moves an edge
+only when it equals a shot's `start_time` (cut in) or the next shot's
+`earliest_start` (cut out): an edge moved by hand, or cut inside a shot,
+matches neither and stays. Any failure reading the video returns the
+segments unchanged -- snapping can only improve on the plan.
+
+The pack is chosen before its edges are exact, so choosing allows for the
+gain: `scenepack.edge_loss_at(interval)` is the encode's loss less
+SNAP_GAIN_SHARE (0.92: two edges, half an interval each, 92% clear) of an
+interval, a negative loss.
+
+### Measured
+
+2:00 pack of the lead, same episode, 23 pieces:
+
+    edges moved                 43 of 46, in 2.5 s
+    planned -> snapped          107.8 s -> 119.2 s (+0.49 s a piece)
+    exported                    119.16 s (the panel said about 1:57)
+    change across a moved edge  min 34.0, median 42.3
+    change one frame inside it  median 0.6, max 2.6
+    cut pairs within 12 frames  0
+
+The exported length matched the snapped plan to 0.04s: with edges on the
+cuts the sliver trimmer finds nothing to trim.
+
+Measured on another episode because `test_3.mp4` and `animation2.mp4`
+were no longer in `assets/test-videos/` (folder changed 2026-11-02);
+§57's numbers for test_3 cannot be re-run until it is back, and
+`evaluate` skips both.
+

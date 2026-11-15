@@ -89,7 +89,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from app.video.timeline import format_timestamp
+from app.video.timeline import AppearanceInterval, format_timestamp
 
 # The sampling a shot pass reads at, whatever interval a scan uses. See
 # "How often to sample" above.
@@ -444,4 +444,111 @@ def keep_shots(
         temporary.replace(target / f"{name}.json")
     except OSError:
         pass
+
+
+# ------------------------------------------------------- the exact frame
+#
+# A shot's boundaries are known to within one sampling interval: the cut
+# lies somewhere after `earliest_start`, at or before `start_time`. A scene
+# pack plays it safe and keeps each piece inside the samples known to be
+# its own shots, which costs up to an interval of footage at each edge.
+# Reading the frames of that one interval finds the cut itself.
+#
+# Measured on a 44-minute episode at 0.5s sampling, 1036 boundaries: 92%
+# hold one clear cut, found a mean 0.25s before the sample that first
+# showed it, at 46ms each (a seek and ~70 frames). The rest hold two
+# changes -- a flash, or a shot too short to have been kept -- or none
+# sharp enough, and are left where the samples put them.
+
+# The picture change that is a cut: two frames' 64x36 colour thumbnails
+# differing by this much on average (0-255) -- the scale and the figure the
+# cutter trims slivers by (cutter.CUT_DIFFERENCE) -- and by this many times
+# more than any other step in the interval, so that fast motion, or one of
+# two cuts, is not taken for the cut.
+EXACT_CUT_DIFFERENCE = 12.0
+EXACT_CUT_RATIO = 2.5
+
+
+def _pick_cut(changes: list[tuple[float, float]]) -> float | None:
+    """The moment of the one clear cut among (change, time) steps, or None."""
+    if not changes:
+        return None
+    ordered = sorted(changes, reverse=True)
+    top, at = ordered[0]
+    runner_up = ordered[1][0] if len(ordered) > 1 else 0.0
+    if top < EXACT_CUT_DIFFERENCE or top < EXACT_CUT_RATIO * max(runner_up, 1.0):
+        return None
+    return at
+
+
+def exact_cut(container, stream, lo: float, hi: float) -> float | None:
+    """When the shot that starts in (lo, hi] starts: its first frame's time.
+
+    None when the interval holds no single clear cut. The container must
+    decode every frame -- not one narrowed by `skip_nonreference_frames`.
+    """
+    container.seek(int(lo / stream.time_base), stream=stream)
+    previous = None
+    changes: list[tuple[float, float]] = []
+    for frame in container.decode(stream):
+        if frame.time is None or frame.time < lo - 1e-6:
+            continue
+        if frame.time > hi + 1e-6:
+            break
+        thumb = frame.reformat(width=64, height=36, format="rgb24").to_ndarray().astype(np.float32)
+        if previous is not None:
+            changes.append((float(np.abs(thumb - previous).mean()), float(frame.time)))
+        previous = thumb
+    return _pick_cut(changes)
+
+
+def exact_edges(
+    container,
+    stream,
+    shots: list[Shot],
+    segments: list[AppearanceInterval],
+    check=None,
+) -> list[AppearanceInterval]:
+    """Segments with each edge that sits on a shot's samples moved to its cut.
+
+    A segment that starts on a shot's first sample starts instead on the
+    shot's first frame; one that ends on a shot's last sample ends where
+    the next shot begins, taking every frame of its own. An edge anywhere
+    else -- moved by hand, or cut inside a shot -- is someone's decision
+    and stays, as does one whose cut is not clear.
+
+    Args:
+        check: Called before each segment; raise from it to stop.
+    """
+    into = {round(shot.start_time, 6): shot for shot in shots[1:]}
+    out_of = {round(shot.earliest_start, 6): shot for shot in shots[1:]}
+    found: dict[int, float | None] = {}
+
+    def cut_into(shot: Shot) -> float | None:
+        if shot.index not in found:
+            cut = None
+            if shot.start_time > shot.earliest_start:
+                cut = exact_cut(container, stream, shot.earliest_start, shot.start_time)
+            found[shot.index] = cut
+        return found[shot.index]
+
+    snapped = []
+    for segment in segments:
+        if check is not None:
+            check()
+        start, end = segment.start_time, segment.end_time
+        opening = into.get(round(start, 6))
+        if opening is not None:
+            cut = cut_into(opening)
+            if cut is not None:
+                start = cut
+        closing = out_of.get(round(end, 6))
+        if closing is not None:
+            cut = cut_into(closing)
+            if cut is not None:
+                end = cut
+        if end <= start:
+            start, end = segment.start_time, segment.end_time
+        snapped.append(AppearanceInterval(start_time=start, end_time=end))
+    return snapped
 
