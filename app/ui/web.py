@@ -1433,6 +1433,12 @@ class Bridge:
                 on_progress=report,
                 cancel=self._cancel,
                 segments=segments,
+                # A pack's edges are on the show's cuts, or inside a shot
+                # where no cut is clear: nothing of a neighbouring shot to
+                # trim. On animation the trimmer took effects near an edge
+                # -- a red flash, speed lines -- for cuts and dropped 2.4s
+                # of a 2:00 pack's footage (Instructions.md 58).
+                trim_slivers=self._pack_seconds is None,
             )
         except Cancelled:
             self._emit("onExportCancelled")
@@ -1886,6 +1892,7 @@ class Bridge:
                 on_progress=report,
                 cancel=self._cancel,
                 plans=plans,
+                trim_slivers=self._pack_seconds is None,
             )
         except Cancelled:
             self._emit("onExportCancelled")

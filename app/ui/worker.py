@@ -1020,6 +1020,7 @@ def export(
     on_progress=None,
     cancel: threading.Event | None = None,
     segments: list | None = None,
+    trim_slivers: bool = True,
 ):
     """Cuts one or more people's appearances into a single reel.
 
@@ -1070,6 +1071,7 @@ def export(
         quality=settings.quality,
         include_audio=settings.include_audio,
         on_segment=report,
+        trim_slivers=trim_slivers,
     )
 
 

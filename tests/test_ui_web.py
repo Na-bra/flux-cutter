@@ -2058,12 +2058,14 @@ def test_a_packs_export_moves_its_edges_to_the_exact_cuts(bridge, monkeypatch, w
         return exact
 
     monkeypatch.setattr(web, "snap_to_cuts", fake_snap)
-    monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append(segments))
+    monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append((segments, k["trim_slivers"])))
 
     bridge._export_worker(Path("/tmp/ben.mp4"), web.ExportSettings(), planned)
 
     assert asked[0][1] == planned and asked[0][0] == fake_shots()
-    assert cut == [exact]
+    # Cut as snapped, and not trimmed: on animation the trimmer took effects
+    # near an edge for cuts and dropped real footage.
+    assert cut == [(exact, False)]
     assert bridge.window.emitted("onExported")["pack"] is True
 
 
@@ -2072,11 +2074,11 @@ def test_a_reels_export_is_cut_exactly_as_planned(bridge, monkeypatch, with_shot
     planned = bridge._cut_segments()
     cut = []
     monkeypatch.setattr(web, "snap_to_cuts", lambda *a: pytest.fail("a reel is not snapped"))
-    monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append(segments))
+    monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append((segments, k["trim_slivers"])))
 
     bridge._export_worker(Path("/tmp/reel.mp4"), web.ExportSettings(), planned)
 
-    assert cut == [planned]
+    assert cut == [(planned, True)]
 
 
 def test_the_length_a_pack_says_allows_for_what_the_exact_cuts_add(bridge, monkeypatch, with_shots):

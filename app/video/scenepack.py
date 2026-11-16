@@ -57,10 +57,9 @@ SLACK_SHARE = 0.05
 # empty pack.
 MIN_PACK_SECONDS = 5.0
 
-# What the encode takes off each piece: it ends on a whole frame, and its
-# sliver trimming (cutter.py) can still take a frame or two where a shot
-# boundary was found late. Measured on whole-shot pieces; see
-# Instructions.md 57.
+# What the encode takes off each piece: it ends on a whole frame. A pack is
+# cut without sliver trimming (its edges are already on cuts), so that is
+# all. Measured on whole-shot pieces; see Instructions.md 57 and 58.
 EDGE_LOSS_SECONDS = 0.05
 
 

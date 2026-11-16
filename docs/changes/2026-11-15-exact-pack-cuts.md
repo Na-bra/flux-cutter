@@ -20,6 +20,8 @@ whole shot, first frame to last.
   in 12.
 - An edge you moved by hand in **Edit cuts…** is never touched.
 - Reels (with the length box empty) are exported exactly as before.
+- On animation, effects near the edge of a piece are no longer mistaken for
+  cuts and trimmed away.
 
 ## Measured
 
@@ -41,12 +43,36 @@ nothing of the next shot included.
 The panel's "about" length now allows for the extra footage. In this run it
 said about 1:57 and the pack came out 1:59.2.
 
+### On animation
+
+A 2:00 pack from a 28-minute animated episode: 31 edges moved to the exact cut
+in 2.1 seconds, each one a sharp change in the source.
+
+That run turned up one more thing to fix. When it cuts, FluxCutter normally
+drops any flash of a neighbouring shot at the edge of each piece. On
+animation it mistook the show's own effects near an edge (a red flash, speed
+lines) for a cut, and threw away 2.4 seconds of real footage. A scene pack's
+edges are already on the show's cuts, so that clean-up is now off for packs:
+
+| 2:00 animation pack | Planned | Came out |
+|---|---|---|
+| With the clean-up | 1:54.1 | 1:51.7 |
+| Without it (now) | 1:54.1 | **1:54.1** |
+
+Live action came out the same either way (1:59.2). Reels still get the
+clean-up as before.
+
+Those effects (whole-frame flashes, speed lines drawn every couple of frames)
+are inside the show's own shots, so they stay in your pack, as they are in
+the episode.
+
 ## A note on the test videos
 
-These numbers come from a different episode than earlier write-ups. The
-22-minute test episode (`test_3.mp4`) and `animation2.mp4` are no longer in
-`assets/test-videos/` (the folder last changed on 2 November). Until they're
-back, the evaluation suite can't measure those two videos on this Mac.
+New videos now sit under two old names: `test_3.mp4` is the 44-minute
+episode measured above, and `animation2.mp4` is a 28-minute animated
+episode. The evaluation suite's labels describe the old files, so it rightly
+refuses to score these two ("not the file its truth was labelled on"). Scoring
+them would need new labels.
 
 ## How to undo
 

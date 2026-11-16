@@ -4404,3 +4404,26 @@ were no longer in `assets/test-videos/` (folder changed 2026-11-02);
 §57's numbers for test_3 cannot be re-run until it is back, and
 `evaluate` skips both.
 
+### No sliver trimming for packs
+
+On the new animation2.mp4 (28 min, 850x480), a 2:00 pack moved 31 edges in
+2.1s (change across each: min 30.0, median 65.2; one frame inside: max 6.1).
+The export then came out 111.69s against 114.1s planned: the cutter's sliver
+trimming (§37) took effects near an edge -- a whole-frame red flash, speed
+lines redrawn every two frames -- for a cut and dropped the frames before
+them. A pack's edges are on cuts or inside a shot, so there is nothing for
+it to trim; `export` and `export_cast` take `trim_slivers`, and the window
+passes False when a pack is on.
+
+    2:00 pack, snapped          trim on     trim off
+    animation2 (planned 114.1)  111.69 s    114.07 s
+    test_3     (planned 119.2)  119.16 s    119.16 s
+
+Close pairs of cuts in that pack's output (28, against 21 unsnapped) are
+those same effects, inside the show's own shots: the known weakness that
+effects read as cuts (§46), not slivers.
+
+The files now named test_3.mp4 (the 44-minute episode) and animation2.mp4
+are not the ones labelled in evaluation/truth/, which `evaluate` detects
+by size and skips.
+
