@@ -494,6 +494,7 @@ def export_cast(
     on_progress=None,
     cancel: threading.Event | None = None,
     plans: list[tuple[int, list]] | None = None,
+    trim_slivers: bool = True,
 ) -> tuple[CutResult, list[tuple[Path, str]]]:
     """Cuts one person out of every video they are in, into one reel.
 
@@ -542,6 +543,7 @@ def export_cast(
         quality=settings.quality,
         include_audio=settings.include_audio,
         on_segment=report,
+        trim_slivers=trim_slivers,
     )
     return cut, left_out
 

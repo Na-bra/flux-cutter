@@ -57,10 +57,9 @@ SLACK_SHARE = 0.05
 # empty pack.
 MIN_PACK_SECONDS = 5.0
 
-# What the encode takes off each piece: it ends on a whole frame, and its
-# sliver trimming (cutter.py) can still take a frame or two where a shot
-# boundary was found late. Measured on whole-shot pieces; see
-# Instructions.md 57.
+# What the encode takes off each piece: it ends on a whole frame. A pack is
+# cut without sliver trimming (its edges are already on cuts), so that is
+# all. Measured on whole-shot pieces; see Instructions.md 57 and 58.
 EDGE_LOSS_SECONDS = 0.05
 
 
@@ -120,6 +119,20 @@ class Piece:
         if total <= 0:
             return 0.0
         return sum(shot.score * shot.seconds for shot in self.shots) / total
+
+
+# What moving a piece's edges to the exact cuts adds, as a share of the
+# sampling interval per piece. Each edge gains between nothing and one
+# interval, half of one on average, and 92% of edges have a cut clear
+# enough to move to (shots.exact_cut): 2 x 0.5 x 0.92.
+SNAP_GAIN_SHARE = 0.92
+
+
+def edge_loss_at(interval: float) -> float:
+    """What cutting changes a piece's length by, net: the encode's loss less
+    what the exact cuts add. Negative -- a pack comes out longer than its
+    pieces are planned, which choosing has to allow for."""
+    return EDGE_LOSS_SECONDS - SNAP_GAIN_SHARE * interval
 
 
 def faces_seen(people) -> list[Seen]:

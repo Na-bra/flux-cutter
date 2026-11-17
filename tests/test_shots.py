@@ -361,3 +361,81 @@ def test_the_command_line_lists_the_shots(tmp_path, monkeypatch, capsys):
     assert printed[0].startswith("Shot 1: 00:00.00 → ")
     assert sum(line.startswith("Shot ") for line in printed) == 3
     assert "3 shots in 14.0s" in printed[-1]
+
+
+# ------------------------------------------------------- the exact frame
+
+
+def _open(path):
+    container = av.open(str(path))
+    return container, container.streams.video[0]
+
+
+def test_the_exact_frame_of_a_cut_is_found_inside_its_sampling_interval(tmp_path):
+    from app.video.shots import exact_cut
+
+    path = tmp_path / "scenes.mp4"
+    # Off the half-second grid, so sampling alone cannot land on them.
+    write_scenes(path, cuts_at=[4.2, 9.3], seconds=14)
+    shots = shots_of_video(path)
+
+    container, stream = _open(path)
+    with container:
+        found = [exact_cut(container, stream, s.earliest_start, s.start_time) for s in shots[1:]]
+
+    # The first frame at or after each cut, at 24 frames a second.
+    assert found == [pytest.approx(101 / 24, abs=1e-3), pytest.approx(224 / 24, abs=1e-3)]
+
+
+def test_an_interval_with_no_cut_in_it_gives_none(tmp_path):
+    from app.video.shots import exact_cut
+
+    path = tmp_path / "scenes.mp4"
+    write_scenes(path, cuts_at=[4.2], seconds=8)
+
+    container, stream = _open(path)
+    with container:
+        assert exact_cut(container, stream, 1.0, 1.5) is None
+
+
+def test_two_changes_in_one_interval_are_not_guessed_between():
+    from app.video.shots import _pick_cut
+
+    assert _pick_cut([(2.0, 1.0), (40.0, 1.04), (3.0, 1.08)]) == 1.04
+    assert _pick_cut([(38.0, 1.0), (40.0, 1.04)]) is None   # a flash: two cuts
+    assert _pick_cut([(9.0, 1.0), (2.0, 1.04)]) is None     # nothing sharp enough
+    assert _pick_cut([]) is None
+
+
+def test_edges_on_a_shots_samples_move_to_its_cuts_and_others_stay(tmp_path):
+    from app.video.shots import exact_edges
+    from app.video.timeline import AppearanceInterval
+
+    path = tmp_path / "scenes.mp4"
+    write_scenes(path, cuts_at=[4.2, 9.3], seconds=14)
+    shots = shots_of_video(path)
+    middle = shots[1]
+    # As a scene pack plans the middle shot: first sample to last sample.
+    planned = AppearanceInterval(middle.start_time, shots[2].earliest_start)
+    by_hand = AppearanceInterval(middle.start_time + 0.3, shots[2].earliest_start - 0.2)
+
+    container, stream = _open(path)
+    with container:
+        snapped, untouched = exact_edges(container, stream, shots, [planned, by_hand])
+
+    assert snapped.start_time == pytest.approx(101 / 24, abs=1e-3)
+    assert snapped.end_time == pytest.approx(224 / 24, abs=1e-3)
+    # It grew outwards to the cuts, never past them.
+    assert snapped.start_time <= planned.start_time and snapped.end_time >= planned.end_time
+    assert untouched == by_hand
+
+
+def test_snapping_can_be_stopped_between_segments():
+    from app.video.shots import exact_edges
+    from app.video.timeline import AppearanceInterval
+
+    def stop():
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        exact_edges(None, None, [], [AppearanceInterval(0.0, 1.0)], check=stop)

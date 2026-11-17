@@ -2039,3 +2039,54 @@ def test_a_video_with_no_shots_at_all_does_not_leave_the_pack_waiting(bridge, mo
 
     assert "waiting" not in bridge.cut_list()["pack"]
     assert answer["accepted"] is True
+
+
+# ------------------------------------------------- a pack's exact cuts
+
+
+def test_a_packs_export_moves_its_edges_to_the_exact_cuts(bridge, monkeypatch, with_shots):
+    from app.video.timeline import AppearanceInterval
+
+    picked(bridge, monkeypatch)
+    bridge.set_scene_pack("5")
+    planned = bridge._cut_segments()
+    asked, cut = [], []
+    exact = [AppearanceInterval(s.start_time - 0.2, s.end_time + 0.3) for s in planned]
+
+    def fake_snap(result, shots, segments, cancel):
+        asked.append((shots, segments))
+        return exact
+
+    monkeypatch.setattr(web, "snap_to_cuts", fake_snap)
+    monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append((segments, k["trim_slivers"])))
+
+    bridge._export_worker(Path("/tmp/ben.mp4"), web.ExportSettings(), planned)
+
+    assert asked[0][1] == planned and asked[0][0] == fake_shots()
+    # Cut as snapped, and not trimmed: on animation the trimmer took effects
+    # near an edge for cuts and dropped real footage.
+    assert cut == [(exact, False)]
+    assert bridge.window.emitted("onExported")["pack"] is True
+
+
+def test_a_reels_export_is_cut_exactly_as_planned(bridge, monkeypatch, with_shots):
+    picked(bridge, monkeypatch)
+    planned = bridge._cut_segments()
+    cut = []
+    monkeypatch.setattr(web, "snap_to_cuts", lambda *a: pytest.fail("a reel is not snapped"))
+    monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append((segments, k["trim_slivers"])))
+
+    bridge._export_worker(Path("/tmp/reel.mp4"), web.ExportSettings(), planned)
+
+    assert cut == [(planned, True)]
+
+
+def test_the_length_a_pack_says_allows_for_what_the_exact_cuts_add(bridge, monkeypatch, with_shots):
+    picked(bridge, monkeypatch)
+
+    packed = bridge.set_scene_pack("5")
+
+    planned = sum(c.seconds for c in bridge._cuts if not c.dropped)
+    gain = -scenepack.edge_loss_at(0.5)
+    assert gain == pytest.approx(0.92 * 0.5 - scenepack.EDGE_LOSS_SECONDS)
+    assert packed["pack"]["about"] == web._clock(planned + packed["kept"] * gain)

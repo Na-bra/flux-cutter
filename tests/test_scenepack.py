@@ -386,3 +386,36 @@ def test_another_videos_kept_shots_are_not_lent_to_this_footage(tmp_path, monkey
 
     assert [round(shot.start_time) for shot in found] == [0, 4]   # the footage read
     assert shots_module.kept_shots(path, 0.5)[0].end_time == 1.0  # the other's left alone
+
+
+def test_snapping_never_fails_an_export(tmp_path):
+    """Whatever goes wrong reading the video, the pieces go out as planned."""
+    from pathlib import Path
+
+    from app.ui.worker import ScanResult, snap_to_cuts
+    from app.video.timeline import AppearanceInterval
+
+    segments = [AppearanceInterval(1.0, 4.0)]
+    gone = ScanResult(video_path=Path(tmp_path / "gone.mp4"), video_duration=9.0, sample_interval=0.5)
+
+    assert snap_to_cuts(gone, [Shot(index=0, start_time=0.0, end_time=9.0)], segments) == segments
+    assert snap_to_cuts(gone, None, segments) == segments
+
+
+def test_snapping_stops_when_cancelled(tmp_path):
+    pytest.importorskip("av")
+    import threading
+    from pathlib import Path
+
+    from tests.test_shots import write_scenes
+    from app.ui.worker import Cancelled, ScanResult, snap_to_cuts
+    from app.video.shots import shots_of_video
+    from app.video.timeline import AppearanceInterval
+
+    path = tmp_path / "scenes.mp4"
+    write_scenes(path, cuts_at=[4.2], seconds=8)
+    cancel = threading.Event(); cancel.set()
+    result = ScanResult(video_path=Path(path), video_duration=8.0, sample_interval=0.5)
+
+    with pytest.raises(Cancelled):
+        snap_to_cuts(result, shots_of_video(path), [AppearanceInterval(1.0, 3.0)], cancel)

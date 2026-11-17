@@ -48,6 +48,7 @@ from app.ui.worker import (
     plan_export,
     quality_for,
     scan,
+    snap_to_cuts,
 )
 from app.faces import library
 from app.ui import tuning
@@ -261,6 +262,8 @@ class Bridge:
         # there was; and whether it is waiting on shots still being found.
         self._pack_pieces: list[scenepack.Piece] = []
         self._pack_waiting = False
+        # What cutting changes each piece's length by (scenepack.edge_loss_at).
+        self._pack_edge_loss = scenepack.EDGE_LOSS_SECONDS
         # Shots found this session, by (video path, interval): kept on disk
         # too, but a video moved since its scan cannot be keyed there, and
         # without these its pack would wait for shots already found.
@@ -1099,11 +1102,11 @@ class Bridge:
             return None
         if self._pack_waiting:
             return {"length": _clock(self._pack_seconds), "waiting": True}
-        available = scenepack.available_seconds(self._pack_pieces)
+        available = scenepack.available_seconds(self._pack_pieces, self._pack_edge_loss)
         return {
             "length": _clock(self._pack_seconds),
             # What the pieces come out as once cut (scenepack.EDGE_LOSS_SECONDS).
-            "about": _clock(scenepack.expected_seconds(self._cuts)),
+            "about": _clock(scenepack.expected_seconds(self._cuts, self._pack_edge_loss)),
             "pieces": len(cuts.kept(self._cuts)),
             # Short of the length asked for, because there is not that much
             # of them in whole shots: said, so a 40s pack asked to be a
@@ -1159,10 +1162,7 @@ class Bridge:
             result = self._scan_for(video)
             if result is None:
                 continue
-            found = known_shots(result)
-            if found is None:
-                found = self._shots_found.get((str(result.video_path), result.sample_interval))
-            shots[video] = found
+            shots[video] = self._shots_for(result)
         missing = [video for video, found in shots.items() if found is None]
         if missing:
             self._pack_waiting = True
@@ -1188,7 +1188,16 @@ class Bridge:
                 within.get(video, []),
             )
         ]
-        return scenepack.choose(self._pack_pieces, self._pack_seconds)
+        self._pack_edge_loss = scenepack.edge_loss_at(
+            min(interval.values()) if interval else 0.0
+        )
+        return scenepack.choose(self._pack_pieces, self._pack_seconds, self._pack_edge_loss)
+
+    def _shots_for(self, result: ScanResult) -> list | None:
+        found = known_shots(result)
+        if found is None:
+            found = self._shots_found.get((str(result.video_path), result.sample_interval))
+        return found
 
     def _shots_worker(self, videos: list[int]) -> None:
         """Finds the shots a pack needs, then shows the pack."""
@@ -1409,6 +1418,13 @@ class Bridge:
 
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            if self._pack_seconds is not None:
+                # A pack's pieces end on the exact frames the show cuts on.
+                self._emit("onStatus", {"text": "Finding the exact frame of each cut…"})
+                segments = snap_to_cuts(
+                    self._scan_result, self._shots_for(self._scan_result), segments, self._cancel
+                )
+                self._emit("onStatus", {"text": "Exporting…"})
             export(
                 self._scan_result,
                 self._selected,
@@ -1417,6 +1433,12 @@ class Bridge:
                 on_progress=report,
                 cancel=self._cancel,
                 segments=segments,
+                # A pack's edges are on the show's cuts, or inside a shot
+                # where no cut is clear: nothing of a neighbouring shot to
+                # trim. On animation the trimmer took effects near an edge
+                # -- a red flash, speed lines -- for cuts and dropped 2.4s
+                # of a 2:00 pack's footage (Instructions.md 58).
+                trim_slivers=self._pack_seconds is None,
             )
         except Cancelled:
             self._emit("onExportCancelled")
@@ -1847,6 +1869,21 @@ class Bridge:
 
         try:
             output.parent.mkdir(parents=True, exist_ok=True)
+            if self._pack_seconds is not None:
+                self._emit("onStatus", {"text": "Finding the exact frame of each cut…"})
+                plans = [
+                    (
+                        video,
+                        snap_to_cuts(
+                            self._folder.videos[video],
+                            self._shots_for(self._folder.videos[video]),
+                            segments,
+                            self._cancel,
+                        ),
+                    )
+                    for video, segments in plans
+                ]
+                self._emit("onStatus", {"text": "Exporting…"})
             _, left_out = export_cast(
                 self._folder,
                 self._cast_selected,
@@ -1855,6 +1892,7 @@ class Bridge:
                 on_progress=report,
                 cancel=self._cancel,
                 plans=plans,
+                trim_slivers=self._pack_seconds is None,
             )
         except Cancelled:
             self._emit("onExportCancelled")

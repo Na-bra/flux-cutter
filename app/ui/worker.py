@@ -51,7 +51,7 @@ from app.scans import save as save_scan
 from app.ui.gallery import DEFAULT_PADDING_RATIO, build_identity_gallery
 from app.modes import DEFAULT_MODE, get_mode
 from app.video.cutter import cut_segments
-from app.video.shots import ShotDetector, keep_shots, kept_shots
+from app.video.shots import ShotDetector, exact_edges, keep_shots, kept_shots
 from app.video.source import VideoSource
 from app.video.export import (
     DEFAULT_BRIDGE_GAP_SECONDS,
@@ -1020,6 +1020,7 @@ def export(
     on_progress=None,
     cancel: threading.Event | None = None,
     segments: list | None = None,
+    trim_slivers: bool = True,
 ):
     """Cuts one or more people's appearances into a single reel.
 
@@ -1070,4 +1071,43 @@ def export(
         quality=settings.quality,
         include_audio=settings.include_audio,
         on_segment=report,
+        trim_slivers=trim_slivers,
     )
+
+
+def snap_to_cuts(
+    scan_result: "ScanResult",
+    shots: list | None,
+    segments: list,
+    cancel: threading.Event | None = None,
+) -> list:
+    """A scene pack's segments, with their edges on the exact frames the
+    show cuts on (app.video.shots.exact_edges).
+
+    Run just before the encode, on the pieces being exported: a seek and a
+    few dozen frames per edge, a second or two for a two-minute pack. It
+    only ever improves on the plan -- anything that goes wrong reading the
+    video leaves the segments as they were, safely inside their shots.
+
+    Raises:
+        Cancelled: If `cancel` was set between segments.
+    """
+    if not shots or not segments:
+        return segments
+
+    def check() -> None:
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+
+    source = scan_result.source
+    try:
+        with (source.open() if source is not None else load_video(scan_result.video_path)) as container:
+            stream = next((s for s in container.streams if s.type == "video"), None)
+            if stream is None:
+                return segments
+            return exact_edges(container, stream, shots, segments, check)
+    except Cancelled:
+        raise
+    except Exception:
+        return segments
+
