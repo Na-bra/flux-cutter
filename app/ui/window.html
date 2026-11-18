@@ -411,22 +411,23 @@
   .advanced .knob .name span { font-style: normal; font-size: .9rem; }
   .known .nameplate b { font-size: 1.3rem; font-weight: 400; font-style: italic; }
 
+  /* ---- Merging: its own panel, where the split picker already is one.
+     The cards are laid out normally -- others on the left, the one kept
+     pinned right -- then frozen in place so each can move on its own
+     for the second half, instead of relying on wherever the real grid
+     happened to put them. ---- */
+  .mergeStage { margin-bottom: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 11px; }
+  .mergeTrack { position: relative; margin-top: 2px; }
+  .m-row { position: relative; display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+  .m-row .card { width: 168px; cursor: default; }
+  .m-row .card:hover { border-color: var(--rule); }
+  .m-kept { margin-left: auto; }
+
   /* ---- Merge and split: a short animation played over the real cards
      before the gallery is redrawn with the corrected one. Built in a
      fixed overlay so it can move independently of the grid underneath,
      which may reflow the moment the redraw happens. ---- */
   .anim-layer { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
-  .anim-card {
-    position: absolute; overflow: hidden; background: var(--film); box-sizing: border-box;
-    padding: 10px 6px; background-image:
-      repeating-linear-gradient(90deg, var(--ground) 0 7px, transparent 7px 16px),
-      repeating-linear-gradient(90deg, var(--ground) 0 7px, transparent 7px 16px);
-    background-size: 16px 8px, 16px 8px; background-position: 0 0, 0 100%; background-repeat: repeat-x;
-    transition: left .95s cubic-bezier(.65,0,.35,1), top .95s cubic-bezier(.65,0,.35,1),
-      width .95s cubic-bezier(.65,0,.35,1), height .95s cubic-bezier(.65,0,.35,1),
-      opacity .45s ease .5s, transform .95s cubic-bezier(.65,0,.35,1);
-  }
-  .anim-card img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .anim-half { position: absolute; overflow: hidden; }
   .anim-half img {
     display: block; width: 100%; height: 100%; object-fit: cover;
@@ -567,6 +568,14 @@
           <button class="ghost" id="splitCancel">Cancel</button>
         </p>
         <div class="grid tracks" id="tracks"></div>
+      </div>
+      <!-- Merging: its own screen in place of the grid, the way the split
+           picker takes over too -- not a trick played on top of the cards
+           still sitting where they were. It clears itself once the two
+           (or more) have become one. -->
+      <div class="mergeStage" id="mergeStage" hidden>
+        <p class="split-head"><b>Merging</b><span>Becomes one card.</span></p>
+        <div class="mergeTrack" id="mergeTrack"></div>
       </div>
       <!-- The reel as the cuts it is made of. The rules get most of them
            right; this is for the handful they cannot know about. -->
@@ -1058,67 +1067,147 @@
   // only the few hundred milliseconds of showing what just happened.
   const reducedMotion = () =>
     window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // A short scratch, timed loosely against the ring's two drawn
+  // passes (format.md.css: ring-draw, .7s, second path .08s behind).
+  // Synthesized rather than a sound file -- nothing to ship, nothing to
+  // fetch, and it is a flourish, so any failure here is swallowed.
+  let sketchCtx = null;
+  function sketchSound() {
+    if (reducedMotion()) return;
+    try {
+      sketchCtx = sketchCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (sketchCtx.state === "suspended") sketchCtx.resume();
+      const now = sketchCtx.currentTime;
+      const duration = 0.8;
+      const buffer = sketchCtx.createBuffer(1, Math.floor(sketchCtx.sampleRate * duration), sketchCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+
+      const source = sketchCtx.createBufferSource();
+      source.buffer = buffer;
+
+      const filter = sketchCtx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.Q.value = 7;
+      filter.frequency.setValueAtTime(900, now);
+      filter.frequency.linearRampToValueAtTime(2500, now + 0.35);
+      filter.frequency.linearRampToValueAtTime(1400, now + 0.8);
+
+      const gain = sketchCtx.createGain();
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.16, now + 0.04);
+      gain.gain.linearRampToValueAtTime(0.03, now + 0.33);
+      gain.gain.linearRampToValueAtTime(0.14, now + 0.42);
+      gain.gain.linearRampToValueAtTime(0, now + 0.78);
+
+      source.connect(filter); filter.connect(gain); gain.connect(sketchCtx.destination);
+      source.start(now);
+      source.stop(now + duration);
+    } catch (err) { /* a missing or blocked AudioContext never blocks selection */ }
+  }
   const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const settle = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-  async function animateMerge(sourceCards, keptCard) {
-    if (reducedMotion() || !sourceCards.length || !keptCard) return;
-    const layer = document.createElement("div");
-    layer.className = "anim-layer";
-    document.body.appendChild(layer);
+  // A card's thumbnail and the line under it, built from real person
+  // data -- the same fields the grid itself reads, so the merge panel
+  // shows exactly what the grid would.
+  function mergeCardHtml(p) {
+    const stat = state.view === "folder"
+      ? `in ${p.videos} of ${(state.drawn.folder && state.drawn.folder.videoCount) || "?"} \u00b7 ${p.onScreen}`
+      : `${p.detections} det`;
+    return `<img class="thumb" src="${p.thumbnail}" alt="">
+      <span class="info"><span class="who">${who(p, "Person")}</span><span class="stat">${stat}</span></span>`;
+  }
 
-    const keptRect = keptCard.getBoundingClientRect();
-    const clones = sourceCards.map((card) => {
-      const rect = card.getBoundingClientRect();
-      const img = card.querySelector("img.thumb, img");
-      const clone = document.createElement("div");
-      clone.className = "anim-card";
-      clone.style.left = rect.left + "px"; clone.style.top = rect.top + "px";
-      clone.style.width = rect.width + "px"; clone.style.height = rect.height + "px";
-      if (img) clone.innerHTML = `<img src="${img.src}" alt="">`;
-      layer.appendChild(clone);
-      return { clone, rect };
-    });
+  // Merging plays on its own screen, where the split picker already
+  // takes the grid's place. The cards are laid out normally first --
+  // others on the left, the one kept pinned right -- then each is
+  // frozen at its own position so it can move on its own afterward,
+  // rather than guessing coordinates by hand.
+  async function playMergeStage(others, kept) {
+    if (!kept || !others.length) return;
+    const stage = $("mergeStage");
+    const track = $("mergeTrack");
+    track.innerHTML = `<div class="m-row" id="mergeRow">
+      ${others.map((p, i) => `<div class="card m-card" data-k="o${i}">${mergeCardHtml(p)}</div>`).join("")}
+      <div class="card m-card m-kept" data-k="kept">${mergeCardHtml(kept)}</div>
+    </div>`;
+    $("grid").hidden = true; $("fixups").hidden = true;
+    stage.hidden = false;
 
-    const first = clones[0];
+    const row = $("mergeRow");
+    if (reducedMotion()) { await wait(250); stage.hidden = true; track.innerHTML = ""; $("grid").hidden = false; $("fixups").hidden = false; return; }
+
+    await settle();
+    const relRect = (el) => {
+      const a = el.getBoundingClientRect(), b = row.getBoundingClientRect();
+      return { left: a.left - b.left, top: a.top - b.top, width: a.width, height: a.height, right: a.right - b.left, bottom: a.bottom - b.top };
+    };
+    const otherEls = [...row.querySelectorAll('[data-k^="o"]')];
+    const keptEl = row.querySelector('[data-k="kept"]');
+    const otherRects = otherEls.map(relRect);
+    const keptRect = relRect(keptEl);
+
+    track.style.height = Math.max(keptRect.bottom, ...otherRects.map((r) => r.bottom)) + "px";
+    const freeze = (el, r) => {
+      el.style.position = "absolute";
+      el.style.left = r.left + "px"; el.style.top = r.top + "px";
+      el.style.width = r.width + "px"; el.style.height = r.height + "px";
+      el.style.margin = "0";
+    };
+    freeze(keptEl, keptRect);
+    otherEls.forEach((el, i) => freeze(el, otherRects[i]));
+
+    // Both sides travel -- the kept card is not a fixed post the others
+    // are pulled to. Everyone's center is averaged into one meeting
+    // point, each card moves only as far as its own distance to it, and
+    // that point is where the seam closes.
+    const centerX = (r) => r.left + r.width / 2;
+    const meetX = (centerX(keptRect) + otherRects.reduce((sum, r) => sum + centerX(r), 0)) / (1 + otherRects.length);
+
     let seam = null;
-    if (first) {
-      const midX = (first.rect.left + first.rect.width + keptRect.left) / 2;
-      const top = Math.min(first.rect.top, keptRect.top);
-      const bottom = Math.max(first.rect.top + first.rect.height, keptRect.top + keptRect.height);
+    if (otherRects.length === 1) {
+      const top = Math.min(otherRects[0].top, keptRect.top);
+      const bottom = Math.max(otherRects[0].bottom, keptRect.bottom);
       seam = document.createElement("div");
       seam.className = "anim-seam";
-      seam.style.left = midX + "px"; seam.style.top = top + "px"; seam.style.height = (bottom - top) + "px";
-      layer.appendChild(seam);
+      seam.style.left = meetX + "px"; seam.style.top = top + "px"; seam.style.height = (bottom - top) + "px";
+      row.appendChild(seam);
     }
     const badge = document.createElement("div");
     badge.className = "anim-badge";
     badge.textContent = "Merged";
-    badge.style.left = (keptRect.left + keptRect.width / 2 - 28) + "px";
-    badge.style.top = (keptRect.top - 14) + "px";
-    layer.appendChild(badge);
+    badge.style.left = (meetX - 28) + "px";
+    badge.style.top = (keptRect.top - 24) + "px";
+    row.appendChild(badge);
 
     await settle();
-    clones.forEach(({ clone, rect }) => {
-      clone.style.left = (keptRect.left + (keptRect.width - rect.width) / 2) + "px";
-      clone.style.top = (keptRect.top + (keptRect.height - rect.height) / 2) + "px";
-      clone.style.transform = "scale(.82)";
-      clone.style.opacity = "0";
+    const moveTransition = "left .95s cubic-bezier(.65,0,.35,1), top .95s cubic-bezier(.65,0,.35,1), transform .95s cubic-bezier(.65,0,.35,1), opacity .45s ease .5s";
+    keptEl.style.transition = moveTransition;
+    keptEl.style.left = (meetX - keptRect.width / 2) + "px";
+    otherEls.forEach((el, i) => {
+      el.style.transition = moveTransition;
+      el.style.left = (meetX - otherRects[i].width / 2) + "px";
+      el.style.transform = "scale(.82)";
+      el.style.opacity = "0";
       const puff = document.createElement("div");
       puff.className = "anim-puff";
       const size = 26;
+      puff.style.left = (meetX - size / 2) + "px";
+      puff.style.top = (otherRects[i].top + otherRects[i].height / 2 - size / 2) + "px";
       puff.style.width = size + "px"; puff.style.height = size + "px";
-      puff.style.left = (keptRect.left + keptRect.width / 2 - size / 2) + "px";
-      puff.style.top = (keptRect.top + keptRect.height / 2 - size / 2) + "px";
-      layer.appendChild(puff);
+      row.appendChild(puff);
+      requestAnimationFrame(() => puff.classList.add("show"));
     });
     if (seam) { seam.style.transform = "scaleY(0)"; seam.style.opacity = "0"; }
-    requestAnimationFrame(() => {
-      layer.querySelectorAll(".anim-puff").forEach((p) => p.classList.add("show"));
-      badge.classList.add("show");
-    });
+    requestAnimationFrame(() => badge.classList.add("show"));
+
     await wait(1000);
-    layer.remove();
+    stage.hidden = true;
+    track.innerHTML = "";
+    $("grid").hidden = false;
+    $("fixups").hidden = false;
   }
 
   // A jagged tear down the middle of one picture, rather than a clean
@@ -1181,12 +1270,8 @@
     const kept = state.people
       .filter((p) => selected.includes(p.index))
       .sort((a, b) => (b.detections || 0) - (a.detections || 0))[0];
-    const keptCard = kept ? cardFor(kept.index) : null;
-    const otherCards = selected
-      .filter((i) => !kept || i !== kept.index)
-      .map(cardFor)
-      .filter(Boolean);
-    await animateMerge(otherCards, keptCard);
+    const others = state.people.filter((p) => selected.includes(p.index) && (!kept || p.index !== kept.index));
+    await playMergeStage(others, kept);
     applyEdit("merge");
   });
 
@@ -1234,7 +1319,9 @@
   $("tracks").addEventListener("click", (e) => {
     const card = e.target.closest(".card");
     if (!card) return;
-    card.setAttribute("aria-pressed", card.getAttribute("aria-pressed") !== "true");
+    const turningOn = card.getAttribute("aria-pressed") !== "true";
+    card.setAttribute("aria-pressed", turningOn);
+    if (turningOn) sketchSound();
   });
 
   $("splitDo").addEventListener("click", async () => {
@@ -1354,6 +1441,7 @@
     const card = e.target.closest(".card");
     if (!card) return;
     if (state.view === "folder") {
+      const wasOn = state.selected.includes(Number(card.dataset.i));
       const r = await pywebview.api.select_cast_person(Number(card.dataset.i), $("fname").value);
       if (!r.accepted) return;
       state.selected = r.indexes;
@@ -1361,6 +1449,7 @@
       updateFixups();
       document.querySelectorAll("#grid .card").forEach(c =>
         c.setAttribute("aria-pressed", state.selected.includes(Number(c.dataset.i))));
+      if (!wasOn && state.selected.includes(Number(card.dataset.i))) sketchSound();
       if (!r.indexes.length) {
         $("picked").hidden = true; $("strip").hidden = true; $("exportBtn").disabled = true;
         $("foot").textContent = "Choose a person to export.";
@@ -1379,6 +1468,7 @@
       showPackOfSelection();
       return;
     }
+    const wasOn = state.selected.includes(Number(card.dataset.i));
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
     if (!r.accepted) return;
 
@@ -1389,6 +1479,7 @@
     document.querySelectorAll("#grid .card").forEach(c =>
       c.setAttribute("aria-pressed", r.indexes.includes(Number(c.dataset.i)))
     );
+    if (!wasOn && r.indexes.includes(Number(card.dataset.i))) sketchSound();
 
     if (!r.indexes.length) {
       $("picked").hidden = true;
