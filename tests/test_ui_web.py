@@ -142,6 +142,21 @@ def test_thumbnails_travel_as_data_uris(bridge):
         assert len(person["thumbnail"]) > 100
 
 
+def test_a_face_thumbnail_loses_its_black_bars_but_a_dark_face_does_not():
+    """`generate_thumbnail` letterboxes a crop into a square. The gallery fills
+    a frame with each face, so the bars showed as empty black beside it."""
+    bars = Image.new("RGB", (192, 192), (0, 0, 0))
+    bars.paste(Image.new("RGB", (100, 192), (120, 90, 80)), (46, 0))
+    assert web._without_bars(bars).size == (100, 192)
+
+    dark_face = Image.new("RGB", (192, 192), (6, 4, 3))
+    assert web._without_bars(dark_face).size == (192, 192)
+
+    nearly_empty = Image.new("RGB", (192, 192), (0, 0, 0))
+    nearly_empty.putpixel((90, 90), (200, 200, 200))
+    assert web._without_bars(nearly_empty).size == (192, 192)
+
+
 def test_selecting_a_face_previews_the_cut(bridge):
     bridge._scan_result = make_scan_result()
 

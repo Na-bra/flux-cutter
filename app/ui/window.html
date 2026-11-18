@@ -1,55 +1,24 @@
 <title>FluxCutter</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&family=DM+Mono:wght@400;500&display=swap">
 <style>
   :root {
-    --ground:  #E7EBEA;
-    --chrome:  #F4F6F5;
-    --surface: #FFFFFF;
-    --sunk:    #EAEEED;
-    --ink:     #12171A;
-    --muted:   #5A676C;
-    --faint:   #8A9599;
-    --rule:    #D3DAD9;
-    --accent:  #0E6E6B;
-    --accent-ink: #FFFFFF;
-    --accent-soft: #DCEBEA;
-    --signal:  #9A5610;
-    --shadow:  0 1px 2px rgba(18,23,26,.06), 0 8px 24px rgba(18,23,26,.07);
-    --ui: "Archivo", "Helvetica Neue", Arial, sans-serif;
-    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-  }
-
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --ground:  #0B0F11;
-      --chrome:  #171F22;
-      --surface: #1B2427;
-      --sunk:    #141B1E;
-      --ink:     #E6ECEA;
-      --muted:   #9AA8AB;
-      --faint:   #6E7C80;
-      --rule:    #2A3538;
-      --accent:  #46BDB4;
-      --accent-ink: #06211F;
-      --accent-soft: #123230;
-      --signal:  #E0A44B;
-      --shadow:  0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.34);
-    }
-  }
-  :root[data-theme="dark"] {
-    --ground:  #0B0F11;
-    --chrome:  #171F22;
-    --surface: #1B2427;
-    --sunk:    #141B1E;
-    --ink:     #E6ECEA;
-    --muted:   #9AA8AB;
-    --faint:   #6E7C80;
-    --rule:    #2A3538;
-    --accent:  #46BDB4;
-    --accent-ink: #06211F;
-    --accent-soft: #123230;
-    --signal:  #E0A44B;
-    --shadow:  0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.34);
+    color-scheme: dark;
+    --ground:  #0D0C0B;
+    --chrome:  #0D0C0B;
+    --surface: #141311;
+    --sunk:    #1A1917;
+    --ink:     #EDE6DA;
+    --muted:   #A39C90;
+    --faint:   #8F887D;
+    --rule:    #2A2724;
+    --accent:  #E8392C;
+    --accent-ink: #0D0C0B;
+    --accent-soft: #2B0D10;
+    --signal:  #F2554A;
+    --film:    #E9E2D4;
+    --shadow:  none;
+    --ui: "Newsreader", Georgia, "Times New Roman", serif;
+    --mono: "DM Mono", ui-monospace, Menlo, monospace;
   }
 
   body { background: var(--chrome); color: var(--ink); font-family: var(--ui); font-size: 14px; -webkit-font-smoothing: antialiased; }
@@ -347,6 +316,137 @@
 
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  /* ======================================================================
+     Proof sheet. Red and black, serif italic for words, mono for numbers.
+     Thumbnails sit in cream film frames; the selected one is ringed in red.
+     Everything above still applies; these rules only change how it looks.
+     ====================================================================== */
+  html { font-size: 17px; }
+  body { font-family: var(--ui); font-size: 1rem; }
+  button, select, input { font-family: var(--ui); }
+
+  /* Controls: underlines for fields, square outlines for buttons */
+  select, input[type="text"] {
+    font-style: italic; font-size: 1rem; background: transparent;
+    border: 0; border-bottom: 1px solid #6B655C; border-radius: 0; padding: 0 2px;
+  }
+  select option { background: var(--ground); font-style: normal; }
+  input[type="text"]::placeholder { color: var(--faint); }
+  .control { background: transparent; border: 0; border-bottom: 1px solid #6B655C; border-radius: 0; padding: 0 2px; }
+  .control .path { font-family: var(--ui); font-style: italic; font-size: 1.05rem; }
+
+  button { font-style: italic; font-weight: 500; font-size: .92rem; border-radius: 0; background: transparent; border: 1px solid #3A3631; }
+  button:hover:not(:disabled) { border-color: var(--signal); }
+  button.ghost { border-color: transparent; text-decoration: underline; text-decoration-color: #6B655C; text-underline-offset: 4px; }
+  button.ghost:hover:not(:disabled) { text-decoration-color: var(--signal); border-color: transparent; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 500; }
+  button.primary:hover:not(:disabled) { background: var(--signal); border-color: var(--signal); }
+  #actionBtn, #exportBtn { height: 44px; font-size: 1.1rem; }
+  button.advanced-toggle { font-style: normal; text-decoration: none; border: 1px solid #3A3631; color: var(--muted); }
+  .seg button { font-style: normal; text-decoration: none; }
+  .seg button[aria-pressed="true"] { background: var(--accent-soft); color: #FF8C91; }
+  .advanced-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); color: #FF8C91; }
+  :focus-visible { outline-color: var(--signal); }
+
+  /* Frame: header, status, rail */
+  .toolbar { background: var(--surface); }
+  .status { background: var(--ground); }
+  .status .msg b { font-weight: 500; font-style: italic; color: var(--ink); }
+  .bar { height: 3px; border-radius: 0; background: var(--rule); }
+  .gallery { background: var(--ground); padding: 22px 24px 28px; }
+  .gallery-head h2 { font-size: 1.6rem; font-weight: 400; }
+  .gallery-head .meta { color: var(--muted); }
+  .rail { background: var(--surface); padding: 22px 24px; border-left-color: var(--rule); }
+  .picked { background: var(--ground); border-radius: 0; border: 1px solid var(--rule); border-left: 3px solid var(--accent); }
+  .picked .name { font-size: 1.7rem; font-weight: 400; font-style: italic; line-height: 1.1; }
+  .picked dl { font-size: .85rem; gap: 6px 12px; }
+  .picked dd { font-family: var(--mono); font-size: .8rem; }
+  .footnote { font-style: italic; font-size: .85rem; color: var(--muted); }
+  .legend { color: var(--muted); }
+
+  /* People: film frames */
+  .card { background: transparent; border: 0; border-radius: 0; }
+  .card:hover { border-color: transparent; }
+  .card:hover .thumb, .card:hover > img { outline: 1px solid #6B655C; }
+  .card[aria-pressed="true"] { box-shadow: none; outline: 2px solid var(--accent); outline-offset: 6px; }
+  .grid { gap: 26px 22px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .thumb, .tracks img {
+    box-sizing: border-box; border-radius: 0; object-fit: cover; padding: 14px 8px;
+    background-color: var(--film);
+    background-image:
+      repeating-linear-gradient(90deg, var(--ground) 0 7px, transparent 7px 16px),
+      repeating-linear-gradient(90deg, var(--ground) 0 7px, transparent 7px 16px);
+    background-size: 16px 8px, 16px 8px;
+    background-position: 0 0, 0 100%;
+    background-repeat: repeat-x;
+  }
+  .card .info { border-top: 0; padding: 10px 2px 0; }
+  .card .who { font-size: 1.15rem; font-style: italic; font-weight: 400; }
+  .card .who .rank { font-style: normal; }
+  .card .stat { color: var(--muted); }
+  .tracks .at { font-size: .7rem; padding: 6px 2px 0; color: var(--muted); }
+  .unassigned { border-radius: 0; border-color: #3A3631; font-style: italic; background: transparent; }
+
+  /* Small pictures: the same cream border, thinner */
+  .strip figure { border-radius: 0; border: 3px solid var(--film); background: var(--film); }
+  .faces img, .known .faces img { border-radius: 0; border: 2px solid var(--film); box-sizing: border-box; }
+  .question img, .cutrow img { border-radius: 0; border: 3px solid var(--film); box-sizing: border-box; }
+
+  /* Panels that open over the gallery */
+  .split, .cuts { border-bottom-color: var(--rule); }
+  .split-head b, .cuts-head b { font-size: 1.25rem; font-weight: 400; font-style: italic; }
+  .question { border-radius: 0; border-color: var(--accent); background: var(--surface); }
+  .question .ask b { font-size: 1.6rem; font-weight: 400; font-style: italic; line-height: 1.1; }
+  .question .ask p { font-size: .95rem; }
+  .suggest { border-radius: 0; }
+  .suggested { color: var(--signal); }
+  .cutrow { border-radius: 0; background: transparent; }
+  .cutrow .len { font-family: var(--ui); font-style: italic; font-size: 1.3rem; }
+  .cutrow.changed { border-color: var(--accent); }
+  .cutrow.changed .len { color: var(--signal); }
+  .cutrow.dropped .len { text-decoration-color: var(--accent); text-decoration-thickness: 2px; }
+  .cutrow .nudge { border-radius: 0; }
+  .advanced .knob .name { font-size: 1.1rem; font-weight: 400; font-style: italic; }
+  .advanced .knob .name span { font-style: normal; font-size: .9rem; }
+  .known .nameplate b { font-size: 1.3rem; font-weight: 400; font-style: italic; }
+
+  /* ---- The ring: drawn round a face when it is picked, loose and
+     overshooting the frame like a mark made with a grease pencil on a
+     proof sheet -- not a selection outline traced on top of it. ---- */
+  .card { position: relative; overflow: visible; }
+  .card[aria-pressed="true"] { outline: none; }
+  .card .ring {
+    display: none; position: absolute; left: -26px; top: -22px;
+    width: calc(100% + 52px); height: calc(100% + 48px);
+    overflow: visible; pointer-events: none; transform: rotate(-2deg);
+  }
+  .card .ring path { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
+  .card .ring path.second { stroke-width: 2; opacity: .55; }
+  .card[aria-pressed="true"] .ring { display: block; }
+  .card[aria-pressed="true"] .ring path { animation: ring-draw .7s cubic-bezier(.55, .1, .3, 1) forwards; }
+  .card[aria-pressed="true"] .ring path.second { animation-delay: .08s; }
+  @keyframes ring-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+  @media (prefers-reduced-motion: reduce) { .card[aria-pressed="true"] .ring path { animation: none; stroke-dashoffset: 0; } }
+
+  /* ---- Top controls: words, not pills ---- */
+  .seg { border: 0; border-radius: 0; gap: 16px; }
+  .seg button, .seg button[aria-pressed="true"], .seg button[aria-pressed="false"] {
+    height: auto; padding: 0 0 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+    background: transparent; font-family: var(--ui); font-size: 1rem; font-style: italic; font-weight: 400;
+    letter-spacing: 0; text-transform: none; color: var(--muted);
+  }
+  .seg button[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--accent); background: transparent; }
+  .seg button:hover:not([aria-pressed="true"]) { color: var(--ink); }
+  button.advanced-toggle, button.advanced-toggle[aria-expanded="true"] {
+    height: auto; padding: 0; border: 0; background: transparent; border-radius: 0;
+    font-family: var(--ui); font-size: 1rem; font-style: italic; font-weight: 400; letter-spacing: 0; text-transform: none;
+    color: var(--ink); text-decoration: underline; text-decoration-color: #6B655C; text-underline-offset: 4px;
+  }
+  button.advanced-toggle[aria-expanded="true"] { text-decoration-color: var(--accent); }
+  button.advanced-toggle:hover { text-decoration-color: var(--signal); }
+  .control button.ghost { height: auto; padding: 0 0 0 10px; font-size: 1rem; color: var(--ink); }
+  .field > .labelrow { align-items: baseline; }
 </style>
 
 
@@ -363,7 +463,7 @@
       </div>
       <div class="control">
         <span class="path" id="videoPath"><span class="dim">No video chosen</span></span>
-        <button class="ghost" id="chooseVideo" style="height:24px;padding:0 9px;font-size:.74rem">Choose…</button>
+        <button class="ghost" id="chooseVideo">Choose</button>
       </div>
     </div>
     <div class="field">
@@ -474,7 +574,7 @@
         <label>Folder</label>
         <div class="control">
           <span class="path" id="folder"></span>
-          <button class="ghost" id="chooseFolder" style="height:24px;padding:0 9px;font-size:.74rem">Choose…</button>
+          <button class="ghost" id="chooseFolder">Choose</button>
         </div>
       </div>
 
@@ -510,6 +610,7 @@
 
 <script>
   const $ = (id) => document.getElementById(id);
+  const RING = '<svg class="ring" viewBox="-14 -14 188 238" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path pathLength="1" d="M 26 10 C 84 -10, 162 2, 170 94 C 176 164, 128 220, 78 222 C 18 224, -10 158, -4 100 C 2 38, 46 -4, 118 -2"/><path class="second" pathLength="1" d="M 118 -2 C 54 -8, 2 44, -2 106 C -6 162, 26 218, 82 220 C 134 218, 178 158, 168 90 C 160 20, 96 -8, 36 8"/></svg>';
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
   let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", planFoot: "", drawn: { video: null, folder: null } };
@@ -783,7 +884,7 @@
       return;
     }
     $("grid").innerHTML = d.people.map((p, i) => `
-      <button class="card" aria-pressed="false" data-i="${p.index}">
+      <button class="card" aria-pressed="false" data-i="${p.index}">${RING}
         <img class="thumb" src="${p.thumbnail}" alt="Person ${i+1}">
         <span class="info">
           <span class="who">${who(p, "Person " + (i+1))} <span class="rank">#${i+1}</span></span>
@@ -927,7 +1028,7 @@
       }
       $("splitHint").textContent = "Pick the faces that are someone else. They stay apart from now on.";
       $("tracks").innerHTML = r.cards.map(c => `
-        <button class="card" aria-pressed="false" data-t="${c.card}">
+        <button class="card" aria-pressed="false" data-t="${c.card}">${RING}
           <img src="${c.image}" alt="In ${esc(c.video)}">
           <span class="at">${esc(c.video)} · ${c.onScreen}</span>
         </button>`).join("");
@@ -941,7 +1042,7 @@
       return;
     }
     $("tracks").innerHTML = r.tracks.map(t => `
-      <button class="card" aria-pressed="false" data-t="${t.track}">
+      <button class="card" aria-pressed="false" data-t="${t.track}">${RING}
         <img src="${t.image}" alt="A shot at ${t.at}">
         <span class="at">${t.at}</span>
       </button>`).join("");
@@ -1000,7 +1101,7 @@
       $("grid").innerHTML = "<p>No one found in these videos. Try a finer sampling interval.</p>";
     } else {
       $("grid").innerHTML = d.people.map((p, i) => `
-        <button class="card" aria-pressed="${state.selected.includes(p.index)}" data-i="${p.index}">
+        <button class="card" aria-pressed="${state.selected.includes(p.index)}" data-i="${p.index}">${RING}
           <img class="thumb" src="${p.thumbnail}" alt="${esc(p.label)}">
           <span class="faces">${p.faces.slice(0, 4).map(f =>
             `<img src="${f.thumbnail}" alt="In ${esc(f.video)}" title="${esc(f.video)}">`).join("")}
