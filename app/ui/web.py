@@ -131,6 +131,36 @@ def _data_uri(image) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
+def _without_bars(image):
+    """A face thumbnail with the black bars it was padded with cut off.
+
+    `generate_thumbnail` letterboxes a crop into a square so every thumbnail
+    is the same size, and the bars are pure black pixels. The gallery shows
+    each face in a film frame and fills it, so bars would be empty black
+    beside the face. Only rows and columns that are entirely zero are
+    removed, so a dark face is never trimmed, and a picture that is nearly
+    all bars is left alone.
+    """
+    from PIL import ImageChops
+
+    rgb = image.convert("RGB")
+    red, green, blue = rgb.split()
+    brightest = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    box = brightest.point(lambda value: 255 if value else 0).getbbox()
+    if box is None:
+        return rgb
+    left, top, right, bottom = box
+    width, height = rgb.size
+    if (right - left) * (bottom - top) < width * height * 0.25:
+        return rgb
+    return rgb.crop(box)
+
+
+def _face_uri(image) -> str:
+    """A face thumbnail as something an <img> can show, without its bars."""
+    return _data_uri(_without_bars(image))
+
+
 def output_path(folder: str, filename: str, export_format: str = DEFAULT_EXPORT_FORMAT) -> Path:
     """Where the next export will be written.
 
@@ -550,7 +580,7 @@ class Bridge:
                     "name": person.name,
                     "label": person.label,
                     "suggestion": suggested.get(person.index),
-                    "thumbnail": _data_uri(person.thumbnail),
+                    "thumbnail": _face_uri(person.thumbnail),
                     "detections": person.detection_count,
                     "firstSeen": person.first_seen,
                     "lastSeen": person.last_seen,
@@ -1544,7 +1574,7 @@ class Bridge:
         def card(video: int, person: Person) -> dict:
             return {
                 "video": videos[video].video_path.name,
-                "thumbnail": _data_uri(person.thumbnail),
+                "thumbnail": _face_uri(person.thumbnail),
                 "label": person.label,
             }
 
@@ -1565,7 +1595,7 @@ class Bridge:
                     "name": member.name,
                     "label": member.label,
                     "suggestion": suggested.get(member.index),
-                    "thumbnail": _data_uri(best.thumbnail),
+                    "thumbnail": _face_uri(best.thumbnail),
                     "faces": [card(v, seen[v]) for v in sorted(seen)],
                     "videos": len(seen),
                     "onScreen": _clock(member.detection_count * interval),
@@ -1744,7 +1774,7 @@ class Bridge:
                 {
                     "card": f"{video}:{card.index}",
                     "video": self._folder.videos[video].video_path.name,
-                    "image": _data_uri(card.thumbnail),
+                    "image": _face_uri(card.thumbnail),
                     "onScreen": _clock(card.detection_count * self._folder.settings.sample_interval),
                 }
                 for video, card in person.appearances
