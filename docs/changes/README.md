@@ -3,6 +3,7 @@
 One page per change, newest first: what it does, why, what it means for your
 videos and kept scans, the numbers before and after, and how to undo it.
 
+- [2026-11-18 — The evaluation suite measures the new test videos](2026-11-18-new-evaluation-labels.md)
 - [2026-11-15 — Scene packs now cut on the exact frame](2026-11-15-exact-pack-cuts.md)
 - [2026-10-24 — A scene pack is one video of whole shots, with clean cuts](2026-10-24-scene-pack-one-video.md)
 - [2026-10-22 — Scene packs: someone's clearest scenes, as clips, at a length you choose](2026-10-22-scene-pack.md)
