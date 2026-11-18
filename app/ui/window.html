@@ -411,6 +411,50 @@
   .advanced .knob .name span { font-style: normal; font-size: .9rem; }
   .known .nameplate b { font-size: 1.3rem; font-weight: 400; font-style: italic; }
 
+  /* ---- Merging: its own panel, where the split picker already is one.
+     The cards are laid out normally -- others on the left, the one kept
+     pinned right -- then frozen in place so each can move on its own
+     for the second half, instead of relying on wherever the real grid
+     happened to put them. ---- */
+  .mergeStage { margin-bottom: 14px; border-bottom: 1px solid var(--rule); padding-bottom: 11px; }
+  .mergeTrack { position: relative; margin-top: 2px; }
+  .m-row { position: relative; display: flex; flex-wrap: wrap; gap: 24px; align-items: flex-start; }
+  .m-row .card { width: 168px; cursor: default; }
+  .m-row .card:hover { border-color: var(--rule); }
+  .m-kept { margin-left: auto; }
+
+  /* ---- Merge and split: a short animation played over the real cards
+     before the gallery is redrawn with the corrected one. Built in a
+     fixed overlay so it can move independently of the grid underneath,
+     which may reflow the moment the redraw happens. ---- */
+  .anim-layer { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+  .anim-half { position: absolute; overflow: hidden; }
+  .anim-half img {
+    display: block; width: 100%; height: 100%; object-fit: cover;
+    transition: clip-path .85s cubic-bezier(.3,0,.2,1);
+  }
+  .anim-seam {
+    position: absolute; width: 2px; background: var(--accent); transform-origin: top;
+    transition: transform .4s ease .5s, opacity .3s ease .8s;
+  }
+  .anim-badge {
+    position: absolute; font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--accent-ink); background: var(--accent); padding: 3px 9px; opacity: 0; transform: translateY(-6px);
+    transition: opacity .3s ease .85s, transform .3s ease .85s;
+  }
+  .anim-badge.show { opacity: 1; transform: translateY(0); }
+  .anim-tag {
+    position: absolute; font-family: var(--mono); font-size: .62rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--accent-ink); background: var(--accent); padding: 2px 7px; opacity: 0; transform: translateY(-6px);
+    transition: opacity .3s ease .78s, transform .3s ease .78s;
+  }
+  .anim-tag.show { opacity: 1; transform: translateY(0); }
+  .anim-puff {
+    position: absolute; border-radius: 50%; border: 1.5px solid var(--signal); opacity: .85;
+    transition: transform .55s ease-out .42s, opacity .55s ease-out .42s;
+  }
+  .anim-puff.show { opacity: 0; transform: scale(2.6); }
+
   /* ---- The ring: drawn round a face when it is picked, loose and
      overshooting the frame like a mark made with a grease pencil on a
      proof sheet -- not a selection outline traced on top of it. ---- */
@@ -524,6 +568,14 @@
           <button class="ghost" id="splitCancel">Cancel</button>
         </p>
         <div class="grid tracks" id="tracks"></div>
+      </div>
+      <!-- Merging: its own screen in place of the grid, the way the split
+           picker takes over too -- not a trick played on top of the cards
+           still sitting where they were. It clears itself once the two
+           (or more) have become one. -->
+      <div class="mergeStage" id="mergeStage" hidden>
+        <p class="split-head"><b>Merging</b><span>Becomes one card.</span></p>
+        <div class="mergeTrack" id="mergeTrack"></div>
       </div>
       <!-- The reel as the cuts it is made of. The rules get most of them
            right; this is for the handful they cannot know about. -->
@@ -1008,7 +1060,220 @@
   const esc = (text) => text.replace(/[&<>"']/g, c =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-  $("mergeBtn").addEventListener("click", () => applyEdit("merge"));
+  // ------------------------------------------------- merge / split motion
+  // Both read real DOM rects before the API call, draw over them in a
+  // fixed layer, then resolve once the motion is done. The caller swaps
+  // in the real, corrected gallery right after -- this never owns data,
+  // only the few hundred milliseconds of showing what just happened.
+  const reducedMotion = () =>
+    window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // A short scratch, timed loosely against the ring's two drawn
+  // passes (format.md.css: ring-draw, .7s, second path .08s behind).
+  // Synthesized rather than a sound file -- nothing to ship, nothing to
+  // fetch, and it is a flourish, so any failure here is swallowed.
+  let sketchCtx = null;
+  function sketchSound() {
+    if (reducedMotion()) return;
+    try {
+      sketchCtx = sketchCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (sketchCtx.state === "suspended") sketchCtx.resume();
+      const now = sketchCtx.currentTime;
+      const duration = 0.8;
+      const buffer = sketchCtx.createBuffer(1, Math.floor(sketchCtx.sampleRate * duration), sketchCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+
+      const source = sketchCtx.createBufferSource();
+      source.buffer = buffer;
+
+      const filter = sketchCtx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.Q.value = 7;
+      filter.frequency.setValueAtTime(900, now);
+      filter.frequency.linearRampToValueAtTime(2500, now + 0.35);
+      filter.frequency.linearRampToValueAtTime(1400, now + 0.8);
+
+      const gain = sketchCtx.createGain();
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(0.16, now + 0.04);
+      gain.gain.linearRampToValueAtTime(0.03, now + 0.33);
+      gain.gain.linearRampToValueAtTime(0.14, now + 0.42);
+      gain.gain.linearRampToValueAtTime(0, now + 0.78);
+
+      source.connect(filter); filter.connect(gain); gain.connect(sketchCtx.destination);
+      source.start(now);
+      source.stop(now + duration);
+    } catch (err) { /* a missing or blocked AudioContext never blocks selection */ }
+  }
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const settle = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+  // A card's thumbnail and the line under it, built from real person
+  // data -- the same fields the grid itself reads, so the merge panel
+  // shows exactly what the grid would.
+  function mergeCardHtml(p) {
+    const stat = state.view === "folder"
+      ? `in ${p.videos} of ${(state.drawn.folder && state.drawn.folder.videoCount) || "?"} \u00b7 ${p.onScreen}`
+      : `${p.detections} det`;
+    return `<img class="thumb" src="${p.thumbnail}" alt="">
+      <span class="info"><span class="who">${who(p, "Person")}</span><span class="stat">${stat}</span></span>`;
+  }
+
+  // Merging plays on its own screen, where the split picker already
+  // takes the grid's place. The cards are laid out normally first --
+  // others on the left, the one kept pinned right -- then each is
+  // frozen at its own position so it can move on its own afterward,
+  // rather than guessing coordinates by hand.
+  async function playMergeStage(others, kept) {
+    if (!kept || !others.length) return;
+    const stage = $("mergeStage");
+    const track = $("mergeTrack");
+    track.innerHTML = `<div class="m-row" id="mergeRow">
+      ${others.map((p, i) => `<div class="card m-card" data-k="o${i}">${mergeCardHtml(p)}</div>`).join("")}
+      <div class="card m-card m-kept" data-k="kept">${mergeCardHtml(kept)}</div>
+    </div>`;
+    $("grid").hidden = true; $("fixups").hidden = true;
+    stage.hidden = false;
+
+    const row = $("mergeRow");
+    if (reducedMotion()) { await wait(250); stage.hidden = true; track.innerHTML = ""; $("grid").hidden = false; $("fixups").hidden = false; return; }
+
+    await settle();
+    const relRect = (el) => {
+      const a = el.getBoundingClientRect(), b = row.getBoundingClientRect();
+      return { left: a.left - b.left, top: a.top - b.top, width: a.width, height: a.height, right: a.right - b.left, bottom: a.bottom - b.top };
+    };
+    const otherEls = [...row.querySelectorAll('[data-k^="o"]')];
+    const keptEl = row.querySelector('[data-k="kept"]');
+    const otherRects = otherEls.map(relRect);
+    const keptRect = relRect(keptEl);
+
+    track.style.height = Math.max(keptRect.bottom, ...otherRects.map((r) => r.bottom)) + "px";
+    const freeze = (el, r) => {
+      el.style.position = "absolute";
+      el.style.left = r.left + "px"; el.style.top = r.top + "px";
+      el.style.width = r.width + "px"; el.style.height = r.height + "px";
+      el.style.margin = "0";
+    };
+    freeze(keptEl, keptRect);
+    otherEls.forEach((el, i) => freeze(el, otherRects[i]));
+
+    // Both sides travel -- the kept card is not a fixed post the others
+    // are pulled to. Everyone's center is averaged into one meeting
+    // point, each card moves only as far as its own distance to it, and
+    // that point is where the seam closes.
+    const centerX = (r) => r.left + r.width / 2;
+    const meetX = (centerX(keptRect) + otherRects.reduce((sum, r) => sum + centerX(r), 0)) / (1 + otherRects.length);
+
+    let seam = null;
+    if (otherRects.length === 1) {
+      const top = Math.min(otherRects[0].top, keptRect.top);
+      const bottom = Math.max(otherRects[0].bottom, keptRect.bottom);
+      seam = document.createElement("div");
+      seam.className = "anim-seam";
+      seam.style.left = meetX + "px"; seam.style.top = top + "px"; seam.style.height = (bottom - top) + "px";
+      row.appendChild(seam);
+    }
+    const badge = document.createElement("div");
+    badge.className = "anim-badge";
+    badge.textContent = "Merged";
+    badge.style.left = (meetX - 28) + "px";
+    badge.style.top = (keptRect.top - 24) + "px";
+    row.appendChild(badge);
+
+    await settle();
+    const moveTransition = "left .95s cubic-bezier(.65,0,.35,1), top .95s cubic-bezier(.65,0,.35,1), transform .95s cubic-bezier(.65,0,.35,1), opacity .45s ease .5s";
+    keptEl.style.transition = moveTransition;
+    keptEl.style.left = (meetX - keptRect.width / 2) + "px";
+    otherEls.forEach((el, i) => {
+      el.style.transition = moveTransition;
+      el.style.left = (meetX - otherRects[i].width / 2) + "px";
+      el.style.transform = "scale(.82)";
+      el.style.opacity = "0";
+      const puff = document.createElement("div");
+      puff.className = "anim-puff";
+      const size = 26;
+      puff.style.left = (meetX - size / 2) + "px";
+      puff.style.top = (otherRects[i].top + otherRects[i].height / 2 - size / 2) + "px";
+      puff.style.width = size + "px"; puff.style.height = size + "px";
+      row.appendChild(puff);
+      requestAnimationFrame(() => puff.classList.add("show"));
+    });
+    if (seam) { seam.style.transform = "scaleY(0)"; seam.style.opacity = "0"; }
+    requestAnimationFrame(() => badge.classList.add("show"));
+
+    await wait(1000);
+    stage.hidden = true;
+    track.innerHTML = "";
+    $("grid").hidden = false;
+    $("fixups").hidden = false;
+  }
+
+  // A jagged tear down the middle of one picture, rather than a clean
+  // cut: the split is pulling two people apart, not deleting one.
+  const TEAR_LEFT = "polygon(0 0,100% 0,100% 2%,54% 8%,100% 14%,50% 20%,100% 27%,56% 34%,100% 41%,52% 48%,100% 55%,54% 62%,100% 69%,50% 76%,100% 83%,56% 90%,100% 97%,100% 100%,0 100%)";
+  const TEAR_RIGHT = "polygon(100% 0,0 0,0 2%,46% 8%,0 14%,50% 20%,0 27%,44% 34%,0 41%,48% 48%,0 55%,46% 62%,0 69%,50% 76%,0 83%,44% 90%,0 97%,0 100%,100% 100%)";
+  const WHOLE = "polygon(0 0,100% 0,100% 100%,0 100%)";
+
+  async function animateSplit(sourceCard, otherName) {
+    if (reducedMotion() || !sourceCard) return;
+    const layer = document.createElement("div");
+    layer.className = "anim-layer";
+    document.body.appendChild(layer);
+
+    const rect = sourceCard.getBoundingClientRect();
+    const img = sourceCard.querySelector("img.thumb, img");
+    const src = img ? img.src : "";
+    const gap = 16;
+    const halfWidth = (rect.width - gap) / 2;
+
+    const left = document.createElement("div");
+    left.className = "anim-half";
+    left.style.left = rect.left + "px"; left.style.top = rect.top + "px";
+    left.style.width = rect.width + "px"; left.style.height = rect.height + "px";
+    left.innerHTML = `<img src="${src}" alt="" style="clip-path:${WHOLE}">`;
+    const right = document.createElement("div");
+    right.className = "anim-half";
+    right.style.left = rect.left + "px"; right.style.top = rect.top + "px";
+    right.style.width = rect.width + "px"; right.style.height = rect.height + "px";
+    right.innerHTML = `<img src="${src}" alt="" style="clip-path:${WHOLE}">`;
+    layer.appendChild(left); layer.appendChild(right);
+
+    const tag = document.createElement("div");
+    tag.className = "anim-tag";
+    tag.textContent = otherName || "Someone else";
+    tag.style.left = (rect.left + rect.width + gap / 2) + "px";
+    tag.style.top = (rect.top - 10) + "px";
+    layer.appendChild(tag);
+
+    await settle();
+    left.style.transition = "left .85s cubic-bezier(.3,0,.2,1), transform .85s cubic-bezier(.3,0,.2,1)";
+    right.style.transition = left.style.transition;
+    left.style.transform = "rotate(-1.5deg)";
+    right.style.left = (rect.left + halfWidth + gap) + "px";
+    right.style.transform = "rotate(1.5deg)";
+    left.querySelector("img").style.clipPath = TEAR_LEFT;
+    right.querySelector("img").style.clipPath = TEAR_RIGHT;
+    requestAnimationFrame(() => tag.classList.add("show"));
+    await wait(950);
+    layer.remove();
+  }
+
+  // Which gallery card currently shows a person, in either view.
+  function cardFor(index) {
+    return document.querySelector(`#grid .card[data-i="${index}"]`);
+  }
+
+  $("mergeBtn").addEventListener("click", async () => {
+    const selected = state.selected.slice();
+    const kept = state.people
+      .filter((p) => selected.includes(p.index))
+      .sort((a, b) => (b.detections || 0) - (a.detections || 0))[0];
+    const others = state.people.filter((p) => selected.includes(p.index) && (!kept || p.index !== kept.index));
+    await playMergeStage(others, kept);
+    applyEdit("merge");
+  });
 
   // The season report: who is in which video, and for how long. Written
   // beside the reels and opened, so it can be kept or sent on.
@@ -1054,14 +1319,18 @@
   $("tracks").addEventListener("click", (e) => {
     const card = e.target.closest(".card");
     if (!card) return;
-    card.setAttribute("aria-pressed", card.getAttribute("aria-pressed") !== "true");
+    const turningOn = card.getAttribute("aria-pressed") !== "true";
+    card.setAttribute("aria-pressed", turningOn);
+    if (turningOn) sketchSound();
   });
 
-  $("splitDo").addEventListener("click", () => {
+  $("splitDo").addEventListener("click", async () => {
     const picked = [...document.querySelectorAll("#tracks .card[aria-pressed='true']")]
       .map(c => state.view === "folder" ? c.dataset.t : Number(c.dataset.t));
     if (!picked.length) { status("<b>Pick the shots that are somebody else.</b>"); return; }
     $("split").hidden = true;
+    const sourceCard = cardFor(state.selected[0]);
+    await animateSplit(sourceCard, "Someone else");
     applyEdit("split", picked);
   });
 
@@ -1172,6 +1441,7 @@
     const card = e.target.closest(".card");
     if (!card) return;
     if (state.view === "folder") {
+      const wasOn = state.selected.includes(Number(card.dataset.i));
       const r = await pywebview.api.select_cast_person(Number(card.dataset.i), $("fname").value);
       if (!r.accepted) return;
       state.selected = r.indexes;
@@ -1179,6 +1449,7 @@
       updateFixups();
       document.querySelectorAll("#grid .card").forEach(c =>
         c.setAttribute("aria-pressed", state.selected.includes(Number(c.dataset.i))));
+      if (!wasOn && state.selected.includes(Number(card.dataset.i))) sketchSound();
       if (!r.indexes.length) {
         $("picked").hidden = true; $("strip").hidden = true; $("exportBtn").disabled = true;
         $("foot").textContent = "Choose a person to export.";
@@ -1197,6 +1468,7 @@
       showPackOfSelection();
       return;
     }
+    const wasOn = state.selected.includes(Number(card.dataset.i));
     const r = await pywebview.api.select_person(Number(card.dataset.i), $("fname").value);
     if (!r.accepted) return;
 
@@ -1207,6 +1479,7 @@
     document.querySelectorAll("#grid .card").forEach(c =>
       c.setAttribute("aria-pressed", r.indexes.includes(Number(c.dataset.i)))
     );
+    if (!wasOn && r.indexes.includes(Number(card.dataset.i))) sketchSound();
 
     if (!r.indexes.length) {
       $("picked").hidden = true;
