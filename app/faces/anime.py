@@ -244,8 +244,14 @@ class AnimeFaceDetector:
             boxes.append([x_min, y_min, x_max, y_max, float(score)])
 
         candidates = np.array(boxes)
+        # NMSBoxes takes (x, y, width, height). Given corners, it reads the
+        # right and bottom edges as a size, so a box looks bigger the further
+        # it sits from the top-left of the frame, and two characters standing
+        # apart look like one face found twice.
+        corners = candidates[:, :4]
+        sized = np.hstack([corners[:, :2], corners[:, 2:] - corners[:, :2]])
         chosen = cv2.dnn.NMSBoxes(
-            candidates[:, :4].tolist(),
+            sized.tolist(),
             candidates[:, 4].tolist(),
             self.settings.confidence_threshold,
             self.settings.nms_threshold,

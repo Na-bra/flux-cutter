@@ -4458,3 +4458,32 @@ animation2 rests on 6 faces.
 
 Not comparable with §50's figures for these names: different videos.
 
+## 60. Four fixes from reviewing `app/faces`
+
+**`AnimeFaceDetector.detect`.** `cv2.dnn.NMSBoxes` takes (x, y, width,
+height) and was given corners, so a box's apparent size grew with its
+distance from the top-left of the frame. Boxes are now converted first.
+
+**The order of the last grouping steps.** `_reject_non_face_groups` is now
+`_split_off_non_faces`, then `_reject_brief_groups`, then
+`_attach_or_reject`. Attaching last means rejected faces cannot lift a card
+over `min_detections`, and a card that failed it attracts nothing.
+`_shares_a_frame` applies `_cooccurrence_conflicts`, with its similarity
+ceiling, to the group and the chosen card.
+
+**Tracks.** `merge_groups` reads sizes through `group.tracks`, so a card
+with no `unit_sizes` counts as one track. `tracks` returns anything the
+sizes fall short of as a last track, which covers scans saved after the old
+merge.
+
+Measured on test, test_2, animation, animation2 and test_3: every number in
+`evaluation/baseline.json` is unchanged. The detector fix alters the kept
+boxes in 2 of animation2's 1,049 frames with detections and none of
+animation's 263, and it does not explain animation2's 33.3% recall. On the
+current test_3 no rejected group attaches, before or after: 13 are flagged,
+none has a home. The 215-face rescue described beside
+`ATTACH_MIN_NEIGHBOURS` was measured on the earlier test_3, so the suite no
+longer exercises attaching; only the unit tests do.
+
+`SCAN_FORMAT` is unchanged, as in §52's precedent: kept scans keep their
+answer and their corrections until the video is rescanned.

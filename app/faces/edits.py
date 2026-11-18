@@ -136,7 +136,10 @@ def merge_groups(
         observations=[o for group in chosen for o in group.observations],
         # Concatenated in the same order as the observations, so the merged
         # card can still be split back apart along the tracks it came from.
-        unit_sizes=[size for group in chosen for size in group.unit_sizes],
+        # Read through `tracks`, because a card from an older scan has no
+        # recorded sizes and counts as one track; skipping it would leave the
+        # sizes describing fewer faces than the card holds.
+        unit_sizes=[len(track) for group in chosen for track in group.tracks],
         # The name of whichever card contributed most, so merging the
         # stray half of an actor into the named one keeps the name. Losing
         # it here would punish the correction this feature exists for.
