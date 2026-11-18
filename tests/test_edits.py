@@ -330,3 +330,26 @@ def test_naming_cannot_lose_a_card_either():
     for card in named:
         assert card.representative_observation is not None
         assert card.representative_embedding is not None
+
+
+def test_a_card_from_an_older_scan_keeps_its_faces_through_merge_and_split():
+    """Older scans recorded no tracks. Merged in, such a card counts as one
+    track, so splitting it back out returns every face."""
+    older = FaceIdentityGroup(group_id=1, observations=[observation(t) for t in (1, 2, 3)])
+    newer = FaceIdentityGroup(
+        group_id=2, observations=[observation(t) for t in (7, 8)], unit_sizes=[1, 1]
+    )
+
+    merged = merge_groups([older, newer], [0, 1])
+    assert merged[0].unit_sizes == [3, 1, 1]
+
+    after = split_group(merged, 0, [0])
+    assert sorted(group.size for group in after) == [2, 3]
+
+
+def test_tracks_keep_faces_the_recorded_sizes_do_not_reach():
+    """A scan saved after the old merge has sizes that fall short."""
+    faces = [observation(t) for t in range(5)]
+    group = FaceIdentityGroup(group_id=1, observations=faces, unit_sizes=[1, 1])
+
+    assert [len(track) for track in group.tracks] == [1, 1, 3]

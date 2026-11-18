@@ -277,3 +277,44 @@ def test_several_faces_embed_as_they_would_one_at_a_time():
 
     for a, b in zip(together, alone):
         assert np.allclose(a.embedding, b.embedding, atol=1e-6)
+
+
+class _FixedSession:
+    """Stands in for the detector model: returns the given anchors."""
+
+    def __init__(self, anchors):
+        self.anchors = anchors
+
+    def run(self, _outputs, _inputs):
+        # (centre x, centre y, width, height, score) -> (1, 5, anchors)
+        return [np.array(self.anchors, dtype=np.float32).T[None]]
+
+
+def _detector_returning(anchors):
+    detector = anime.AnimeFaceDetector.__new__(anime.AnimeFaceDetector)
+    detector.settings = anime.AnimeDetectorSettings()
+    detector._session = _FixedSession(anchors)
+    detector._input = "image"
+    return detector
+
+
+def test_two_characters_apart_are_both_kept():
+    """Far from the top-left corner, boxes read as corners looked enormous
+    and swallowed each other."""
+    size = anime.DETECTOR_INPUT_SIZE
+    frame = np.zeros((size, size, 3), dtype=np.uint8)
+    detector = _detector_returning(
+        [[size * 0.75, size * 0.8, 60, 60, 0.9], [size * 0.85, size * 0.8, 60, 60, 0.8]]
+    )
+
+    assert len(detector.detect(frame)) == 2
+
+
+def test_one_face_found_twice_is_kept_once():
+    size = anime.DETECTOR_INPUT_SIZE
+    frame = np.zeros((size, size, 3), dtype=np.uint8)
+    detector = _detector_returning(
+        [[size * 0.6, size * 0.8, 60, 60, 0.9], [size * 0.6 + 4, size * 0.8, 60, 60, 0.8]]
+    )
+
+    assert len(detector.detect(frame)) == 1

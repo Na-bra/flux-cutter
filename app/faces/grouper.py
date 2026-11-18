@@ -116,6 +116,12 @@ DEFAULT_MIN_GROUP_EYE_SPAN = 0.15
 # card holds at least ATTACH_MIN_SHARE of those neighbours. On test_3.mp4
 # the lead's profile group has 26 such neighbours, 23 of them his; a group
 # of backs of heads has 10 spread over eight cards and stays rejected.
+#
+# Two rules keep this from inventing a person. A group that shares a frame
+# with the card is somebody else standing there, however close they stay
+# (see _cooccurrence_conflicts). And only cards that earned their place count:
+# attaching runs after the screen-time minimum, so rejected faces can never
+# lift a card over it.
 ATTACH_MIN_NEIGHBOURS = 5
 ATTACH_MIN_SHARE = 0.75
 # How much screen time an identity needs before it is worth reporting as a
@@ -284,6 +290,11 @@ class FaceIdentityGroup:
         for size in self.unit_sizes:
             tracks.append(self.observations[start : start + size])
             start += size
+        # Merging a card that had no recorded tracks used to leave sizes that
+        # fall short of the faces, and scans saved that way still exist. What
+        # the sizes do not reach stays a track, so a split cannot lose it.
+        if start < len(self.observations):
+            tracks.append(self.observations[start:])
         return tracks
 
     @property
@@ -779,8 +790,9 @@ class IdentityGrouper:
 
         self._rejected = []
         groups = self._consolidate(self._build_groups(members))
-        groups = self._reject_non_face_groups(groups)
+        groups, non_faces = self._split_off_non_faces(groups)
         groups = self._reject_brief_groups(groups)
+        self._attach_or_reject(non_faces, groups)
         return self._renumber(groups)
 
     def _merge_is_unambiguous(
@@ -979,19 +991,19 @@ class IdentityGrouper:
             group.group_id = position
         return merged
 
-    def _reject_non_face_groups(
+    def _split_off_non_faces(
         self, groups: list[FaceIdentityGroup]
-    ) -> list[FaceIdentityGroup]:
-        """Drops clusters whose landmark geometry says they are not a person.
+    ) -> tuple[list[FaceIdentityGroup], list[FaceIdentityGroup]]:
+        """Separates clusters whose landmark geometry says they are not a person.
 
         See DEFAULT_MIN_GROUP_EYE_SPAN for why this is judged per group rather
-        than per detection. Rejected observations are reported as unassigned
-        rather than discarded: they were detected, they just could not be
-        attributed to anyone, and silently losing them would misreport how much
-        of the video the pipeline actually accounted for.
+        than per detection.
+
+        Returns:
+            The groups kept, and the groups flagged for _attach_or_reject.
         """
         if self.min_group_eye_span <= 0.0:
-            return groups
+            return groups, []
 
         kept: list[FaceIdentityGroup] = []
         flagged: list[FaceIdentityGroup] = []
@@ -1005,10 +1017,21 @@ class IdentityGrouper:
                 flagged.append(group)
             else:
                 kept.append(group)
+        return kept, flagged
 
+    def _attach_or_reject(
+        self, flagged: list[FaceIdentityGroup], cards: list[FaceIdentityGroup]
+    ) -> None:
+        """Gives each flagged group to the card it continues, or rejects it.
+
+        Rejected observations are reported as unassigned rather than
+        discarded: they were detected, they just could not be attributed to
+        anyone, and silently losing them would misreport how much of the video
+        the pipeline actually accounted for.
+        """
         for group in flagged:
-            home = self._neighbouring_card(group, kept)
-            if home is None:
+            home = self._neighbouring_card(group, cards)
+            if home is None or self._shares_a_frame(group, home):
                 self._rejected.extend(group.observations)
                 continue
             # The card's centroid is left as it was. It is what the card is
@@ -1017,7 +1040,14 @@ class IdentityGrouper:
             home.observations.extend(group.observations)
             home.unit_sizes.extend(group.unit_sizes or [len(group.observations)])
 
-        return kept
+    def _shares_a_frame(self, group: FaceIdentityGroup, card: FaceIdentityGroup) -> bool:
+        """Whether the two are on screen together, so cannot be one person."""
+        if not self.forbid_cooccurring:
+            return False
+        conflicts = _cooccurrence_conflicts(
+            [group.observations, card.observations], self.cooccurrence_similarity_ceiling
+        )
+        return bool(conflicts[0, 1])
 
     @staticmethod
     def _neighbouring_card(

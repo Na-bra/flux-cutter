@@ -425,6 +425,44 @@ def test_a_rejected_group_beside_several_cards_stays_rejected():
     assert len(grouper.unassigned) == 5
 
 
+def test_a_rejected_group_on_screen_with_a_card_does_not_join_it():
+    """Someone in profile beside the lead sits next to the lead's faces in
+    every adjacent frame, but sharing a frame says they are someone else."""
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+    lead = [make_observation([1.0, 0.0, 0.0], eye_span=0.35, frame_index=f) for f in range(10)]
+    beside = [make_observation([0.0, 1.0, 0.0], eye_span=0.05, frame_index=f) for f in range(1, 9)]
+    for observation in lead + beside:
+        grouper.add(observation)
+
+    assert [group.size for group in grouper.groups] == [10]
+    assert len(grouper.unassigned) == 8
+
+
+def test_rejected_faces_cannot_lift_a_card_over_the_screen_time_minimum():
+    """Three real faces do not become a person by gaining seven non-faces."""
+    grouper = IdentityGrouper(
+        similarity_threshold=0.5, min_group_eye_span=0.15, min_detections=5
+    )
+    frontal = [make_observation([1.0, 0.0, 0.0], eye_span=0.35, frame_index=f) for f in (0, 2, 4)]
+    profile = [make_observation([0.0, 1.0, 0.0], eye_span=0.05, frame_index=f) for f in (1, 3, 5, 7, 9)]
+    for observation in frontal + profile:
+        grouper.add(observation)
+
+    assert grouper.groups == []
+    assert len(grouper.unassigned) == 8
+
+
+def test_a_card_over_the_minimum_still_takes_its_profile_faces():
+    grouper = IdentityGrouper(
+        similarity_threshold=0.5, min_group_eye_span=0.15, min_detections=5
+    )
+    frontal, profile = _turning_head([0.0, 1.0, 0.0], range(20))
+    for observation in frontal + profile:
+        grouper.add(observation)
+
+    assert [group.size for group in grouper.groups] == [20]
+
+
 def test_auto_min_detections_scales_with_sampling_interval():
     """Tests that the cutoff means the same screen time at any sampling rate.
 
