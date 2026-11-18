@@ -3,6 +3,7 @@
 One page per change, newest first: what it does, why, what it means for your
 videos and kept scans, the numbers before and after, and how to undo it.
 
+- [2026-11-18 — Merging gets its own screen, and choosing a face makes a sound](2026-11-18-merge-screen-and-sounds.md)
 - [2026-11-18 — Four fixes from the review of the faces code](2026-11-18-faces-review-fixes.md)
 - [2026-11-18 — The evaluation suite measures the new test videos](2026-11-18-new-evaluation-labels.md)
 - [2026-11-18 — The window looks like a proof sheet](2026-11-18-proof-sheet-window.md)

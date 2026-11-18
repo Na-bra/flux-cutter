@@ -4487,3 +4487,21 @@ longer exercises attaching; only the unit tests do.
 
 `SCAN_FORMAT` is unchanged, as in §52's precedent: kept scans keep their
 answer and their corrections until the video is rescanned.
+
+## 61. The merge screen and the selection sound (`window.html`)
+
+`playMergeStage` replaces `animateMerge`. It hides `#grid` and `#fixups`,
+shows `#mergeStage`, lays the cards out in `#mergeRow` with the kept one
+(most detections) pinned right, then freezes each at its measured position
+so it can move alone. All cards travel to `meetX`, the mean of their centres.
+The seam is drawn only for a two-card merge. `applyEdit("merge")` runs after
+the stage has cleared. The split animation still uses `.anim-layer`.
+
+`sketchSound` synthesizes band-passed noise through Web Audio, so there is no
+file to ship. It plays when a gallery card or a split track turns on, never
+under `prefers-reduced-motion`, and any audio failure is swallowed.
+
+Checked in headless Chromium with a stub bridge, in real time over the
+DevTools protocol. Under `--virtual-time-budget` a second merge on one page
+stalls because `requestAnimationFrame` stops firing there; in real time it
+does not, so do not read that as a bug in the page.
