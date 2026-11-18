@@ -4427,3 +4427,34 @@ The files now named test_3.mp4 (the 44-minute episode) and animation2.mp4
 are not the ones labelled in evaluation/truth/, which `evaluate` detects
 by size and skips.
 
+## 59. New labels for the new test_3 and animation2
+
+The files now named test_3.mp4 (44-min live action, 1280x718) and
+animation2.mp4 (28-min animation, 850x480) replaced the ones §50 labelled,
+so `evaluate` skipped both. They were drafted afresh, the §50 way, from a
+pass identical to `run_pass` but keeping each card's tracks: per card a
+sheet of its tracks (one row each, up to 8 faces across it), a sheet of
+the runs of faces that made no card, an overview of every card, and 12
+evenly spaced sampled frames with every found face boxed. Seven labellers
+worked in parallel from the same rules (live action numbered by the
+lowest card holding a person; cartoons named; `unknown` for any face that
+cannot be told apart), and their answers were merged with no card or track
+answered two ways. 25 tracks named only from where they stood (backs of
+heads) were set back to `unknown`.
+
+    video        faces   people  not-a-face  unknown  missed in checked frames
+    test_3        9813     142       112        793      2
+    animation2     966      18        19         55      4
+
+    video        precision  recall   contamination  cards holding others  splits
+    test_3          98.9%    90.9%       1.03%            5 of 40             7
+    animation2      98.0%    33.3%       6.15%            4 of 13             4
+
+animation2's contamination is mostly the old cyborg's card holding 27
+faces of a young man in goggles from a flashback, possibly the same
+character; merged, it would be about 3%. test_3's worst card is a split of
+Person 5 holding 32 faces of Person 3, most in profile. Recall on
+animation2 rests on 6 faces.
+
+Not comparable with §50's figures for these names: different videos.
+
