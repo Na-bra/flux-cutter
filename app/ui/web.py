@@ -292,6 +292,14 @@ class Bridge:
         # there was; and whether it is waiting on shots still being found.
         self._pack_pieces: list[scenepack.Piece] = []
         self._pack_waiting = False
+        # The plan's videos whose shots are not known yet. Until they are,
+        # the pieces are only part of the answer, so neither a pack nor the
+        # longest one that could be made can be given.
+        self._pack_missing: list[int] = []
+        # Whether the read those shots need was cancelled or failed. Set so
+        # the panel stops saying it is working the figure out when nothing
+        # is; cleared when a pack length asks for the shots outright.
+        self._stopped_looking = False
         # What cutting changes each piece's length by (scenepack.edge_loss_at).
         self._pack_edge_loss = scenepack.EDGE_LOSS_SECONDS
         # Shots found this session, by (video path, interval): kept on disk
@@ -779,6 +787,8 @@ class Bridge:
         detections = sum(chosen.detection_count for chosen in self._selected)
 
         self._start_preview()
+        maximum = self._pack_maximum()
+        self._find_the_cuts()
 
         return {
             "accepted": True,
@@ -786,6 +796,8 @@ class Bridge:
             "indexes": [chosen.index for chosen in self._selected],
             "cuts": planned,
             "reel": _clock(reel_seconds),
+            # The longest pack they could make, before a length is typed.
+            "maximum": maximum,
             # Screen time is summed over the people chosen, so two of them
             # in one shot count twice -- which is why it can exceed the
             # reel length rather than matching it.
@@ -1125,6 +1137,7 @@ class Bridge:
             "reel": _clock(cuts.reel_seconds(self._cuts)),
             "edited": any(cut.changed for cut in self._cuts),
             "pack": self._pack_payload(),
+            "maximum": self._pack_maximum(),
         }
 
     def _pack_payload(self) -> dict | None:
@@ -1132,7 +1145,7 @@ class Bridge:
             return None
         if self._pack_waiting:
             return {"length": _clock(self._pack_seconds), "waiting": True}
-        available = scenepack.available_seconds(self._pack_pieces, self._pack_edge_loss)
+        available = self._available_seconds()
         return {
             "length": _clock(self._pack_seconds),
             # What the pieces come out as once cut (scenepack.EDGE_LOSS_SECONDS).
@@ -1147,6 +1160,29 @@ class Bridge:
                 else None
             ),
         }
+
+    def _available_seconds(self) -> float:
+        """How long a pack of the current selection could come out at most:
+        every piece it could use, whole, once cut."""
+        return scenepack.available_seconds(self._pack_pieces, self._pack_edge_loss)
+
+    def _pack_maximum(self) -> dict | None:
+        """The longest scene pack the current selection could be made into.
+
+        The same figure a pack asked for more than there is reports as all
+        there was, said up front instead: nobody should have to ask for too
+        much to find out what there is. In folder view it is the total
+        across every video they are in, since one pack is cut from all of
+        them. None when nothing is selected; `waiting` while the shots it
+        rests on are still being found (`_find_the_cuts`).
+        """
+        if not self._plan:
+            return None
+        if self._pack_missing:
+            # Nothing is working it out once the read has been stopped, so
+            # the figure is simply not offered rather than promised.
+            return None if self._stopped_looking else {"waiting": True}
+        return {"upTo": _clock(self._available_seconds())}
 
     def _rebuild_cuts(self) -> None:
         """The plan for whatever is selected now, with nothing edited."""
@@ -1176,16 +1212,39 @@ class Bridge:
     def _packed(self, planned: list[cuts.Cut]) -> list[cuts.Cut]:
         """The scene pack for this plan, if one is on; else the plan itself.
 
-        Built from the shots of the videos the plan cuts from, and kept to
-        the plan's footage, so a folder's pack leaves out what its reel
-        left out as repeated (scenepack.find_pieces). A video whose shots
-        are not known yet -- scanned before shots were recorded -- has them
-        found in the background, and the pack follows when they are.
+        The pieces are worked out either way, because the longest pack this
+        selection could make is worth saying before a length is typed
+        (`_pack_maximum`); only choosing from them waits on a length. A
+        video whose shots are not known yet -- scanned before shots were
+        recorded -- has them found in the background, and both the pack and
+        the figure follow when they are.
         """
-        self._pack_pieces = []
-        self._pack_waiting = False
-        if self._pack_seconds is None or not planned:
+        self._pack_pieces, self._pack_edge_loss, self._pack_missing = self._pieces_of(planned)
+        self._pack_waiting = self._pack_seconds is not None and bool(self._pack_missing)
+        if self._pack_waiting and not self._busy():
+            # Said before the job starts, whatever started it -- a pack
+            # length, a new selection, an edit in folder view -- so the
+            # page always shows the wait and its Cancel, and always
+            # hears it before the "onPackReady" that ends it.
+            self._emit("onPackWaiting", {"length": _clock(self._pack_seconds)})
+            self._start(self._shots_worker, self._pack_missing)
+        if self._pack_seconds is None or not planned or self._pack_missing:
             return planned
+        return scenepack.choose(self._pack_pieces, self._pack_seconds, self._pack_edge_loss)
+
+    def _pieces_of(
+        self, planned: list[cuts.Cut]
+    ) -> tuple[list[scenepack.Piece], float, list[int]]:
+        """Every piece a pack of this plan could use, and what it would cost.
+
+        Returns the pieces, what cutting changes each one's length by
+        (scenepack.edge_loss_at), and the plan's videos whose shots are not
+        known yet -- pieces of those are missing from the list entirely.
+
+        Built from the shots of the videos the plan cuts from, and kept to
+        the plan's footage, so a folder's pack leaves out what its reel left
+        out as repeated (scenepack.find_pieces).
+        """
         videos = sorted({cut.video for cut in cuts.kept(planned)})
         shots = {}
         for video in videos:
@@ -1193,35 +1252,39 @@ class Bridge:
             if result is None:
                 continue
             shots[video] = self._shots_for(result)
-        missing = [video for video, found in shots.items() if found is None]
-        if missing:
-            self._pack_waiting = True
-            if not self._busy():
-                # Said before the job starts, whatever started it -- a pack
-                # length, a new selection, an edit in folder view -- so the
-                # page always shows the wait and its Cancel, and always
-                # hears it before the "onPackReady" that ends it.
-                self._emit("onPackWaiting", {"length": _clock(self._pack_seconds)})
-                self._start(self._shots_worker, missing)
-            return planned
         seen, interval = self._faces_by_video()
         within: dict[int, list[tuple[float, float]]] = {}
         for cut in cuts.kept(planned):
             within.setdefault(cut.video, []).append((cut.start, cut.end))
-        self._pack_pieces = [
+        pieces = [
             piece
             for video in videos
-            if video in shots
+            if shots.get(video) is not None
             for piece in scenepack.find_pieces(
                 scenepack.score_shots(shots[video], seen.get(video, []), interval.get(video, 1.0)),
                 video,
                 within.get(video, []),
             )
         ]
-        self._pack_edge_loss = scenepack.edge_loss_at(
-            min(interval.values()) if interval else 0.0
-        )
-        return scenepack.choose(self._pack_pieces, self._pack_seconds, self._pack_edge_loss)
+        edge_loss = scenepack.edge_loss_at(min(interval.values()) if interval else 0.0)
+        return pieces, edge_loss, [video for video, found in shots.items() if found is None]
+
+    def _find_the_cuts(self) -> None:
+        """Starts the one-off read the longest-pack figure needs, if it does.
+
+        Only for a scan kept from before shots were recorded: a scan made
+        since carries them, and this never runs. The read is a job rather
+        than a loose thread because the footage takes one reader at a time
+        (app/video/source.py), so it shows the usual progress bar and its
+        Cancel, and it is never started while something else is running.
+        With a pack length already typed, `_packed` has started it instead.
+        """
+        if self._pack_seconds is not None or not self._pack_missing:
+            return
+        if self._busy() or self._stopped_looking:
+            return
+        self._emit("onPackWaiting", {"length": None})
+        self._start(self._shots_worker, self._pack_missing)
 
     def _shots_for(self, result: ScanResult) -> list | None:
         found = known_shots(result)
@@ -1230,7 +1293,13 @@ class Bridge:
         return found
 
     def _shots_worker(self, videos: list[int]) -> None:
-        """Finds the shots a pack needs, then shows the pack."""
+        """Finds the shots a pack needs, then shows the pack.
+
+        Also what the longest-pack figure needs, when no length has been
+        typed: there is one pack and one figure, and both rest on the same
+        shots, so there is one read for both.
+        """
+        self._stopped_looking = False
         try:
             for position, video in enumerate(videos):
                 result = self._scan_for(video)
@@ -1257,11 +1326,13 @@ class Bridge:
         except Cancelled:
             # No pack, rather than a pack of the videos that were done.
             self._pack_seconds = None
+            self._stopped_looking = True
             self._cuts = self._packed(self._plan)
             self._emit("onPackReady", {**self._cut_payload(), "cancelled": True})
             return
         except Exception as error:
             self._pack_seconds = None
+            self._stopped_looking = True
             self._cuts = self._packed(self._plan)
             self._emit("onPackReady", self._cut_payload())
             self._emit("onFailed", {"title": "Could not find the camera cuts", "detail": str(error)})
@@ -1315,6 +1386,9 @@ class Bridge:
                 "For two minutes, type 2:00 or 2m.",
             }
         self._pack_seconds = seconds
+        # A length asks for the shots outright, so a read stopped earlier is
+        # no reason not to look again.
+        self._stopped_looking = False
         self._cuts = self._packed(self._plan)
         return self._cut_payload()
 
@@ -1672,6 +1746,8 @@ class Bridge:
         reel = cuts.reel_seconds(self._cuts)
         repeated = repeated_seconds(self._folder, chosen)
         self._start_cast_preview()
+        maximum = self._pack_maximum()
+        self._find_the_cuts()
 
         return {
             "accepted": True,
@@ -1680,6 +1756,8 @@ class Bridge:
             "name": chosen.label,
             "cuts": planned,
             "reel": _clock(reel),
+            # Across every video they are in: one pack is cut from all of them.
+            "maximum": maximum,
             "onScreen": _clock(chosen.detection_count * self._folder.settings.sample_interval),
             "detections": chosen.detection_count,
             "videos": len(plans),

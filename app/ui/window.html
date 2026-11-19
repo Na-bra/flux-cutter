@@ -69,6 +69,9 @@
     font-family: var(--mono); font-size: .64rem; letter-spacing: .1em;
     text-transform: uppercase; color: var(--faint);
   }
+  /* The longest pack that can be made of whoever is chosen, beside the
+     label it qualifies: a figure, so it is not shouted like the heading. */
+  #packMax { text-transform: none; letter-spacing: 0; color: var(--muted); }
 
   .control {
     display: flex; align-items: center; gap: 8px;
@@ -616,7 +619,9 @@
       <!-- A scene pack: one video of their clearest shots, about this long,
            cut only where the show cuts. Empty is a whole reel. -->
       <div class="field">
-        <label for="pack">Scene pack length</label>
+        <!-- "up to 3:12": the longest pack that can be made of whoever is
+             chosen, so the length worth asking for is known before typing. -->
+        <label for="pack">Scene pack length<span id="packMax"></span></label>
         <input type="text" id="pack" placeholder="Off — e.g. 1:00"
                title="One video of their clearest shots, about this long, with every cut where the show cuts: raw footage to edit. Seconds or minutes: 90, 1:30, 2m. Empty for the whole reel.">
         <p class="footnote" id="packNote" hidden></p>
@@ -1430,6 +1435,7 @@
     $("pickedVideosLabel").hidden = $("pickedVideos").hidden = !folder;
     if (folder) $("pickedVideos").textContent = r.videos;
     if (r.filename) $("fname").value = r.filename;
+    showMaximum(r.maximum);
     $("exportBtn").disabled = false;
     state.previewToken = r.token;
     const strip = $("strip");
@@ -1453,6 +1459,7 @@
       if (!r.indexes.length) {
         $("picked").hidden = true; $("strip").hidden = true; $("exportBtn").disabled = true;
         $("foot").textContent = "Choose a person to export.";
+        showMaximum(null);
         closeCuts();
         return;
       }
@@ -1486,6 +1493,7 @@
       $("strip").hidden = true;
       $("foot").textContent = "Choose a person to export.";
       $("exportBtn").disabled = true;
+      showMaximum(null);
       closeCuts();
       return;
     }
@@ -1622,6 +1630,7 @@
     // (scenepack.EDGE_LOSS_SECONDS), so its rail gives what it will be.
     $("pickedLen").textContent = d.pack && d.pack.about ? "about " + d.pack.about : d.reel;
     showPack(d);
+    showMaximum(d.maximum);
     // The footnote describes the plan; once the list has been edited it
     // is the list that gets cut, and saying so is the difference between
     // trusting the reel and checking it afterwards.
@@ -1640,6 +1649,15 @@
     }
     // Nothing left to cut is not an export, and nor is a pack still waiting.
     $("exportBtn").disabled = !d.kept || !!state.busy || !!(d.pack && d.pack.waiting);
+  }
+
+  // The longest pack that can be made of whoever is chosen, beside the
+  // length box. Without it you only found out by asking for too much.
+  // Blank when nobody is chosen, and while the shots it rests on are being
+  // found for a scan kept from before they were recorded.
+  function showMaximum(m) {
+    $("packMax").textContent =
+      !m ? "" : m.waiting ? " — working it out…" : " — up to " + m.upTo;
   }
 
   // A pack changes what the export button makes, so it says so.
@@ -1669,12 +1687,21 @@
 
   window.onPackReady = (d) => {
     idle(); setBar(0);
-    if (d.cancelled || !d.pack) {
-      state.pack = ""; $("pack").value = "";
-      status(d.cancelled ? "<b>Scene pack cancelled.</b>" : "<b>No scene pack.</b>");
-    } else {
+    // Whether a length was asked for, or the read was only to say how long
+    // the longest pack of this selection could be.
+    const asked = !!state.pack;
+    state.pack = d.pack ? d.pack.length : "";
+    $("pack").value = state.pack;
+    if (d.cancelled) {
+      status(asked ? "<b>Scene pack cancelled.</b>" : "<b>Stopped looking for the camera cuts.</b>");
+    } else if (d.pack) {
       status("<b>Scene pack ready.</b> " + d.pack.pieces + " piece" + (d.pack.pieces === 1 ? "" : "s") +
         ", about " + d.pack.about + ".");
+    } else if (asked) {
+      status("<b>No scene pack.</b>");
+    } else {
+      status("<b>Found where the camera cuts.</b>" +
+        (d.maximum && d.maximum.upTo ? " A scene pack of them can be up to " + d.maximum.upTo + "." : ""));
     }
     if (!$("cuts").hidden) drawCuts(d); else showCutSummary(d);
   };
