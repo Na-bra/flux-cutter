@@ -7,7 +7,8 @@ show that the answer about 44 minutes of television is the truth. So this
 scans `assets/test-videos/test_3.mp4` once and checks the three things the
 figure promises: that it is there as soon as someone is chosen, that asking
 for exactly it gives a pack within the usual slack of it, and that asking
-for more is short by the same figure.
+for more is short by the same figure. Then that the up button walks to the
+same figure and stops there, since that is the stop it steps against.
 
 It scans the episode for real -- 2 min 16 s when this was written, against
 three and a half minutes for the whole suite -- which is why it is marked
@@ -71,6 +72,23 @@ def test_the_longest_pack_of_the_lead_of_an_episode(monkeypatch, capsys):
     more = bridge.set_scene_pack(web._clock(asked * 2))
     assert more["pack"]["short"] == longest
 
+    # Stepping to the figure instead of typing it: the presses the window's
+    # up button makes, from an empty box, and nowhere past the figure.
+    walk, box = [], ""
+    while True:
+        press = bridge.step_scene_pack(box, 1)
+        assert len(walk) < 500, "the steps should stop at the longest pack"
+        if not press["changed"]:
+            break
+        box = press["length"]
+        walk.append(box)
+
+    assert walk[:3] == ["0:30", "0:45", "1:00"]
+    assert box == longest
+    # Down from the top moves; down at the floor does not.
+    assert bridge.step_scene_pack(longest, -1)["length"] == "11:45"
+    assert bridge.step_scene_pack("0:05", -1)["changed"] is False
+
     print(
         "\n"
         + json.dumps(
@@ -87,6 +105,8 @@ def test_the_longest_pack_of_the_lead_of_an_episode(monkeypatch, capsys):
                 "pack_pieces": exactly["kept"],
                 "asked_for_more": web._clock(asked * 2),
                 "said_short_of": more["pack"]["short"],
+                "presses_up_from_empty": len(walk),
+                "stepped_up_to": box,
             },
             indent=1,
         )

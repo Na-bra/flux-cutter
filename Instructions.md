@@ -4552,3 +4552,63 @@ and skipped unless `pytest --measure` asks for it: it scans the episode for
 real (2 min 16 s here, against three and a half minutes for the whole
 suite), and the figure cannot be checked against television on a synthetic
 two-minute clip.
+
+## 63. Stepping the pack length (`scenepack.stepped_length`)
+
+§62 put the longest pack that can be made beside the length box; this puts
+up and down beside it, so the figure can be aimed at without typing. The
+arrow keys in the box are the same two presses -- a text box's own arrows
+only move the caret, so they are taken over.
+
+The grid is 0:05, 0:10 ... 0:30, 0:45, 1:00, 1:15: `PACK_STEP_SECONDS`
+(15 s) a press, `PACK_SHORT_STEP_SECONDS` (5 s) below
+`PACK_SHORT_STEP_BELOW` (half a minute). Half a minute itself steps up in
+fifteens and down in fives, so the grid reads the same whichever way it is
+crossed. A press lands on the next place on the grid rather than adding the
+step to what is there, so a length typed as 1:07 goes to 1:15 and not 1:22.
+Up from an empty box starts at `PACK_FIRST_SECONDS` (0:30), or at the
+longest pack there is of them when that is less. Down from an empty box
+stays empty: a pack is turned off by emptying the box, not by stepping out
+of the bottom of it.
+
+The stops are `MIN_PACK_SECONDS` and §62's figure. The floor stays
+reachable however little there is of someone -- a 0:03 selection can still
+be asked for 0:05, which is what the pack's shortfall note is for -- so the
+ceiling is `max(most, MIN_PACK_SECONDS)`. A length typed past the ceiling
+comes back to it on a down press and does not move on an up one. With
+nobody chosen, or while the shots the figure rests on are still being
+found, there is no ceiling at all, exactly as there is no figure.
+
+### Where the arithmetic lives
+
+`stepped_length(seconds, direction, most)` is a pure function in
+`app/video/scenepack.py`, beside the `parse_length` it is the other half
+of; `Bridge.step_scene_pack(length, direction)` hands it what the box holds
+now -- not the length last built, since the presses in between are not
+built -- and answers with the text for the box. So the page holds no
+arithmetic of its own, and the step, the floor and the ceiling are all one
+side of the bridge, with the constants they come from.
+
+### Why the pack is not built on every press
+
+A held-down arrow key is a dozen presses, and on a pre-§57 scan one length
+starts a read of the footage. So a press works out the number and nothing
+else; the page sets the length (`set_scene_pack`, which builds the pack) once
+`PACK_SETTLE_MS` (350 ms) has passed with no further press. `setPack` now
+returns early when the box already holds the length that was built, which
+is what keeps the box's own `change` event from building the same pack a
+second time after a step.
+
+The presses queue through one promise chain, each reading the box the one
+before it wrote. Without that a held-down key steps from the same number
+over and over -- thirty presses, one step.
+
+### Not driven in the window
+
+The nightly run that made this has no way to open the window (the UI is not
+in its allowed commands and there is no browser to load the page in), so
+the acceptance checks the issue asked for in the real window are the one
+thing here that has not been done. The bridge side is covered exactly, in
+`tests/test_ui_web.py`; what wants a human is that the two buttons sit in
+the rail without crowding the box, that a held-down arrow key steps
+smoothly, and that the pack rebuilds once when the pressing stops.

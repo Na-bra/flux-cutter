@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from bisect import bisect_left
 from dataclasses import dataclass
+from math import ceil, floor
 
 from app.faces.grouper import _observation_quality
 from app.video.cuts import Cut, kept
@@ -57,6 +58,22 @@ SLACK_SHARE = 0.05
 # certainly meant two minutes; refusing it says so instead of making an
 # empty pack.
 MIN_PACK_SECONDS = 5.0
+
+# Stepping the length with the window's up and down buttons, or the arrow
+# keys in the box: fifteen seconds a press, five below half a minute. That
+# makes the grid 0:05, 0:10 ... 0:30, 0:45, 1:00, so the shortest packs are
+# reachable without a long one taking a dozen presses.
+PACK_STEP_SECONDS = 15.0
+PACK_SHORT_STEP_SECONDS = 5.0
+PACK_SHORT_STEP_BELOW = 30.0
+
+# Where up from an empty box starts: long enough to be a pack worth
+# watching, short enough that most selections have that much of someone.
+PACK_FIRST_SECONDS = 30.0
+
+# A length typed by hand lands anywhere, so the grid is read with a little
+# room either side rather than exactly.
+_GRID_TOLERANCE = 1e-6
 
 # What the encode takes off each piece: it ends on a whole frame. A pack is
 # cut without sliver trimming (its edges are already on cuts), so that is
@@ -364,3 +381,53 @@ def parse_length(text: str) -> float | None:
     if value <= 0:
         raise ValueError("a scene pack has to be longer than nothing")
     return value
+
+
+def stepped_length(
+    seconds: float | None, direction: int, most: float | None = None
+) -> float | None:
+    """The length an up or down press moves to, or None to leave it alone.
+
+    `seconds` is the length showing now, None for an empty box; `direction`
+    is positive for longer and negative for shorter; `most` is the longest
+    pack that can be made of whoever is chosen (`available_seconds`) when
+    that is known, and None when it is not.
+
+    Up from an empty box starts at PACK_FIRST_SECONDS, or at `most` when
+    there is less of them than that. Down from an empty box stays empty: a
+    pack is turned off by emptying the box, not by stepping out of the
+    bottom of it. Every other press lands on the grid its step size makes,
+    so a length typed as 1:07 steps up to 1:15 rather than 1:22, and the
+    steps stop at MIN_PACK_SECONDS and at `most`.
+    """
+    # The floor stays reachable even for someone with almost nothing in
+    # whole shots: a 0:03 selection can still be asked for 0:05, which is
+    # what the pack's own shortfall note is for.
+    ceiling = None if most is None else max(most, MIN_PACK_SECONDS)
+    if seconds is None:
+        if direction <= 0:
+            return None
+        start = PACK_FIRST_SECONDS if ceiling is None else min(PACK_FIRST_SECONDS, ceiling)
+        return max(start, MIN_PACK_SECONDS)
+    # Half a minute itself steps up in fifteens and down in fives, so the
+    # grid reads the same whichever way it is crossed.
+    step = (
+        PACK_SHORT_STEP_SECONDS
+        if seconds < PACK_SHORT_STEP_BELOW
+        or (direction < 0 and seconds <= PACK_SHORT_STEP_BELOW)
+        else PACK_STEP_SECONDS
+    )
+    places = seconds / step
+    wanted = (
+        floor(places + _GRID_TOLERANCE) + 1
+        if direction > 0
+        else ceil(places - _GRID_TOLERANCE) - 1
+    ) * step
+    wanted = max(wanted, MIN_PACK_SECONDS)
+    if ceiling is not None:
+        wanted = min(wanted, ceiling)
+    # A press that would move nowhere, or the wrong way once clamped, is a
+    # press at a stop: 0:05 cannot go lower, and nothing goes past `most`.
+    if (wanted - seconds) * direction <= 0:
+        return None
+    return wanted

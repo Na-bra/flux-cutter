@@ -9,6 +9,7 @@ import pytest
 
 from app.video.cuts import kept, reel_seconds
 from app.video.scenepack import (
+    MIN_PACK_SECONDS,
     MIN_PIECE_SECONDS,
     MIN_PRESENCE,
     Seen,
@@ -19,6 +20,7 @@ from app.video.scenepack import (
     parse_length,
     score_shots,
     slack,
+    stepped_length,
 )
 from app.video.shots import Shot
 
@@ -311,6 +313,48 @@ def test_a_length_can_be_typed_the_ways_people_type_one(typed, seconds):
 def test_what_is_not_a_length_is_refused(typed):
     with pytest.raises(ValueError):
         parse_length(typed)
+
+
+@pytest.mark.parametrize(
+    "showing, direction, moves_to",
+    [
+        (None, 1, 30.0),     # up from an empty box
+        (None, -1, None),    # down out of one stays empty
+        (30.0, 1, 45.0),
+        (45.0, 1, 60.0),
+        (60.0, 1, 75.0),
+        (30.0, -1, 25.0),    # five seconds a press below half a minute
+        (10.0, 1, 15.0),
+        (60.0, -1, 45.0),
+        (67.0, 1, 75.0),     # a length typed off the grid is tidied, not carried
+        (67.0, -1, 60.0),
+        (90.0, 1, 105.0),
+        (MIN_PACK_SECONDS, -1, None),   # the floor
+        (6.0, -1, MIN_PACK_SECONDS),
+    ],
+)
+def test_a_press_steps_the_length_along_its_grid(showing, direction, moves_to):
+    assert stepped_length(showing, direction) == moves_to
+
+
+def test_the_steps_stop_at_the_longest_pack_that_can_be_made():
+    # 0:50 of them in whole shots: 0:45 is a step away, 1:00 is past the end.
+    assert stepped_length(30.0, 1, 50.0) == 45.0
+    assert stepped_length(45.0, 1, 50.0) == 50.0
+    assert stepped_length(50.0, 1, 50.0) is None
+    # Up from empty asks for no more than there is of them.
+    assert stepped_length(None, 1, 12.0) == 12.0
+    # A longer length typed by hand comes back to the end rather than going
+    # further past it, and up from there does nothing.
+    assert stepped_length(600.0, -1, 50.0) == 50.0
+    assert stepped_length(600.0, 1, 50.0) is None
+
+
+def test_the_shortest_pack_is_reachable_however_little_there_is_of_someone():
+    """0:03 of them in whole shots still allows the 0:05 a pack is floored
+    at -- which comes out short, and says so, as it always has."""
+    assert stepped_length(None, 1, 3.0) == MIN_PACK_SECONDS
+    assert stepped_length(MIN_PACK_SECONDS, 1, 3.0) is None
 
 
 # ------------------------------------------------------------ the shots
