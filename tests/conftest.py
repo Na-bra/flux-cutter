@@ -40,6 +40,21 @@ NEEDS_ASSETS = {
 # Marker for a test inside a NEEDS_ASSETS module that needs no assets at all.
 RUNS_WITHOUT_ASSETS = "runs_without_assets"
 
+# Marker for a measurement: a check against a whole episode, which means a
+# real scan of it. Minutes each, against three and a half for the whole
+# suite, so they are left out of an ordinary run and asked for by name.
+MEASURED = "measured"
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--measure",
+        action="store_true",
+        default=False,
+        help="also run the measurements: real scans of the long test "
+        "episodes, minutes each.",
+    )
+
 
 def pytest_configure(config):
     config.addinivalue_line(
@@ -54,6 +69,14 @@ def assets_available() -> bool:
 
 
 def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--measure"):
+        unmeasured = pytest.mark.skip(
+            reason="a measurement: scans a whole episode. Run with --measure."
+        )
+        for item in items:
+            if item.get_closest_marker(MEASURED):
+                item.add_marker(unmeasured)
+
     if assets_available():
         return
 

@@ -77,6 +77,10 @@ def make_scan_result(video_path: str = "/videos/documentary.mp4", source=None) -
         frame_count=240,
         detection_count=9,
         min_detections=6,
+        # Carried by the scan, as any made since v1.17.0 is: without them
+        # choosing a card starts the one-off read of the footage that the
+        # longest-pack figure needs, which is its own set of tests.
+        shots=fake_shots(),
     )
 
 
@@ -1059,6 +1063,9 @@ def make_folder():
             video_duration=120.0,
             sample_interval=0.5,
             people=list(people),
+            # As any scan made since v1.17.0 carries them, so a pack and the
+            # longest one that could be made need no read of the footage.
+            shots=fake_shots(),
         )
 
     return FolderScan(
@@ -1500,13 +1507,25 @@ def test_a_named_card_is_not_offered_a_name(bridge):
 APPEARANCES = [start + 0.5 * step for start in (10.0, 30.0, 50.0, 70.0) for step in range(5)]
 
 
-def picked(bridge, monkeypatch):
-    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
-    bridge._scan_result = ScanResult(
+def make_episode(*people) -> ScanResult:
+    """A two-minute episode, with the shots a scan has carried since v1.17.0.
+
+    A test about the older kind of kept scan patches `known_shots` to None
+    over them.
+    """
+    return ScanResult(
         video_path=Path("/videos/episode.mp4"),
         video_duration=120.0,
         sample_interval=0.5,
-        people=[make_person(0, APPEARANCES), make_person(1, APPEARANCES)],
+        people=list(people),
+        shots=fake_shots(),
+    )
+
+
+def picked(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    bridge._scan_result = make_episode(
+        make_person(0, APPEARANCES), make_person(1, APPEARANCES)
     )
     bridge.select_person(0, "")
     return bridge
@@ -2054,6 +2073,116 @@ def test_a_video_with_no_shots_at_all_does_not_leave_the_pack_waiting(bridge, mo
 
     assert "waiting" not in bridge.cut_list()["pack"]
     assert answer["accepted"] is True
+
+
+# ------------------------------------- the longest pack that can be made
+#
+# You used to find out only by asking for too much: a pack longer than the
+# footage answered "all there is of them in whole shots: about 0:50". These
+# cover the same figure said up front, beside the length box.
+
+
+def test_choosing_someone_says_the_longest_pack_that_can_be_made_of_them(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    bridge._scan_result = make_episode(make_person(0, APPEARANCES))
+
+    chosen = bridge.select_person(0, "")
+
+    # Four whole shots of them, 2.5s each, which cut a little longer than
+    # they are planned (scenepack.edge_loss_at).
+    assert chosen["maximum"] == {"upTo": "0:12"}
+
+    # Asking for exactly that lands within the usual slack of it, and is
+    # not reported as short.
+    exactly = bridge.set_scene_pack(chosen["maximum"]["upTo"])
+    assert exactly["pack"]["short"] is None
+    assert abs(
+        scenepack.expected_seconds(bridge._cuts, bridge._pack_edge_loss) - 12
+    ) <= scenepack.slack(12)
+
+    # Asking for more is short by the same figure.
+    assert bridge.set_scene_pack("0:30")["pack"]["short"] == chosen["maximum"]["upTo"]
+
+
+def test_the_longest_pack_follows_whoever_is_chosen(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    # The lead is in all four scenes; the other only in the first.
+    bridge._scan_result = make_episode(
+        make_person(0, APPEARANCES), make_person(1, APPEARANCES[:5])
+    )
+
+    lead = bridge.select_person(0, "")["maximum"]
+    bridge.select_person(0, "")
+    other = bridge.select_person(1, "")["maximum"]
+
+    assert lead == {"upTo": "0:12"} and other == {"upTo": "0:03"}
+
+    # And there is no figure with nobody chosen.
+    bridge.select_person(1, "")
+    assert bridge.cut_list()["maximum"] is None
+
+
+def test_in_a_folder_the_longest_pack_is_the_total_across_their_videos(with_folder, monkeypatch):
+    """One pack is cut from every video they are in, so one figure covers
+    all of them."""
+    monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
+
+    chosen = with_folder.select_cast_person(0, "")
+
+    assert chosen["videos"] == 2
+    each = [
+        scenepack.available_seconds(
+            [piece for piece in with_folder._pack_pieces if piece.video == video],
+            with_folder._pack_edge_loss,
+        )
+        for video in (0, 1)
+    ]
+    assert all(part > 0 for part in each)
+    assert chosen["maximum"] == {"upTo": web._clock(sum(each))}
+
+
+def test_a_scan_without_known_shots_says_the_figure_is_being_worked_out(bridge, monkeypatch):
+    """A scan kept from before shots were recorded. The figure rests on
+    them, so it waits for the one read that finds them -- and the reel,
+    with the length box empty, is the reel it always was."""
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    picked(bridge, monkeypatch)
+    whole = bridge.cut_list()
+
+    assert whole["maximum"] == {"waiting": True}
+    assert whole["pack"] is None
+    assert started and started[0][0] == bridge._shots_worker
+
+    monkeypatch.setattr(web, "find_shots", lambda result, **_: fake_shots())
+    bridge._shots_worker(*started[0][1])
+
+    ready = bridge.window.emitted("onPackReady")
+    assert ready["maximum"] == {"upTo": "0:12"}
+    # Nothing about the reel changed: the figure is only a figure.
+    assert ready["cuts"] == whole["cuts"] and ready["reel"] == whole["reel"]
+
+
+def test_the_figure_is_not_promised_once_the_read_has_been_stopped(bridge, monkeypatch):
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    picked(bridge, monkeypatch)
+
+    def cancelled(result, **_):
+        raise web.Cancelled()
+
+    monkeypatch.setattr(web, "find_shots", cancelled)
+    bridge._shots_worker(*started[0][1])
+
+    assert bridge.cut_list()["maximum"] is None
+    # And choosing somebody else does not start the read again.
+    bridge.select_person(1, "")
+    assert len(started) == 1
+    # Asking for a pack length does: that asks for the shots outright.
+    assert bridge.set_scene_pack("5")["pack"] == {"length": "0:05", "waiting": True}
+    assert len(started) == 2
 
 
 # ------------------------------------------------- a pack's exact cuts

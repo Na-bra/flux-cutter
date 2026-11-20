@@ -4505,3 +4505,50 @@ Checked in headless Chromium with a stub bridge, in real time over the
 DevTools protocol. Under `--virtual-time-budget` a second merge on one page
 stalls because `requestAnimationFrame` stops firing there; in real time it
 does not, so do not read that as a bug in the page.
+
+## 62. The longest pack that can be made (`Bridge._pack_maximum`)
+
+§56's shortfall note is the right figure in the wrong place: you only ever
+read "all there is of them in whole shots: about 0:50, short of 1:00"
+*after* asking for a minute. The same `available_seconds` is now reported
+as soon as someone is chosen -- `Scene pack length — up to 11:53` in the
+label -- so the length worth typing is known before anything is typed.
+
+`_packed` split in two. `_pieces_of(planned)` returns the pieces, the edge
+loss, and the plan's videos whose shots are not known; `_packed` records
+all three and only chooses from the pieces when a length has been typed. So
+the pieces are worked out on every selection rather than only for a pack,
+which is what makes the figure free when the shots are known. `_pack_maximum`
+goes into the selection payloads and `_cut_payload`, and in folder view it
+is one figure across every video, because `_pieces_of` already spans the
+whole plan.
+
+Working out the pieces on every selection made `score_shots` hot: it
+filtered the whole face list once per shot, which on test_3's lead is 163
+pieces against 1530 faces. It bisects a sorted copy now, same answer.
+
+### The one read an old scan still needs
+
+A scan made since §57 carries its shots, so nothing reads the footage. A
+scan kept from before does not, and the figure cannot exist without them,
+so `_find_the_cuts` starts the same `_shots_worker` the first pack used to
+start -- a job rather than a loose thread, because a `VideoSource` hands out
+one reader at a time. Until it finishes the label says "working it out…".
+The costs of starting it on a selection rather than on a length, all of
+them only on a pre-§57 scan: the window is busy for that read (progress bar
+and Cancel, as before), and the export button waits with it. Cancelling
+sets `_stopped_looking`, which drops the figure rather than promising one
+nothing is working on, and stops a new selection restarting the read;
+typing a length clears it, since that asks for the shots outright.
+
+### Measured (test_3, 44 min, the lead -- 1530 faces of 40 people)
+
+    longest pack said               11:53   (163 pieces available)
+    asked for exactly 11:53         11:18 in 149 pieces, inside slack 35.7 s
+    asked for 23:46                 "short of 11:53" -- the same figure
+
+`tests/test_scenepack_episode.py` is that measurement, marked `measured`
+and skipped unless `pytest --measure` asks for it: it scans the episode for
+real (2 min 16 s here, against three and a half minutes for the whole
+suite), and the figure cannot be checked against television on a synthetic
+two-minute clip.

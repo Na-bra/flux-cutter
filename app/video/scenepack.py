@@ -25,6 +25,7 @@ opens nothing: clarity comes from the faces the scan already measured.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 
 from app.faces.grouper import _observation_quality
@@ -168,6 +169,11 @@ def score_shots(shots, seen: list[Seen], interval: float) -> list[ShotScore]:
     still someone's shot, and whether it is theirs decides whether the
     shots either side of it are back to back (`find_pieces`).
     """
+    # Found by bisecting rather than by filtering the whole list per shot:
+    # the window works these out on every selection now, and a 44-minute
+    # episode is hundreds of shots against thousands of faces.
+    seen = sorted(seen, key=lambda face: face.time)
+    times = [face.time for face in seen]
     scored = []
     for position, shot in enumerate(shots):
         following = shots[position + 1] if position + 1 < len(shots) else None
@@ -176,7 +182,7 @@ def score_shots(shots, seen: list[Seen], interval: float) -> list[ShotScore]:
         # end is not a sample, so the last shot runs to it.
         known_end = following.earliest_start if following is not None else shot.end_time
         known_end = max(known_end, shot.start_time)
-        faces = [face for face in seen if shot.start_time <= face.time < samples_end]
+        faces = seen[bisect_left(times, shot.start_time) : bisect_left(times, samples_end)]
         samples = max(1, round((samples_end - shot.start_time) / interval))
         moments = len({round(face.time, 3) for face in faces})
         presence = min(1.0, moments / samples)
