@@ -72,6 +72,20 @@
   /* The longest pack that can be made of whoever is chosen, beside the
      label it qualifies: a figure, so it is not shouted like the heading. */
   #packMax { text-transform: none; letter-spacing: 0; color: var(--muted); }
+  /* Up and down for the length, stacked beside the box like a spinner's
+     and together as tall as it, so the rail's column is no wider. */
+  .stepper { display: flex; align-items: stretch; gap: 7px; min-width: 0; }
+  .stepper input[type="text"] { flex: 1; }
+  .stepper .steps {
+    display: flex; flex-direction: column;
+    border: 1px solid var(--rule); border-radius: 4px; overflow: hidden;
+  }
+  .stepper .steps button {
+    height: 17px; width: 25px; padding: 0; border: 0; border-radius: 0;
+    background: transparent; color: var(--muted);
+    font-size: .54rem; font-style: normal; line-height: 1;
+  }
+  .stepper .steps button:hover:not(:disabled) { background: var(--sunk); color: var(--ink); }
 
   .control {
     display: flex; align-items: center; gap: 8px;
@@ -410,6 +424,7 @@
   .cutrow.changed .len { color: var(--signal); }
   .cutrow.dropped .len { text-decoration-color: var(--accent); text-decoration-thickness: 2px; }
   .cutrow .nudge { border-radius: 0; }
+  .stepper .steps { border-radius: 0; }
   .advanced .knob .name { font-size: 1.1rem; font-weight: 400; font-style: italic; }
   .advanced .knob .name span { font-style: normal; font-size: .9rem; }
   .known .nameplate b { font-size: 1.3rem; font-weight: 400; font-style: italic; }
@@ -622,8 +637,16 @@
         <!-- "up to 3:12": the longest pack that can be made of whoever is
              chosen, so the length worth asking for is known before typing. -->
         <label for="pack">Scene pack length<span id="packMax"></span></label>
-        <input type="text" id="pack" placeholder="Off — e.g. 1:00"
-               title="One video of their clearest shots, about this long, with every cut where the show cuts: raw footage to edit. Seconds or minutes: 90, 1:30, 2m. Empty for the whole reel.">
+        <!-- Up and down beside the box, so a length can be stepped as well
+             as typed; the arrow keys in the box do the same. -->
+        <div class="stepper">
+          <input type="text" id="pack" placeholder="Off — e.g. 1:00"
+                 title="One video of their clearest shots, about this long, with every cut where the show cuts: raw footage to edit. Seconds or minutes: 90, 1:30, 2m. Empty for the whole reel.">
+          <span class="steps">
+            <button type="button" id="packUp" title="Longer" aria-label="A longer scene pack">▲</button>
+            <button type="button" id="packDown" title="Shorter" aria-label="A shorter scene pack">▼</button>
+          </span>
+        </div>
         <p class="footnote" id="packNote" hidden></p>
       </div>
 
@@ -849,7 +872,7 @@
     state.busy = kind;
     $("actionBtn").textContent = "Cancel";
     $("exportBtn").disabled = true;
-    ["mode","interval","enc","q","fname","fmt","pack","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
+    ["mode","interval","enc","q","fname","fmt","pack","packUp","packDown","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
     document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
     document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = true);
   }
@@ -859,7 +882,7 @@
     $("actionBtn").textContent = "Scan for people";
     $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
-    ["mode","interval","enc","q","fname","fmt","pack","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
+    ["mode","interval","enc","q","fname","fmt","pack","packUp","packDown","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
     document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = false);
   }
@@ -1707,6 +1730,10 @@
   };
 
   async function setPack() {
+    // The box already holding the length that was built is nothing to
+    // build again: a step commits its own value, and the box's change
+    // event can follow it with the same one.
+    if ($("pack").value === (state.pack || "")) return;
     const d = await pywebview.api.set_scene_pack($("pack").value);
     if (!d.accepted) {
       if (d.reason) status("<b>" + esc(d.reason) + "</b>");
@@ -1721,7 +1748,40 @@
   $("pack").addEventListener("change", setPack);
   $("pack").addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); $("pack").blur(); }
+    // A text box's own arrows only move the caret, so they are the step.
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      stepPack(e.key === "ArrowUp" ? 1 : -1);
+    }
   });
+
+  // The buttons beside the box, and the arrow keys in it. Python works the
+  // next length out -- the step, the 0:05 floor and the longest pack that
+  // can be made are its numbers -- and the pack is built once the pressing
+  // stops, since one length can cost a background read on an older scan.
+  const PACK_SETTLE_MS = 350;
+  let packPresses = Promise.resolve();
+  let packSettling = null;
+
+  function stepPack(direction) {
+    // Presses are taken one at a time, each reading the box the one before
+    // it wrote: held down, they would otherwise all step from the same
+    // number and only one of them would count.
+    packPresses = packPresses.then(() => takePackStep(direction)).catch(() => {});
+  }
+
+  async function takePackStep(direction) {
+    const d = await pywebview.api.step_scene_pack($("pack").value, direction);
+    if (!d.accepted) { if (d.reason) status("<b>" + esc(d.reason) + "</b>"); return; }
+    // A stop: 0:05 going down, or the longest pack going up.
+    if (!d.changed) return;
+    $("pack").value = d.length;
+    clearTimeout(packSettling);
+    packSettling = setTimeout(setPack, PACK_SETTLE_MS);
+  }
+
+  $("packUp").addEventListener("click", () => stepPack(1));
+  $("packDown").addEventListener("click", () => stepPack(-1));
 
   // A new selection keeps the pack length, so its rail is the pack's.
   async function showPackOfSelection() {

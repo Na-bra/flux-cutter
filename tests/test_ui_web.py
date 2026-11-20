@@ -2185,6 +2185,106 @@ def test_the_figure_is_not_promised_once_the_read_has_been_stopped(bridge, monke
     assert len(started) == 2
 
 
+# ------------------------------------------ stepping the length up and down
+#
+# The buttons beside the length box, and the arrow keys in it. The bridge
+# works out the number only -- the page sets the length once the pressing
+# has stopped, since a pack can need a background read.
+
+
+def test_the_length_steps_up_from_an_empty_box_and_along_its_grid(bridge):
+    assert bridge.step_scene_pack("", 1) == {
+        "accepted": True, "changed": True, "length": "0:30"
+    }
+    assert bridge.step_scene_pack("0:30", 1)["length"] == "0:45"
+    assert bridge.step_scene_pack("0:45", 1)["length"] == "1:00"
+    assert bridge.step_scene_pack("1:00", 1)["length"] == "1:15"
+    # Five seconds a press below half a minute, so the shortest packs are
+    # reachable without a long one taking a dozen presses.
+    assert bridge.step_scene_pack("0:30", -1)["length"] == "0:25"
+    assert bridge.step_scene_pack("0:10", 1)["length"] == "0:15"
+    # A length typed the other ways people type one steps from where it is.
+    assert bridge.step_scene_pack("90", 1)["length"] == "1:45"
+    assert bridge.step_scene_pack("1m07s", 1)["length"] == "1:15"
+
+
+def test_down_at_the_shortest_pack_does_nothing(bridge):
+    assert bridge.step_scene_pack("0:10", -1)["length"] == "0:05"
+
+    floored = bridge.step_scene_pack("0:05", -1)
+
+    assert floored["changed"] is False and floored["length"] == "0:05"
+    # Stepping down never turns the pack off either: that is the box being
+    # emptied, which is a different thing from asking for a shorter one.
+    assert bridge.step_scene_pack("", -1)["changed"] is False
+
+
+def test_up_stops_at_the_longest_pack_that_can_be_made(bridge, monkeypatch):
+    picked(bridge, monkeypatch)
+    most = bridge.cut_list()["maximum"]["upTo"]
+    assert most == "0:12"
+
+    # Up from an empty box asks for what there is of them rather than the
+    # usual 0:30, and from there it does not move.
+    assert bridge.step_scene_pack("", 1)["length"] == most
+    assert bridge.step_scene_pack(most, 1)["length"] == most
+    # Down from the top moves, as the floor's own stop does not.
+    assert bridge.step_scene_pack(most, -1)["length"] == "0:10"
+
+
+def test_the_steps_are_free_of_a_ceiling_while_there_is_not_one(bridge, monkeypatch):
+    """Nobody chosen, or the shots still being found: no figure to stop at,
+    so a length can be stepped up as freely as it can be typed."""
+    monkeypatch.setattr(web, "known_shots", lambda *a: None)
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: None)
+    picked(bridge, monkeypatch)
+
+    assert bridge.cut_list()["maximum"] == {"waiting": True}
+    assert bridge.step_scene_pack("", 1)["length"] == "0:30"
+
+
+def test_nonsense_in_the_box_is_answered_with_a_length(bridge):
+    """A press for "longer" replaces what was typed, as it would an empty
+    box: there is nothing to complain about that a length does not fix."""
+    assert bridge.step_scene_pack("soon", 1)["length"] == "0:30"
+    assert bridge.step_scene_pack("soon", -1)["changed"] is False
+
+
+def test_a_press_builds_no_pack_by_itself(bridge, monkeypatch, with_shots):
+    """A held-down arrow key is a dozen presses and a pack can cost a read
+    of the footage, so the page sets the length once the pressing stops."""
+    picked(bridge, monkeypatch)
+    before = bridge.cut_list()
+
+    bridge.step_scene_pack("", 1)
+    bridge.step_scene_pack("0:30", -1)
+
+    assert bridge._pack_seconds is None
+    assert bridge.cut_list() == before
+    # The length those presses landed on builds the pack it would have.
+    assert bridge.set_scene_pack("0:25")["pack"]["length"] == "0:25"
+
+
+def test_stepping_is_refused_while_a_job_runs(bridge, monkeypatch):
+    """The same answer typing a length gets, so the box is never stepped to
+    a length nothing is going to build."""
+    monkeypatch.setattr(bridge, "_busy", lambda: True)
+
+    refused = bridge.step_scene_pack("0:30", 1)
+
+    assert refused["accepted"] is False and "Wait" in refused["reason"]
+
+
+def test_the_page_has_buttons_and_arrow_keys_for_the_length():
+    page = web._page()
+
+    assert 'id="packUp"' in page and 'id="packDown"' in page
+    assert "step_scene_pack" in page
+    assert "ArrowUp" in page and "ArrowDown" in page
+    # Disabled with the rest of the panel while a job runs.
+    assert page.count('"pack","packUp","packDown"') == 2
+
+
 # ------------------------------------------------- a pack's exact cuts
 
 

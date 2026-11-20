@@ -3,6 +3,7 @@
 One page per change, newest first: what it does, why, what it means for your
 videos and kept scans, the numbers before and after, and how to undo it.
 
+- [2026-11-20 — Up and down buttons for the scene pack length](2026-11-20-pack-length-steps.md)
 - [2026-11-19 — The Export panel says how long a scene pack of someone can be](2026-11-19-longest-scene-pack.md)
 - [2026-11-18 — Merging gets its own screen, and choosing a face makes a sound](2026-11-18-merge-screen-and-sounds.md)
 - [2026-11-18 — Four fixes from the review of the faces code](2026-11-18-faces-review-fixes.md)

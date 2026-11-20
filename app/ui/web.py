@@ -1392,6 +1392,44 @@ class Bridge:
         self._cuts = self._packed(self._plan)
         return self._cut_payload()
 
+    def step_scene_pack(self, length: str, direction: int) -> dict:
+        """The length the window's up and down buttons move the box to.
+
+        Works out the number and nothing else. The pack is built by
+        `set_scene_pack` once the pressing has stopped: a held-down arrow
+        key is a dozen presses, and a length can cost a background read on
+        a scan kept from before the shots were recorded.
+
+        The step, the 0:05 floor and the ceiling -- the longest pack this
+        selection can make (`_pack_maximum`) -- are all worked out here, so
+        the page keeps no arithmetic of its own. `length` is what the box
+        holds now rather than the length last built, since the presses in
+        between are not built.
+        """
+        if self._busy():
+            return {"accepted": False, "reason": "Wait for this to finish first."}
+        try:
+            seconds = scenepack.parse_length(length or "")
+        except ValueError:
+            # Not a length at all. A press for "longer" is answered with a
+            # length rather than a complaint: it replaces what was typed,
+            # as it would an empty box.
+            seconds = None
+        maximum = self._pack_maximum()
+        stepped = scenepack.stepped_length(
+            seconds,
+            direction,
+            self._available_seconds() if maximum and "upTo" in maximum else None,
+        )
+        # A ceiling a second or so under the next place on the grid is
+        # already what the box says: the figure beside the box is to the
+        # second, so reaching it and pressing again reads as nothing
+        # happening, and nothing should be built either.
+        if stepped is None or _clock(stepped) == length:
+            # At a stop, or down from an empty box: the box keeps what it has.
+            return {"accepted": True, "changed": False, "length": length}
+        return {"accepted": True, "changed": True, "length": _clock(stepped)}
+
     def _cut_segments(self) -> list:
         """One video's cut list as segments to encode.
 
