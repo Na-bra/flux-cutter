@@ -1309,6 +1309,1014 @@
   }
  },
  {
+  "name": "test_4",
+  "reviewed": false,
+  "faces": 4037,
+  "coverage": 1.0,
+  "precision": 0.9901,
+  "recall": 0.8182,
+  "contamination": 0.0187,
+  "contaminated_cards": 3,
+  "cards": 14,
+  "splits": 1,
+  "people": {
+   "p1": {
+    "faces": 1465,
+    "completeness": 0.987,
+    "timing": 0.9734,
+    "reel_purity": 0.7645,
+    "reel_shows_others": 119.44
+   },
+   "p2": {
+    "faces": 1116,
+    "completeness": 0.8961,
+    "timing": 0.8928,
+    "reel_purity": 0.7502,
+    "reel_shows_others": 82.64
+   },
+   "p4": {
+    "faces": 187,
+    "completeness": 0.9893,
+    "timing": 0.9839,
+    "reel_purity": 0.908,
+    "reel_shows_others": 6.22
+   },
+   "p5": {
+    "faces": 146,
+    "completeness": 0.8562,
+    "timing": 0.8485,
+    "reel_purity": 0.7314,
+    "reel_shows_others": 6.96
+   },
+   "p6": {
+    "faces": 144,
+    "completeness": 0.8403,
+    "timing": 0.8454,
+    "reel_purity": 0.7638,
+    "reel_shows_others": 16.34
+   },
+   "p7": {
+    "faces": 103,
+    "completeness": 0.9806,
+    "timing": 0.9802,
+    "reel_purity": 0.8485,
+    "reel_shows_others": 4.2
+   },
+   "p8": {
+    "faces": 97,
+    "completeness": 0.9691,
+    "timing": 0.9694,
+    "reel_purity": 0.7349,
+    "reel_shows_others": 0.94
+   },
+   "p10": {
+    "faces": 96,
+    "completeness": 0.7188,
+    "timing": 0.7825,
+    "reel_purity": 0.7306,
+    "reel_shows_others": 6.64
+   },
+   "p9": {
+    "faces": 93,
+    "completeness": 0.9247,
+    "timing": 0.9255,
+    "reel_purity": 0.666,
+    "reel_shows_others": 11.5
+   },
+   "p12": {
+    "faces": 63,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8604,
+    "reel_shows_others": 4.36
+   },
+   "p13": {
+    "faces": 59,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.8549,
+    "reel_shows_others": 4.82
+   },
+   "p11": {
+    "faces": 55,
+    "completeness": 0.8364,
+    "timing": 0.5965,
+    "reel_purity": 0.5169,
+    "reel_shows_others": 20.63
+   },
+   "p14": {
+    "faces": 30,
+    "completeness": 0.9333,
+    "timing": 0.9326,
+    "reel_purity": 0.6409,
+    "reel_shows_others": 3.69
+   },
+   "x4": {
+    "faces": 23,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x2": {
+    "faces": 22,
+    "completeness": 1.0,
+    "timing": 0.3255,
+    "reel_purity": 0.2365,
+    "reel_shows_others": 33.72
+   },
+   "x5": {
+    "faces": 20,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x11": {
+    "faces": 14,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x9": {
+    "faces": 12,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x10": {
+    "faces": 10,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x8": {
+    "faces": 7,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x6": {
+    "faces": 6,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x7": {
+    "faces": 4,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x1": {
+    "faces": 3,
+    "completeness": 1.0,
+    "timing": 0.0136,
+    "reel_purity": 0.0063,
+    "reel_shows_others": 159.65
+   },
+   "x12": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x13": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x3": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "test_5",
+  "reviewed": false,
+  "faces": 4960,
+  "coverage": 1.0,
+  "precision": 0.9962,
+  "recall": 0.9,
+  "contamination": 0.0146,
+  "contaminated_cards": 4,
+  "cards": 12,
+  "splits": 3,
+  "people": {
+   "p1": {
+    "faces": 1527,
+    "completeness": 0.9646,
+    "timing": 0.9595,
+    "reel_purity": 0.7923,
+    "reel_shows_others": 118.23
+   },
+   "p2": {
+    "faces": 1514,
+    "completeness": 0.9148,
+    "timing": 0.9164,
+    "reel_purity": 0.8002,
+    "reel_shows_others": 121.3
+   },
+   "p3": {
+    "faces": 667,
+    "completeness": 0.9715,
+    "timing": 0.9575,
+    "reel_purity": 0.6971,
+    "reel_shows_others": 99.95
+   },
+   "p4": {
+    "faces": 425,
+    "completeness": 0.9435,
+    "timing": 0.9151,
+    "reel_purity": 0.7049,
+    "reel_shows_others": 52.75
+   },
+   "p6": {
+    "faces": 234,
+    "completeness": 0.8248,
+    "timing": 0.814,
+    "reel_purity": 0.7442,
+    "reel_shows_others": 21.8
+   },
+   "p7": {
+    "faces": 183,
+    "completeness": 0.7377,
+    "timing": 0.7748,
+    "reel_purity": 0.7098,
+    "reel_shows_others": 9.46
+   },
+   "p9": {
+    "faces": 65,
+    "completeness": 0.8308,
+    "timing": 0.8332,
+    "reel_purity": 0.7123,
+    "reel_shows_others": 4.08
+   },
+   "p11": {
+    "faces": 35,
+    "completeness": 0.8857,
+    "timing": 0.8592,
+    "reel_purity": 0.7675,
+    "reel_shows_others": 0.73
+   },
+   "p12": {
+    "faces": 32,
+    "completeness": 0.9062,
+    "timing": 0.9057,
+    "reel_purity": 0.6516,
+    "reel_shows_others": 7.58
+   },
+   "x2": {
+    "faces": 12,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x5": {
+    "faces": 10,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x4": {
+    "faces": 7,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x1": {
+    "faces": 6,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x3": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x6": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x7": {
+    "faces": 2,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "x8": {
+    "faces": 2,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation4",
+  "reviewed": false,
+  "faces": 1256,
+  "coverage": 1.0,
+  "precision": 0.9769,
+  "recall": 0.75,
+  "contamination": 0.0476,
+  "contaminated_cards": 1,
+  "cards": 11,
+  "splits": 4,
+  "people": {
+   "blond_boy": {
+    "faces": 355,
+    "completeness": 0.6535,
+    "timing": 0.6541,
+    "reel_purity": 0.856,
+    "reel_shows_others": 5.45
+   },
+   "old_cyborg": {
+    "faces": 335,
+    "completeness": 0.7552,
+    "timing": 0.7555,
+    "reel_purity": 0.8924,
+    "reel_shows_others": 5.39
+   },
+   "red_marked_boy": {
+    "faces": 207,
+    "completeness": 0.7005,
+    "timing": 0.7316,
+    "reel_purity": 0.7769,
+    "reel_shows_others": 2.96
+   },
+   "cracked_face_woman": {
+    "faces": 79,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9519,
+    "reel_shows_others": 1.21
+   },
+   "smoking_man": {
+    "faces": 40,
+    "completeness": 0.9,
+    "timing": 0.8981,
+    "reel_purity": 0.8241,
+    "reel_shows_others": 2.46
+   },
+   "pink_haired_girl": {
+    "faces": 22,
+    "completeness": 0.9091,
+    "timing": 0.9092,
+    "reel_purity": 0.8002,
+    "reel_shows_others": 0.5
+   },
+   "retro_brown_haired_man": {
+    "faces": 16,
+    "completeness": 1.0,
+    "timing": 0.2708,
+    "reel_purity": 0.176,
+    "reel_shows_others": 15.51
+   },
+   "dark_skinned_gunman": {
+    "faces": 14,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "bald_dark_skinned_man": {
+    "faces": 10,
+    "completeness": 1.0,
+    "timing": 0.1707,
+    "reel_purity": 0.1109,
+    "reel_shows_others": 18.47
+   },
+   "red_haired_woman": {
+    "faces": 6,
+    "completeness": 1.0,
+    "timing": 0.1016,
+    "reel_purity": 0.066,
+    "reel_shows_others": 20.51
+   },
+   "side_profile_man": {
+    "faces": 5,
+    "completeness": 1.0,
+    "timing": 0.0846,
+    "reel_purity": 0.055,
+    "reel_shows_others": 21.01
+   },
+   "retro_glasses_blond_man": {
+    "faces": 5,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "sketchy_blond_man": {
+    "faces": 5,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "sunglasses_man": {
+    "faces": 4,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "glasses_mustache_man": {
+    "faces": 3,
+    "completeness": 1.0,
+    "timing": 0.0508,
+    "reel_purity": 0.033,
+    "reel_shows_others": 22.01
+   },
+   "blonde_dark_skinned_woman": {
+    "faces": 3,
+    "completeness": 1.0,
+    "timing": 0.0508,
+    "reel_purity": 0.033,
+    "reel_shows_others": 22.01
+   },
+   "masked_kimono_woman": {
+    "faces": 3,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "purple_haired_thug": {
+    "faces": 2,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation5",
+  "reviewed": false,
+  "faces": 1756,
+  "coverage": 1.0,
+  "precision": 0.9954,
+  "recall": 0.8,
+  "contamination": 0.0779,
+  "contaminated_cards": 4,
+  "cards": 17,
+  "splits": 8,
+  "people": {
+   "blond_boy": {
+    "faces": 559,
+    "completeness": 0.3274,
+    "timing": 0.3288,
+    "reel_purity": 0.9113,
+    "reel_shows_others": 3.14
+   },
+   "red_marked_boy": {
+    "faces": 279,
+    "completeness": 0.5484,
+    "timing": 0.5443,
+    "reel_purity": 0.8487,
+    "reel_shows_others": 7.26
+   },
+   "freckled_goggles_girl": {
+    "faces": 261,
+    "completeness": 0.7701,
+    "timing": 0.7673,
+    "reel_purity": 0.8774,
+    "reel_shows_others": 3.87
+   },
+   "old_cyborg": {
+    "faces": 109,
+    "completeness": 0.5596,
+    "timing": 0.5924,
+    "reel_purity": 0.9179,
+    "reel_shows_others": 0.71
+   },
+   "green_haired_cap_girl": {
+    "faces": 78,
+    "completeness": 0.9103,
+    "timing": 0.9102,
+    "reel_purity": 0.7902,
+    "reel_shows_others": 5.12
+   },
+   "hooded_smoking_man": {
+    "faces": 62,
+    "completeness": 1.0,
+    "timing": 0.8741,
+    "reel_purity": 0.7964,
+    "reel_shows_others": 6.63
+   },
+   "amber_eyed_blond": {
+    "faces": 60,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9524,
+    "reel_shows_others": 0
+   },
+   "cracked_face_woman": {
+    "faces": 43,
+    "completeness": 0.8837,
+    "timing": 0.8857,
+    "reel_purity": 0.905,
+    "reel_shows_others": 0.5
+   },
+   "scarred_old_man": {
+    "faces": 23,
+    "completeness": 0.8261,
+    "timing": 0.4237,
+    "reel_purity": 0.3812,
+    "reel_shows_others": 11.68
+   },
+   "sunglasses_thug": {
+    "faces": 18,
+    "completeness": 0.5,
+    "timing": 0.1209,
+    "reel_purity": 0.1522,
+    "reel_shows_others": 31.7
+   },
+   "pink_haired_girl": {
+    "faces": 18,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.6772,
+    "reel_shows_others": 0.21
+   },
+   "glasses_man": {
+    "faces": 9,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "purple_haired_thug": {
+    "faces": 7,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation6",
+  "reviewed": false,
+  "faces": 1670,
+  "coverage": 1.0,
+  "precision": 0.9892,
+  "recall": 1.0,
+  "contamination": 0.0541,
+  "contaminated_cards": 3,
+  "cards": 21,
+  "splits": 8,
+  "people": {
+   "blond_boy": {
+    "faces": 314,
+    "completeness": 0.5,
+    "timing": 0.4979,
+    "reel_purity": 0.8879,
+    "reel_shows_others": 2.66
+   },
+   "green_haired_cap_girl": {
+    "faces": 205,
+    "completeness": 0.5463,
+    "timing": 0.5436,
+    "reel_purity": 0.9179,
+    "reel_shows_others": 2.5
+   },
+   "pink_haired_girl": {
+    "faces": 140,
+    "completeness": 0.7929,
+    "timing": 0.7927,
+    "reel_purity": 0.8102,
+    "reel_shows_others": 2.62
+   },
+   "cracked_face_woman": {
+    "faces": 138,
+    "completeness": 0.9493,
+    "timing": 0.9493,
+    "reel_purity": 0.9262,
+    "reel_shows_others": 0.75
+   },
+   "old_cyborg": {
+    "faces": 137,
+    "completeness": 0.5255,
+    "timing": 0.5582,
+    "reel_purity": 0.9251,
+    "reel_shows_others": 0.46
+   },
+   "freckled_goggles_girl": {
+    "faces": 117,
+    "completeness": 0.5299,
+    "timing": 0.5292,
+    "reel_purity": 0.9253,
+    "reel_shows_others": 1.21
+   },
+   "visor_guard": {
+    "faces": 87,
+    "completeness": 0.8046,
+    "timing": 0.215,
+    "reel_purity": 0.18,
+    "reel_shows_others": 34.27
+   },
+   "red_marked_boy": {
+    "faces": 84,
+    "completeness": 0.8095,
+    "timing": 0.8093,
+    "reel_purity": 0.7906,
+    "reel_shows_others": 2.08
+   },
+   "smoking_man": {
+    "faces": 69,
+    "completeness": 0.5507,
+    "timing": 0.5502,
+    "reel_purity": 0.939,
+    "reel_shows_others": 0
+   },
+   "green_haired_masked_girl": {
+    "faces": 64,
+    "completeness": 0.9688,
+    "timing": 0.9687,
+    "reel_purity": 0.9253,
+    "reel_shows_others": 1.46
+   },
+   "glasses_old_man": {
+    "faces": 40,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9738,
+    "reel_shows_others": 0.25
+   },
+   "blue_haired_masked_man": {
+    "faces": 29,
+    "completeness": 1.0,
+    "timing": 0.9357,
+    "reel_purity": 0.7637,
+    "reel_shows_others": 1.75
+   },
+   "capped_man": {
+    "faces": 16,
+    "completeness": 1.0,
+    "timing": 0.8009,
+    "reel_purity": 0.7284,
+    "reel_shows_others": 2.0
+   },
+   "old_mustached_man": {
+    "faces": 15,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "middle_aged_man": {
+    "faces": 12,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "shaggy_haired_grinner": {
+    "faces": 11,
+    "completeness": 0.4545,
+    "timing": 0.037,
+    "reel_purity": 0.0286,
+    "reel_shows_others": 47.29
+   },
+   "bald_man": {
+    "faces": 4,
+    "completeness": 1.0,
+    "timing": 0.1991,
+    "reel_purity": 0.1811,
+    "reel_shows_others": 8.05
+   },
+   "red_eyed_cyborg": {
+    "faces": 2,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation7",
+  "reviewed": false,
+  "faces": 773,
+  "coverage": 1.0,
+  "precision": 0.9845,
+  "recall": 0.5,
+  "contamination": 0.034,
+  "contaminated_cards": 2,
+  "cards": 11,
+  "splits": 1,
+  "people": {
+   "blond_boy": {
+    "faces": 125,
+    "completeness": 0.728,
+    "timing": 0.7274,
+    "reel_purity": 0.7142,
+    "reel_shows_others": 2.5
+   },
+   "freckled_goggles_girl": {
+    "faces": 86,
+    "completeness": 0.3953,
+    "timing": 0.3871,
+    "reel_purity": 0.6929,
+    "reel_shows_others": 1.25
+   },
+   "cracked_face_woman": {
+    "faces": 62,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9119,
+    "reel_shows_others": 0.46
+   },
+   "old_cyborg": {
+    "faces": 62,
+    "completeness": 0.8065,
+    "timing": 0.8101,
+    "reel_purity": 0.808,
+    "reel_shows_others": 0.46
+   },
+   "red_haired_masked_cyborg": {
+    "faces": 61,
+    "completeness": 0.8689,
+    "timing": 0.8986,
+    "reel_purity": 0.8838,
+    "reel_shows_others": 1.0
+   },
+   "glasses_kid": {
+    "faces": 46,
+    "completeness": 0.5435,
+    "timing": 0.5434,
+    "reel_purity": 0.6174,
+    "reel_shows_others": 0.71
+   },
+   "red_marked_boy": {
+    "faces": 39,
+    "completeness": 0.7179,
+    "timing": 0.7158,
+    "reel_purity": 0.6592,
+    "reel_shows_others": 1.75
+   },
+   "capped_man": {
+    "faces": 29,
+    "completeness": 0.6552,
+    "timing": 0.4634,
+    "reel_purity": 0.5589,
+    "reel_shows_others": 6.01
+   },
+   "jaw_device_man": {
+    "faces": 26,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9286,
+    "reel_shows_others": 0
+   },
+   "pale_blond_man": {
+    "faces": 12,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "worried_tufted_man": {
+    "faces": 10,
+    "completeness": 0.5,
+    "timing": 0.3028,
+    "reel_purity": 0.1914,
+    "reel_shows_others": 5.67
+   },
+   "smoking_man": {
+    "faces": 10,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "red_eyed_cyborg": {
+    "faces": 2,
+    "completeness": 1.0,
+    "timing": 0.1006,
+    "reel_purity": 0.0583,
+    "reel_shows_others": 9.0
+   }
+  }
+ },
+ {
+  "name": "animation8",
+  "reviewed": false,
+  "faces": 1168,
+  "coverage": 1.0,
+  "precision": 0.9889,
+  "recall": 0.6667,
+  "contamination": 0.0341,
+  "contaminated_cards": 2,
+  "cards": 14,
+  "splits": 5,
+  "people": {
+   "smoking_man": {
+    "faces": 384,
+    "completeness": 0.612,
+    "timing": 0.61,
+    "reel_purity": 0.8653,
+    "reel_shows_others": 2.75
+   },
+   "goggles_young_man": {
+    "faces": 193,
+    "completeness": 0.6995,
+    "timing": 0.6993,
+    "reel_purity": 0.833,
+    "reel_shows_others": 2.21
+   },
+   "red_marked_boy": {
+    "faces": 133,
+    "completeness": 0.9774,
+    "timing": 0.978,
+    "reel_purity": 0.8789,
+    "reel_shows_others": 1.48
+   },
+   "pink_haired_girl": {
+    "faces": 113,
+    "completeness": 0.8584,
+    "timing": 0.8577,
+    "reel_purity": 0.7263,
+    "reel_shows_others": 1.96
+   },
+   "orange_eyed_boy": {
+    "faces": 109,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9561,
+    "reel_shows_others": 1.66
+   },
+   "old_cyborg": {
+    "faces": 47,
+    "completeness": 0.7872,
+    "timing": 0.7865,
+    "reel_purity": 0.8037,
+    "reel_shows_others": 0.75
+   },
+   "green_haired_cap_girl": {
+    "faces": 43,
+    "completeness": 0.6512,
+    "timing": 0.64,
+    "reel_purity": 0.9194,
+    "reel_shows_others": 0.5
+   },
+   "blond_boy": {
+    "faces": 39,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "dark_suited_man": {
+    "faces": 16,
+    "completeness": 1.0,
+    "timing": 0.4594,
+    "reel_purity": 0.3826,
+    "reel_shows_others": 6.88
+   },
+   "grey_haired_man": {
+    "faces": 15,
+    "completeness": 0.8667,
+    "timing": 0.353,
+    "reel_purity": 0.3108,
+    "reel_shows_others": 8.38
+   },
+   "news_anchor": {
+    "faces": 5,
+    "completeness": 1.0,
+    "timing": 0.1471,
+    "reel_purity": 0.0819,
+    "reel_shows_others": 5.25
+   },
+   "police_officer": {
+    "faces": 2,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   }
+  }
+ },
+ {
+  "name": "animation9",
+  "reviewed": false,
+  "faces": 1054,
+  "coverage": 1.0,
+  "precision": 0.9953,
+  "recall": 0.7143,
+  "contamination": 0.0409,
+  "contaminated_cards": 4,
+  "cards": 16,
+  "splits": 7,
+  "people": {
+   "blond_boy": {
+    "faces": 311,
+    "completeness": 0.5434,
+    "timing": 0.5438,
+    "reel_purity": 0.8229,
+    "reel_shows_others": 4.87
+   },
+   "red_marked_boy": {
+    "faces": 189,
+    "completeness": 0.7407,
+    "timing": 0.7346,
+    "reel_purity": 0.8065,
+    "reel_shows_others": 2.46
+   },
+   "pink_haired_girl": {
+    "faces": 123,
+    "completeness": 0.1626,
+    "timing": 0.1626,
+    "reel_purity": 0.9092,
+    "reel_shows_others": 0
+   },
+   "teal_haired_cyborg": {
+    "faces": 91,
+    "completeness": 0.3297,
+    "timing": 0.3293,
+    "reel_purity": 0.6594,
+    "reel_shows_others": 2.21
+   },
+   "old_cyborg": {
+    "faces": 65,
+    "completeness": 0.4923,
+    "timing": 0.5,
+    "reel_purity": 0.8572,
+    "reel_shows_others": 0
+   },
+   "green_haired_cap_girl": {
+    "faces": 52,
+    "completeness": 0.6346,
+    "timing": 0.6347,
+    "reel_purity": 0.8632,
+    "reel_shows_others": 1.5
+   },
+   "blond_man": {
+    "faces": 35,
+    "completeness": 1.0,
+    "timing": 1.0,
+    "reel_purity": 0.9722,
+    "reel_shows_others": 0
+   },
+   "smoking_man": {
+    "faces": 34,
+    "completeness": 0.7647,
+    "timing": 0.7647,
+    "reel_purity": 0.6488,
+    "reel_shows_others": 1.72
+   },
+   "visor_man": {
+    "faces": 10,
+    "completeness": 1.0,
+    "timing": 0.5531,
+    "reel_purity": 0.4333,
+    "reel_shows_others": 4.04
+   },
+   "brown_haired_man": {
+    "faces": 10,
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
+   },
+   "bandaged_glasses_man": {
+    "faces": 8,
+    "completeness": 0.75,
+    "timing": 0.3041,
+    "reel_purity": 0.2635,
+    "reel_shows_others": 6.0
+   }
+  }
+ },
+ {
   "name": "s01e01",
   "reviewed": false,
   "faces": 9267,
