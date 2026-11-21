@@ -4634,3 +4634,33 @@ ignores exposure. On test_4 the lead's picture ranks 625th of 1,462 by
 sharpness measured at card size. A first attempt to choose by sharpness at
 card size favoured profiles, so a better chooser also needs a frontal term.
 
+## 65. Labels for test_4, test_5 and animation4 to animation9
+
+These were labelled as in §59: kit sheets, the overview pages, `RULES.md`,
+then a merge of the agents' answers. A live-action video was split among four
+or five agents, by card. An animation episode went to one agent, given
+animation2's character list to reuse.
+
+Names invented independently across episodes were reconciled by face, from
+sheets of each label's largest faces:
+- `blue_lipped_man` (5), `blue_lipped_woman` (6) -> `cracked_face_woman`;
+- `purple_capped_girl` (6), `goggled_green_haired_girl` (7) -> `freckled_goggles_girl`;
+- `green_haired_girl` (6, 8) -> `green_haired_cap_girl`;
+- ep4's `brown_haired_man` -> `retro_brown_haired_man`, a different character from ep9's.
+
+Each truth file's notes record its renames. Runs U12 and U35 in test_4, named
+only from the story, were set to unknown.
+
+    video        faces  people  not-a-face  unknown  precision  recall  contam.  held   splits
+    test_4        4037     26        40        213     99.0%     81.8%    1.87%   3/14      1
+    test_5        4960     17        19        214     99.6%     90.0%    1.46%   4/12      3
+    animation4    1256     19        29        113     97.7%     75.0%    4.76%   1/11      4
+    animation5    1756     13         8        222     99.5%     80.0%    7.79%   4/17      8
+    animation6    1670     18        18        168     98.9%    100.0%    5.41%   3/21      8
+    animation7     773     13        12        191     98.4%     50.0%    3.40%   2/11      1
+    animation8    1168     12        13         56     98.9%     66.7%    3.41%   2/14      5
+    animation9    1054     11         5        121     99.5%     71.4%    4.09%   4/16      7
+
+`evaluation/baseline.json` has every number, per person. Measured on main at
+17c83ac.
+

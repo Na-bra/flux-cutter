@@ -5,6 +5,14 @@
   {"name": "animation", "video": "assets/test-videos/animation.mp4", "truth": "evaluation/truth/animation.json"},
   {"name": "animation2", "video": "assets/test-videos/animation2.mp4", "truth": "evaluation/truth/animation2.json"},
   {"name": "test_3", "video": "assets/test-videos/test_3.mp4", "truth": "evaluation/truth/test_3.json"},
+  {"name": "test_4", "video": "assets/test-videos/test_4.mp4", "truth": "evaluation/truth/test_4.json"},
+  {"name": "test_5", "video": "assets/test-videos/test_5.mp4", "truth": "evaluation/truth/test_5.json"},
+  {"name": "animation4", "video": "assets/test-videos/animation4.mp4", "truth": "evaluation/truth/animation4.json"},
+  {"name": "animation5", "video": "assets/test-videos/animation5.mp4", "truth": "evaluation/truth/animation5.json"},
+  {"name": "animation6", "video": "assets/test-videos/animation6.mp4", "truth": "evaluation/truth/animation6.json"},
+  {"name": "animation7", "video": "assets/test-videos/animation7.mp4", "truth": "evaluation/truth/animation7.json"},
+  {"name": "animation8", "video": "assets/test-videos/animation8.mp4", "truth": "evaluation/truth/animation8.json"},
+  {"name": "animation9", "video": "assets/test-videos/animation9.mp4", "truth": "evaluation/truth/animation9.json"},
   {"name": "s01e01", "video": "~/Downloads/Henry Danger (2014) - S01E01 - The Danger Begins 1 [WEBDL-1080p][EAC3 5.1][h264]-LAZY.mkv", "truth": "evaluation/truth/s01e01.json"}
  ]
 }
