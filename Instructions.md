@@ -4612,3 +4612,25 @@ thing here that has not been done. The bridge side is covered exactly, in
 `tests/test_ui_web.py`; what wants a human is that the two buttons sit in
 the rail without crowding the box, that a held-down arrow key steps
 smoothly, and that the pack rebuilds once when the pressing stops.
+
+## 64. Card pictures at the size they are shown (`worker.CARD_PICTURE_SIZE`)
+
+The window's two gallery builds, `scan` and `apply_edit`, pass
+`thumbnail_size=CARD_PICTURE_SIZE` (384 x 384) to `build_identity_gallery`.
+The command line's gallery and its contact sheets keep
+`DEFAULT_THUMBNAIL_SIZE` (192), because their tiles are drawn at that size.
+
+A card is about 148 points wide at the default window size, which is about 296
+pixels on a 2x screen, so a 192-pixel picture was upscaled about 1.5x after
+`_without_bars` trimmed it. Kept scans store the representative crop at
+its native size, so the larger picture needs no rescan.
+
+On the user's test_4 scan (132 cards), 37 crops are wider than 192 and gain
+detail. The data URIs grow from 0.5 MB to 1.2 MB in total.
+
+This does not change which face is chosen. `_observation_quality` measures
+sharpness on the 112-pixel aligned crop, where motion blur barely shows, and
+ignores exposure. On test_4 the lead's picture ranks 625th of 1,462 by
+sharpness measured at card size. A first attempt to choose by sharpness at
+card size favoured profiles, so a better chooser also needs a frontal term.
+

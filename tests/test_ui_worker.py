@@ -296,6 +296,22 @@ def scanned(monkeypatch):
     return calls
 
 
+def test_card_pictures_are_made_at_the_card_picture_size(footage, scanned):
+    """At 192 pixels a picture was stretched to fill a card on a Retina
+    screen; it is now made at the size it is shown, kept scans included."""
+    from app.ui.worker import CARD_PICTURE_SIZE, apply_edit, scan
+
+    first = scan(footage)
+    first.close()
+    again = scan(footage)
+    again.close()
+    renamed = apply_edit(again, ScanSettings(), "rename", [0], name="Someone")
+
+    assert CARD_PICTURE_SIZE == (384, 384)
+    for result in (first, again, renamed):
+        assert result.people[0].thumbnail.size == CARD_PICTURE_SIZE
+
+
 def test_a_second_scan_of_the_same_video_reuses_the_first(footage, scanned):
     from app.ui.worker import scan
 

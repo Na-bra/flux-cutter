@@ -65,6 +65,14 @@ from app.video.repeats import collector_for, fingerprint_dir, keep_collected
 from app.video.timeline import AppearanceInterval, build_appearance_intervals
 
 
+# The size a card picture is made at. A card is about 150 points wide in the
+# window, which is 300 pixels on a Retina screen, so at the gallery's 192
+# every picture was stretched to nearly twice its size and looked soft. The
+# crop it is made from is kept at full size in a kept scan, so a scan kept
+# before this gets the sharper picture too, without being scanned again.
+CARD_PICTURE_SIZE = (384, 384)
+
+
 class Cancelled(Exception):
     """Raised inside the worker when the user asks it to stop.
 
@@ -440,6 +448,7 @@ def scan(
         scan.groups,
         unassigned_count=scan.unassigned_count,
         padding_ratio=settings.padding_ratio,
+        thumbnail_size=CARD_PICTURE_SIZE,
     )
 
     people = _people_from(gallery)
@@ -533,6 +542,7 @@ def apply_edit(
         edited,
         unassigned_count=scan_result.unassigned_count,
         padding_ratio=settings.padding_ratio,
+        thumbnail_size=CARD_PICTURE_SIZE,
     )
     people = _people_from(gallery)
 
