@@ -403,6 +403,31 @@ def test_the_page_is_readable_and_wired_to_the_bridge():
         assert f"window.{callback} =" in page, f"the page never defines {callback}"
 
 
+def test_the_page_s_javascript_parses(tmp_path):
+    """A syntax error in the page is a window that draws nothing and says
+    nothing about why: pywebview loads the HTML and nobody is watching the
+    web view's console. Node is not a dependency of the app, so where it is
+    not installed this is skipped rather than failed.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    page = web._page()
+    opened = page.index("<script>") + len("<script>")
+    script = tmp_path / "window.js"
+    script.write_text(page[opened : page.rindex("</script>")], encoding="utf-8")
+
+    checked = subprocess.run(
+        [node, "--check", str(script)], capture_output=True, text=True
+    )
+
+    assert checked.returncode == 0, checked.stderr
+
+
 def test_the_frozen_build_reads_the_page_from_the_bundle(tmp_path, monkeypatch):
     """PyInstaller unpacks data files somewhere else entirely."""
     bundled = tmp_path / "bundle"
@@ -1338,6 +1363,277 @@ def test_an_answered_question_is_not_asked_again_after_reopening(bridge, monkeyp
     reopened._folder_worker(folder, ScanSettings.for_mode("live"))
 
     assert reopened.window.emitted("onFolderScanned")["questions"] == []
+
+
+# ----------------------------------------- several videos picked by hand
+
+
+@pytest.fixture
+def two_videos(tmp_path):
+    """Two videos in two folders, as the file dialog hands them over."""
+    paths = []
+    for folder, name in (("show-a", "e3.mp4"), ("show-b", "e7.mp4")):
+        (tmp_path / folder).mkdir()
+        paths.append(tmp_path / folder / name)
+        paths[-1].write_bytes(b"x")
+    return paths
+
+
+def one_scan(path: Path) -> ScanResult:
+    """A scan of a real path, with the same lead in every video."""
+    return ScanResult(
+        video_path=path,
+        video_duration=120.0,
+        sample_interval=0.5,
+        people=[folder_person(0, [1, 0, 0], detections=40), folder_person(1, [0, 1, 0])],
+        shots=fake_shots(),
+    )
+
+
+@pytest.fixture
+def picking(bridge, monkeypatch):
+    """The bridge with its jobs run where they are started, and the scan
+    of a video faked: a set of videos end to end, in milliseconds."""
+    from app.ui import folder as folder_module
+
+    scanned = []
+
+    def fake_scan(path, **kwargs):
+        scanned.append(path.name)
+        return one_scan(path)
+
+    monkeypatch.setattr(folder_module, "scan", fake_scan)
+    monkeypatch.setattr(folder_module, "find_folder_repeats", lambda *a, **k: {})
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(bridge, "_start_cast_preview", lambda: None)
+    bridge.scanned = scanned
+    return bridge
+
+
+def pick(bridge, *paths) -> dict:
+    bridge.window = FakeWindow(dialog=[str(path) for path in paths])
+    return bridge.choose_videos()
+
+
+def test_choosing_several_videos_at_once_lists_them_all(bridge, two_videos):
+    chosen = pick(bridge, *two_videos)
+
+    assert [v["name"] for v in chosen["picked"]] == ["e3.mp4", "e7.mp4"]
+    assert [v["folder"] for v in chosen["picked"]] == ["show-a", "show-b"]
+    assert chosen["added"] == 2
+    # Nothing has been scanned, so nothing claims to have been.
+    assert [v["scanned"] for v in chosen["picked"]] == [False, False]
+    assert chosen["scanning"] is False
+
+
+def test_the_dialog_asks_for_more_than_one_file(bridge, two_videos):
+    asked = {}
+
+    class Dialog(FakeWindow):
+        def create_file_dialog(self, *args, **kwargs):
+            asked.update(kwargs)
+            return [str(two_videos[0])]
+
+    bridge.window = Dialog()
+    bridge.choose_videos()
+
+    assert asked["allow_multiple"] is True
+
+
+def test_videos_from_another_folder_join_the_ones_already_picked(bridge, two_videos):
+    pick(bridge, two_videos[0])
+
+    added = pick(bridge, two_videos[1])
+
+    assert [v["name"] for v in added["picked"]] == ["e3.mp4", "e7.mp4"]
+    assert added["added"] == 1
+
+
+def test_the_same_video_picked_twice_is_in_the_set_once(bridge, two_videos):
+    pick(bridge, two_videos[0])
+
+    again = pick(bridge, two_videos[0])
+
+    assert len(again["picked"]) == 1
+    assert again["added"] == 0
+    assert again["scanning"] is False
+
+
+def test_a_video_that_is_not_there_is_not_picked(bridge, tmp_path):
+    assert pick(bridge, tmp_path / "gone.mp4")["picked"] == []
+
+
+def test_pressing_scan_scans_the_videos_picked_as_one_set(bridge, two_videos, monkeypatch):
+    started = []
+    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    pick(bridge, *two_videos)
+
+    assert bridge.start_videos_scan("animation", 1.0) == {"started": True}
+
+    target, (paths, settings) = started[0]
+    assert target == bridge._videos_worker
+    assert paths == two_videos
+    assert settings == ScanSettings.for_mode("animation", sample_interval=1.0)
+
+
+def test_a_scan_of_no_videos_is_refused(bridge):
+    assert bridge.start_videos_scan("live", 0.5)["started"] is False
+
+
+def test_the_videos_picked_are_drawn_as_one_cast(picking, two_videos):
+    pick(picking, *two_videos)
+
+    picking.start_videos_scan("live", 0.5)
+
+    drawn = picking.window.emitted("onVideosScanned")
+    assert picking.scanned == ["e3.mp4", "e7.mp4"]
+    assert drawn["videoCount"] == 2
+    assert drawn["videos"] == ["e3.mp4", "e7.mp4"]
+    # Which view the cast belongs to: there is one, and the folder view
+    # must not draw this one as its own.
+    assert drawn["source"] == "videos"
+    assert [v["scanned"] for v in drawn["picked"]] == [True, True]
+    # The same person in both, linked as a folder's cast links them.
+    assert drawn["people"][0]["videos"] == 2
+
+
+def test_adding_a_video_to_a_scanned_set_scans_only_that_one(picking, two_videos, tmp_path):
+    pick(picking, two_videos[0])
+    picking.start_videos_scan("live", 0.5)
+    assert picking.scanned == ["e3.mp4"]
+
+    added = pick(picking, two_videos[1])
+
+    assert added["scanning"] is True
+    assert picking.scanned == ["e3.mp4", "e7.mp4"]
+    grown = picking.window.emitted("onVideosAdded")
+    assert grown["added"] == ["e7.mp4"]
+    assert grown["videoCount"] == 2
+    assert grown["people"][0]["videos"] == 2
+    assert [v["scanned"] for v in grown["picked"]] == [True, True]
+
+
+def test_the_reel_of_whoever_is_chosen_grows_with_the_video_added(picking, two_videos):
+    pick(picking, two_videos[0])
+    picking.start_videos_scan("live", 0.5)
+    chosen = picking.select_cast_person(0, "")
+    assert chosen["videos"] == 1
+
+    pick(picking, two_videos[1])
+
+    grown = picking.window.emitted("onVideosAdded")
+    assert grown["selected"] == [0]
+    assert grown["chosen"]["videos"] == 2
+    assert grown["chosen"]["cuts"] >= chosen["cuts"]
+    # Nobody typed in the name box, so nothing is put in it.
+    assert grown["chosen"]["filename"] is None
+
+
+def test_a_video_added_while_a_job_runs_waits_for_the_next_scan(bridge, two_videos, monkeypatch):
+    bridge._folder = make_folder()
+    bridge._cast_source = "videos"
+    monkeypatch.setattr(bridge, "_worker", AliveWorker)
+
+    added = pick(bridge, two_videos[0])
+
+    assert added["added"] == 1
+    assert added["scanning"] is False
+
+
+def test_removing_a_video_takes_its_people_out_of_the_cast(picking, two_videos):
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+    assert picking.window.emitted("onVideosScanned")["people"][0]["videos"] == 2
+
+    removed = picking.remove_picked_video(str(two_videos[1]))
+
+    assert removed["removed"] is True
+    assert [v["name"] for v in removed["picked"]] == ["e3.mp4"]
+    assert removed["videoCount"] == 1
+    assert removed["videos"] == ["e3.mp4"]
+    assert all(p["videos"] == 1 for p in removed["people"])
+
+
+def test_removing_a_video_before_scanning_only_shortens_the_list(bridge, two_videos):
+    pick(bridge, *two_videos)
+
+    removed = bridge.remove_picked_video(str(two_videos[0]))
+
+    assert removed["removed"] is True
+    assert [v["name"] for v in removed["picked"]] == ["e7.mp4"]
+    # No cast to redraw: nothing has been scanned.
+    assert "people" not in removed
+
+
+def test_the_only_video_left_in_a_scanned_set_is_not_removed(picking, two_videos):
+    pick(picking, two_videos[0])
+    picking.start_videos_scan("live", 0.5)
+
+    refused = picking.remove_picked_video(str(two_videos[0]))
+
+    assert refused["removed"] is False
+    assert refused["reason"]
+    assert [v["name"] for v in refused["picked"]] == ["e3.mp4"]
+
+
+def test_the_page_offers_the_three_things_that_can_be_scanned():
+    """A view that is not in the switch cannot be reached, and a set with
+    no list under it cannot be added to or taken from."""
+    page = web._page()
+
+    assert 'data-view="videos"' in page
+    assert 'id="picks"' in page
+    assert "start_videos_scan" in page
+    assert "choose_videos" in page
+    assert "remove_picked_video" in page
+
+
+def test_a_video_that_was_never_picked_is_not_removed(bridge, two_videos):
+    assert bridge.remove_picked_video(str(two_videos[0]))["removed"] is False
+
+
+def test_a_video_is_not_removed_while_a_job_runs(bridge, two_videos, monkeypatch):
+    pick(bridge, *two_videos)
+    monkeypatch.setattr(bridge, "_worker", AliveWorker)
+
+    refused = bridge.remove_picked_video(str(two_videos[0]))
+
+    assert refused["removed"] is False
+    assert len(bridge._picked) == 2
+
+
+def test_a_folder_scanned_after_a_set_of_videos_owns_the_cast(picking, two_videos, tmp_path):
+    """One cast, so whichever view scanned last holds it -- and says so,
+    or the other view would draw people Python no longer has."""
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+
+    picking._folder_worker(tmp_path, ScanSettings.for_mode("live"))
+
+    assert picking.window.emitted("onFolderScanned")["source"] == "folder"
+    assert picking._cast_source == "folder"
+    # The videos are still picked, and no longer scanned.
+    assert [v["scanned"] for v in picking._picked_payload()["picked"]] == [False, False]
+
+
+def test_a_set_of_videos_exports_one_reel_across_them(picking, two_videos, monkeypatch, tmp_path):
+    cut = []
+
+    def fake_export(folder, person, output, plans=None, **kwargs):
+        cut.append((len(plans), output))
+        return None, []
+
+    monkeypatch.setattr(web, "export_cast", fake_export)
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+    picking.select_cast_person(0, "")
+
+    assert picking.start_folder_export(str(tmp_path), "reel.mp4", "libx264", "High") == {
+        "started": True
+    }
+
+    assert cut[0][0] == 2
+    assert cut[0][1] == tmp_path / "reel.mp4"
 
 
 # ------------------------------------------------------ folder corrections

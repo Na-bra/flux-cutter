@@ -4664,6 +4664,72 @@ only from the story, were set to unknown.
 `evaluation/baseline.json` has every number, per person. Measured on main at
 17c83ac.
 
+## 66. Videos picked one by one (`folder.add_videos`, `folder.without_video`)
+
+The window could scan one video or one whole folder. What it could not do is
+take episodes 3, 7 and 12 of a show kept in three places, and it could not
+add a video to a set already on screen or take one out again.
+
+**A set of videos is a folder.** `scan_folder` has always taken files,
+folders or a mix (`collect_videos`), so the videos view hands it the files
+the dialog returned and everything below is unchanged: the same scans, the
+same cast (`cast_of`), the same kept answers, the same repeats, the same
+reel and scene pack. The new code is only about the set changing after it
+has been scanned:
+
+- `add_videos` passes over the videos the set already holds -- by resolved
+  path, so a symlink and its target are one video -- scans the rest under
+  **the set's own settings** (a card scanned under other settings cannot be
+  compared with the rest), and looks for repeats across the whole set
+  afterwards. Cancelling leaves the set as it was.
+- `without_video` drops one video, closes its footage handle, renumbers
+  `repeats` (whose keys are positions in the set), and takes a video that
+  could not be read off the skipped list. It refuses the last one, the same
+  rule as a discard that would empty a gallery.
+- `merged_answers` keeps the answers given in this window when a video
+  joins: the cards already in the set keep their positions, and an answer
+  given while the cache could not be written exists nowhere else.
+
+**One cast, and it says whose it is.** The bridge holds one `FolderScan`, so
+`_cast_source` ("folder" or "videos") travels in every cast payload and the
+page draws the cast only in the view that scanned it. Positions move when a
+video goes, so a removal reloads the answers and clears `_frame_seconds`,
+which is keyed by position; `_folder_worker` now clears it too, which it
+should always have done. `_cuts_view == "folder"` still means "a cut's video
+number is a position in the set", for either view.
+
+`_chosen_payload` was split out of `select_cast_person` so the rail can be
+read again when the set changes under a selection: adding a video makes the
+chosen person's reel longer, and the old numbers would otherwise stay on
+screen. It is passed None for the file-name box in that case, so a name
+typed by hand is not overwritten by a window nobody clicked.
+
+### Measured
+
+Three consecutive 28-minute animation episodes, symlinked into three
+folders, picked one at a time
+(`tests/test_multi_video_episode.py --measure`):
+
+    two videos, two folders     32 people, 6 in both, 28 questions   476.2s
+    the third added             34 people, 5 in all three            162.4s
+    the lead across all three   57 cuts, reel 3:32, 0:06 recap left out
+    a 0:30 scene pack of them   28.9s, 10.3 MB, written in 2.8s
+    the third removed again     32 people, 2 videos
+    the same three as a folder  34 people, every scan reused           0.4s
+
+The last line is the point: the cast from picking the files is equal, person
+for person, to the cast from putting the same three in one directory, and
+the folder view reused the scans the videos view had just made. Adding the
+third video cost one scan (162s), not three (638s).
+
+### Not yet
+
+Two videos with the same file name in different folders are both drawn by
+name -- in the face strip under a card, in the cut list, in the preview
+labels -- so `e3.mp4` and `e3.mp4` are told apart only by their order (V1,
+V2 in the filmstrip). The reel's suggested file name and the season report's
+title still come from the first video's folder.
+
 ## 67. The nightly run and sleep (`scripts/nightly/run.sh`)
 
 `claude -p` runs under `caffeinate -i`, which holds a no-idle-sleep assertion

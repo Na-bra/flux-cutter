@@ -57,10 +57,12 @@ from app.faces.edits import EditError
 from app.ui.folder import (
     CastPerson,
     FolderScan,
+    add_videos,
     cast_of,
     detach_cards,
     discard_people,
     join_people,
+    merged_answers,
     together,
     cast_preview_frames,
     export_cast,
@@ -69,7 +71,9 @@ from app.ui.folder import (
     plan_cast_by_video,
     remember_answer,
     repeated_seconds,
+    same_file,
     scan_folder,
+    without_video,
 )
 from app.video import cuts, scenepack
 from app.video.cutter import (
@@ -265,7 +269,18 @@ class Bridge:
         self._format = DEFAULT_EXPORT_FORMAT
         # A folder is its own view with its own state, so opening one does
         # not throw away a single video already scanned, or the reverse.
+        # A set of videos picked one by one is the same state: one cast of
+        # several videos, held here whether a folder or a picker filled it.
         self._folder: FolderScan | None = None
+        # Which of the two filled it, so the window can say whose cast is
+        # on screen -- there is one, and scanning in either view replaces
+        # the other's.
+        self._cast_source = "folder"
+        # The videos picked one by one, in the order they were picked: the
+        # videos view's own source, as a folder path is the folder view's.
+        # They are what the next scan of that view scans, and they outlive
+        # it, so one more can be added to a set already on screen.
+        self._picked: list[Path] = []
         self._answers = Answers()
         self._cast: list[CastPerson] = []
         self._questions: list = []
@@ -307,8 +322,9 @@ class Bridge:
         # without these its pack would wait for shots already found.
         self._shots_found: dict[tuple[str, float], list] = {}
         # Which selection the list belongs to: a cut's video number means
-        # a position in the folder in one view and nothing at all in the
-        # other, and both views can hold a selection at once.
+        # a position in the set of videos in one view and nothing at all in
+        # the other, and both views can hold a selection at once. "folder"
+        # is any set, whether a folder or videos picked by hand filled it.
         self._cuts_view = "video"
         # video position -> how long one frame of it lasts, since probing
         # opens the file and the answer cannot change under us.
@@ -387,6 +403,20 @@ class Bridge:
         if not chosen:
             return {"path": None}
         return {"path": str(chosen[0])}
+
+    def choose_videos(self) -> dict:
+        """Adds videos to the videos view, from one dialog or many.
+
+        Several files at once, and the dialog opens again for a file in
+        another folder: episodes 3, 7 and 12 of a show kept in three
+        places are three visits to this and one set of three videos.
+        """
+        chosen = self.window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=True,
+            file_types=(f"Video files ({PICKER_PATTERN})", "All files (*.*)"),
+        )
+        return self._pick(chosen or [])
 
     def set_mode(self, mode: str) -> dict:
         """Records the content type and says what it still needs.
@@ -1609,6 +1639,20 @@ class Bridge:
         return {"started": True}
 
     def _folder_worker(self, folder: Path, settings: ScanSettings) -> None:
+        self._scan_set(
+            [folder], settings, source="folder", event="onFolderScanned", name=folder.name
+        )
+
+    def _scan_set(
+        self, paths: list[Path], settings: ScanSettings, source: str, event: str, name: str
+    ) -> None:
+        """Scans a folder, or videos picked one by one, and draws its cast.
+
+        One body for both: below this a set of videos is a set of videos
+        (app/ui/folder.py), so the only difference is which view said so
+        and what the window calls what it scanned.
+        """
+
         def video(index: int, total: int, path: Path) -> None:
             self._status(f"Scanning {path.name} ({index + 1} of {total})…")
 
@@ -1623,7 +1667,7 @@ class Bridge:
 
         try:
             scanned = scan_folder(
-                [folder],
+                paths,
                 settings,
                 on_video=video,
                 on_progress=report,
@@ -1641,17 +1685,26 @@ class Bridge:
         if self._folder is not None:
             self._folder.close()
         self._folder = scanned
-        # Answers given the last time this folder was open still hold.
+        self._cast_source = source
+        # Answers given the last time these videos were open still hold.
         self._answers = load_answers(scanned)
         self._cast_chosen = []
+        # A video's position means a different video than it did a moment
+        # ago, and how long one of its frames lasts is kept by position.
+        self._frame_seconds = {}
         self._rebuild_cast()
         # A season is usually all one format; where it is mixed, the reel
         # takes the one most of it is in.
         formats = [export_format_for(result.video_path) for result in scanned.videos]
         self._format = max(set(formats), key=formats.count) if formats else DEFAULT_EXPORT_FORMAT
         self._emit(
-            "onFolderScanned",
-            {**self._cast_payload(), "folderName": folder.name, "format": self._format},
+            event,
+            {
+                **self._cast_payload(),
+                **self._picked_payload(),
+                "folderName": name,
+                "format": self._format,
+            },
         )
 
     def _rebuild_cast(self) -> None:
@@ -1727,6 +1780,9 @@ class Bridge:
             ],
             "videoCount": len(videos),
             "videos": [result.video_path.name for result in videos],
+            # Which view this cast belongs to: there is one cast, and
+            # scanning in either view replaces the other's.
+            "source": self._cast_source,
             "skipped": [
                 {"video": path.name, "reason": reason} for path, reason in self._folder.skipped
             ],
@@ -1776,7 +1832,21 @@ class Bridge:
         if not self._cast_chosen:
             self._set_plan([])
             return {"accepted": True, "indexes": [], "summary": "Choose a person to export."}
+        return {"accepted": True, **self._chosen_payload(current_filename)}
 
+    def _chosen_payload(self, current_filename: str | None = "") -> dict:
+        """What the rail says about the people chosen in the set.
+
+        Asked for again when the set changes under them -- a video added to
+        it makes their reel longer -- so the rail describes the reel the
+        export would cut rather than the one before the video arrived.
+
+        `current_filename` is what the name box holds, for suggesting a
+        name that does not tread on one typed by hand. None where nobody
+        clicked anything and the box was not read: the name is left alone.
+        """
+        assert self._folder is not None and self._cast_chosen
+        self._preview_token += 1
         chosen = self._cast_selected
         plans = plan_cast_by_video(self._folder, chosen)
         self._set_plan(cuts.cuts_from_plans(plans))
@@ -1788,7 +1858,6 @@ class Bridge:
         self._find_the_cuts()
 
         return {
-            "accepted": True,
             "indexes": [p.index for p in self._cast_chosen],
             "token": self._preview_token,
             "name": chosen.label,
@@ -1799,7 +1868,11 @@ class Bridge:
             "onScreen": _clock(chosen.detection_count * self._folder.settings.sample_interval),
             "detections": chosen.detection_count,
             "videos": len(plans),
-            "filename": self._suggest_cast_filename(self._cast_chosen, current_filename),
+            "filename": (
+                None
+                if current_filename is None
+                else self._suggest_cast_filename(self._cast_chosen, current_filename)
+            ),
             "repeated": _clock(repeated) if repeated >= 0.5 else None,
             "summary": (
                 f"{chosen.label} selected - {planned} cuts from {len(plans)} "
@@ -2053,6 +2126,170 @@ class Bridge:
                 "path": str(output),
                 "pack": self._pack_seconds is not None,
                 "leftOut": [{"video": path.name, "reason": reason} for path, reason in left_out],
+            },
+        )
+
+    # ------------------------------------------- videos picked one by one
+
+    def _pick(self, paths) -> dict:
+        """Adds videos to the videos view, and scans any that are new to it.
+
+        The list is the view's source and outlives a scan of it, so adding
+        to a set already on screen is adding to the cast: only the new
+        videos are scanned -- `add_videos` passes over the ones the set
+        already holds, and that scan reuses a kept scan as any scan does --
+        and the people found in them join the people already there.
+
+        A video that is already in the list, or is not a file, is passed
+        over in silence: picking the same episode twice is a slip, not an
+        instruction to cut it twice.
+        """
+        known = {same_file(path) for path in self._picked}
+        added = []
+        for chosen in paths:
+            path = Path(str(chosen))
+            if same_file(path) in known or not path.is_file():
+                continue
+            known.add(same_file(path))
+            self._picked.append(path)
+            added.append(path)
+
+        if not added:
+            return {**self._picked_payload(), "added": 0, "scanning": False}
+        # Not while something runs: the scan would be a second job, and two
+        # jobs must never read the same footage at once. The videos stay in
+        # the list for the next press of Scan.
+        growing = self._folder is not None and self._cast_source == "videos" and not self._busy()
+        if growing:
+            self._start(self._add_worker, added)
+        return {**self._picked_payload(), "added": len(added), "scanning": growing}
+
+    def remove_picked_video(self, path: str) -> dict:
+        """Takes one video out of the videos view, and out of the cast.
+
+        Its cards go with it, which can leave two people where the cast had
+        joined one across it and another video -- so the cast is built
+        again from what is left rather than edited in place.
+        """
+        if self._busy():
+            return {"removed": False, "reason": "Not while a job is running."}
+        wanted = same_file(Path(str(path)))
+        if not any(same_file(picked) == wanted for picked in self._picked):
+            return {"removed": False, "reason": "That video is not in this set."}
+
+        if self._folder is not None and self._cast_source == "videos":
+            try:
+                self._folder = without_video(self._folder, Path(str(path)))
+            except EditError as error:
+                return {"removed": False, "reason": str(error), **self._picked_payload()}
+            # Every card after it in the set has moved, and an answer and a
+            # frame length are both held by position.
+            self._answers = load_answers(self._folder)
+            self._cast_chosen = []
+            self._frame_seconds = {}
+            self._rebuild_cast()
+            self._picked = [p for p in self._picked if same_file(p) != wanted]
+            return {
+                "removed": True,
+                **self._picked_payload(),
+                **self._cast_payload(),
+                "note": f"Removed {Path(str(path)).name} from the set.",
+            }
+
+        self._picked = [p for p in self._picked if same_file(p) != wanted]
+        return {"removed": True, **self._picked_payload()}
+
+    def _picked_payload(self) -> dict:
+        """The videos picked, as the page lists them.
+
+        Each says whether its people are in the cast on screen, so one
+        just added is not drawn as though it had already been scanned.
+        """
+        scanned = set()
+        if self._folder is not None and self._cast_source == "videos":
+            scanned = {same_file(result.video_path) for result in self._folder.videos}
+        return {
+            "picked": [
+                {
+                    "path": str(path),
+                    "name": path.name,
+                    # Where it came from, since two shows can both call
+                    # their third episode e3.mp4.
+                    "folder": path.parent.name,
+                    "scanned": same_file(path) in scanned,
+                }
+                for path in self._picked
+            ]
+        }
+
+    def start_videos_scan(self, mode: str, interval: float) -> dict:
+        """Scans the videos picked, as one set with one cast."""
+        if self._busy():
+            return {"started": False, "reason": "already running"}
+        if not self._picked:
+            return {"started": False, "reason": "Choose some videos first."}
+
+        if mode in MODES:
+            self._mode = mode
+        settings = self._tuned(float(interval))
+        self._start(self._videos_worker, list(self._picked), settings)
+        return {"started": True}
+
+    def _videos_worker(self, paths: list[Path], settings: ScanSettings) -> None:
+        self._scan_set(paths, settings, source="videos", event="onVideosScanned", name="")
+
+    def _add_worker(self, paths: list[Path]) -> None:
+        """Scans videos added to the set on screen, and grows its cast."""
+
+        def video(index: int, total: int, path: Path) -> None:
+            self._status(f"Scanning {path.name} ({index + 1} of {total})…")
+
+        def report(fraction: float, timestamp: float) -> None:
+            self._emit("onScanProgress", {"fraction": fraction, "timestamp": timestamp})
+
+        def downloading(description: str, fraction: float, done: int, total: int) -> None:
+            self._emit(
+                "onDownload",
+                {"description": description, "fraction": fraction, "done": done, "total": total},
+            )
+
+        try:
+            grown = add_videos(
+                self._folder,
+                paths,
+                on_video=video,
+                on_progress=report,
+                cancel=self._cancel,
+                on_download=downloading,
+                on_status=self._status,
+            )
+        except Cancelled:
+            # The set is as it was, and the videos stay in the list: the
+            # next press of Scan scans them, and the rest reuse their
+            # kept scans.
+            self._emit("onScanCancelled")
+            return
+        except Exception as error:
+            self._emit("onFailed", {"title": "Scan failed", "detail": str(error)})
+            return
+
+        self._folder = grown
+        # The videos already in the set keep their places, so the answers
+        # in hand still hold; the new ones' are read from what was kept.
+        self._answers = merged_answers(grown, self._answers)
+        # Whoever is chosen stays chosen, by what they are made of
+        # (`_rebuild_cast`), so their reel grows to take in the new video.
+        self._rebuild_cast()
+        self._emit(
+            "onVideosAdded",
+            {
+                **self._cast_payload(),
+                **self._picked_payload(),
+                "added": [path.name for path in paths],
+                # Their reel is a longer reel now, so the rail is given
+                # the new one rather than left describing the old. The
+                # name in the box is left alone: nobody clicked anything.
+                "chosen": self._chosen_payload(None) if self._cast_chosen else None,
             },
         )
 
