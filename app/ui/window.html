@@ -324,6 +324,20 @@
   .known .acts select { height: 24px; font-size: .74rem; padding: 0 6px; width: auto; }
   @media (max-width: 860px) { .known { grid-template-columns: auto minmax(0, 1fr); } .known .acts { grid-column: 1 / -1; justify-content: flex-start; } }
 
+  /* ------------------------------------------- the videos picked by hand */
+  /* A row of what is in the set, under the toolbar where the folder path
+     would be: one chip per video, scanned ones marked, each with an x. */
+  .picks { background: var(--surface); border-bottom: 1px solid var(--rule); padding: 10px 14px; display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+  .picks .lead { font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-right: 3px; }
+  .picks .pick { display: inline-flex; align-items: center; gap: 7px; max-width: 24rem; padding: 3px 4px 3px 9px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sunk); font-size: .76rem; }
+  .picks .pick.waiting { border-style: dashed; }
+  .picks .pick .what { display: grid; min-width: 0; }
+  .picks .pick .what b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picks .pick .what span { font-family: var(--mono); font-size: .6rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .picks .pick button { height: 20px; width: 20px; padding: 0; border: 0; background: transparent; color: var(--faint); font-size: .8rem; line-height: 1; }
+  .picks .pick button:hover:not(:disabled) { color: var(--signal); }
+  .picks .empty { font-size: .8rem; color: var(--muted); margin: 0; }
+
   /* A name offered from earlier videos: a question until someone answers. */
   .suggested { font-style: italic; color: var(--signal); font-weight: 500; }
   .suggest { margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--signal); border-radius: 5px; font-size: .76rem; color: var(--muted); }
@@ -520,6 +534,7 @@
         <span id="sourceLabel">Source video</span>
         <span class="seg" id="viewSeg" role="group" aria-label="What to scan">
           <button type="button" data-view="video" aria-pressed="true">Video</button>
+          <button type="button" data-view="videos" aria-pressed="false">Videos</button>
           <button type="button" data-view="folder" aria-pressed="false">Folder</button>
         </span>
       </div>
@@ -547,6 +562,10 @@
       <button class="primary" id="actionBtn">Scan for people</button>
     </div>
   </div>
+
+  <!-- The videos picked one by one, in the videos view: which they are,
+       which have been scanned, and an x to take one out of the set. -->
+  <div class="picks" id="picks" hidden></div>
 
   <!-- The three settings that change most what a scan finds, for the
        content type chosen, in the words of what they do. -->
@@ -693,7 +712,15 @@
   const RING = '<svg class="ring" viewBox="-14 -14 188 238" preserveAspectRatio="none" aria-hidden="true" focusable="false"><path pathLength="1" d="M 26 10 C 84 -10, 162 2, 170 94 C 176 164, 128 220, 78 222 C 18 224, -10 158, -4 100 C 2 38, 46 -4, 118 -2"/><path class="second" pathLength="1" d="M 118 -2 C 54 -8, 2 44, -2 106 C -6 162, 26 218, 82 220 C 134 218, 178 158, 168 90 C 160 20, 96 -8, 36 8"/></svg>';
   const clock = (s) => Math.floor(s/60) + ":" + String(Math.round(s%60)).padStart(2,"0");
 
-  let state = { video: "", folder: "", view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", planFoot: "", drawn: { video: null, folder: null } };
+  // `drawn.folder` is the cast on screen, from a folder or from videos
+  // picked one by one; `castSource` says which, because Python holds one
+  // cast and scanning in either view replaces the other's.
+  let state = { video: "", folder: "", picked: [], castSource: "folder", adding: false, view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", planFoot: "", drawn: { video: null, folder: null } };
+
+  // Whether the view showing is one of the two that draw a cast of several
+  // videos. Everything about a cast -- the cards, the corrections, the
+  // reel -- is the same in both.
+  const castView = () => state.view !== "video";
 
   const setBar = (fraction) => { $("barFill").style.width = (fraction*100).toFixed(1) + "%"; };
   const status = (html) => { $("statusMsg").innerHTML = html; };
@@ -733,12 +760,22 @@
 
   // The source box and the gallery follow the switch. Each view keeps what
   // it last drew, so flicking between them does not lose a scan.
+  const SOURCE_LABEL = { video: "Source video", videos: "Videos chosen", folder: "Folder of videos" };
+  const NOTHING_CHOSEN = { video: "No video chosen", videos: "No videos chosen", folder: "No folder chosen" };
+
   function showSource() {
-    const path = state.view === "folder" ? state.folder : state.video;
-    $("sourceLabel").textContent = state.view === "folder" ? "Folder of videos" : "Source video";
+    const summary = state.picked.length
+      ? state.picked.length + (state.picked.length === 1 ? " video" : " videos") +
+        " — " + state.picked.map(v => v.name).join(", ")
+      : "";
+    const path = state.view === "folder" ? state.folder : state.view === "videos" ? summary : state.video;
+    $("sourceLabel").textContent = SOURCE_LABEL[state.view];
+    // "Add..." rather than "Choose": the dialog adds to the set rather
+    // than replacing what is in it.
+    $("chooseVideo").textContent = state.view === "videos" ? "Add…" : "Choose";
     if (path) $("videoPath").textContent = path;
-    else $("videoPath").innerHTML = '<span class="dim">' +
-      (state.view === "folder" ? "No folder chosen" : "No video chosen") + "</span>";
+    else $("videoPath").innerHTML = '<span class="dim">' + NOTHING_CHOSEN[state.view] + "</span>";
+    drawPicks();
   }
 
   function setView(view) {
@@ -747,8 +784,12 @@
     document.querySelectorAll("#viewSeg button").forEach(b =>
       b.setAttribute("aria-pressed", b.dataset.view === view));
     showSource();
-    $("galleryTitle").textContent = view === "folder" ? "Who's in this folder" : "Who's in this video";
-    const drawn = state.drawn[view];
+    $("galleryTitle").textContent =
+      view === "folder" ? "Who's in this folder" : view === "videos" ? "Who's in these videos" : "Who's in this video";
+    // A cast belongs to the view that scanned it, so the other cast view
+    // starts empty rather than showing people Python no longer holds.
+    const drawn = view === "video" ? state.drawn.video
+      : state.castSource === view ? state.drawn.folder : null;
     closeCuts();
     $("question").hidden = true;
     $("unassigned").hidden = true;
@@ -760,7 +801,7 @@
       $("foot").textContent = "Choose a person to export.";
       return;
     }
-    if (view === "folder") drawCast(drawn); else drawPeople(drawn);
+    if (castView()) drawCast(drawn); else drawPeople(drawn);
   }
 
   document.querySelectorAll("#viewSeg button").forEach(b =>
@@ -772,8 +813,71 @@
       if (r.path) { state.folder = r.path; showSource(); }
       return;
     }
+    if (state.view === "videos") { await addVideos(); return; }
     const r = await pywebview.api.choose_video();
     if (r.path) { state.video = r.path; showSource(); }
+  });
+
+  // ------------------------------------------- the videos picked by hand
+  //
+  // A set of videos chosen one at a time, from wherever each lives. It is
+  // the folder view's machinery with the folder left out: the same scans,
+  // the same cast across them, the same reel. The list below the toolbar
+  // is the set, and it can be added to and taken from after it has been
+  // scanned -- adding scans the new video alone, removing takes its cards
+  // out of the cast.
+
+  function drawPicks() {
+    const box = $("picks");
+    box.hidden = state.view !== "videos";
+    if (box.hidden) return;
+    if (!state.picked.length) {
+      box.innerHTML = '<p class="empty">Press <b>Add…</b> to choose videos. They can come from different folders — episodes 3, 7 and 12 of a show kept in three places are one set.</p>';
+      return;
+    }
+    box.innerHTML = '<span class="lead">In the set</span>' + state.picked.map(v => `
+      <span class="pick${v.scanned ? "" : " waiting"}" title="${esc(v.path)}">
+        <span class="what">
+          <b>${esc(v.name)}</b>
+          <span>${esc(v.folder)}${v.scanned ? "" : " · not scanned yet"}</span>
+        </span>
+        <button type="button" data-remove="${esc(v.path)}" title="Take ${esc(v.name)} out of the set"
+                aria-label="Take ${esc(v.name)} out of the set" ${state.busy ? "disabled" : ""}>&times;</button>
+      </span>`).join("");
+  }
+
+  function takePicked(r) {
+    state.picked = r.picked || [];
+    showSource();
+  }
+
+  async function addVideos() {
+    // Cleared by `idle`, which every end of a job calls: a video whose
+    // scan was kept comes back before this returns, and going busy after
+    // that would leave the window saying Cancel with nothing to cancel.
+    state.adding = true;
+    const r = await pywebview.api.choose_videos();
+    takePicked(r);
+    // Added to a set already on screen: only the new videos are scanned,
+    // and their people join the cast when they are.
+    if (r.scanning && state.adding) { busy("scan"); status("<b>Scanning what was added…</b>"); }
+    state.adding = false;
+  }
+
+  $("picks").addEventListener("click", async (e) => {
+    const button = e.target.closest("button[data-remove]");
+    if (!button) return;
+    const r = await pywebview.api.remove_picked_video(button.dataset.remove);
+    if (r.picked) takePicked(r);
+    if (!r.removed) { if (r.reason) status("<b>" + esc(r.reason) + "</b>"); return; }
+    if (r.people) {
+      state.drawn.folder = r;
+      drawCast(r);
+      status("<b>" + esc(r.note) + "</b> " + r.people.length + " people across " +
+        r.videoCount + " video" + (r.videoCount === 1 ? "" : "s") + " now.");
+      return;
+    }
+    status("<b>Took " + esc(button.dataset.remove.split("/").pop()) + " out of the set.</b>");
   });
 
   $("chooseFolder").addEventListener("click", async () => {
@@ -854,6 +958,8 @@
     if (state.busy) { pywebview.api.cancel(); $("actionBtn").disabled = true; return; }
     const r = state.view === "folder"
       ? await pywebview.api.start_folder_scan(state.folder, $("mode").value, Number($("interval").value))
+      : state.view === "videos"
+      ? await pywebview.api.start_videos_scan($("mode").value, Number($("interval").value))
       : await pywebview.api.start_scan(state.video, $("mode").value, Number($("interval").value));
     if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
     busy("scan");
@@ -861,7 +967,7 @@
   });
 
   $("exportBtn").addEventListener("click", async () => {
-    const start = state.view === "folder" ? pywebview.api.start_folder_export : pywebview.api.start_export;
+    const start = castView() ? pywebview.api.start_folder_export : pywebview.api.start_export;
     const r = await start($("folder").textContent, $("fname").value, $("enc").value, $("q").value, $("fmt").value);
     if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
     busy("export");
@@ -874,17 +980,18 @@
     $("exportBtn").disabled = true;
     ["mode","interval","enc","q","fname","fmt","pack","packUp","packDown","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
     document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
-    document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = true);
+    document.querySelectorAll(".seg button, #cuts button, #library button, #library select, #picks button").forEach(b => b.disabled = true);
   }
 
   function idle() {
     state.busy = null;
+    state.adding = false;
     $("actionBtn").textContent = "Scan for people";
     $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
     ["mode","interval","enc","q","fname","fmt","pack","packUp","packDown","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
-    document.querySelectorAll(".seg button, #cuts button, #library button, #library select").forEach(b => b.disabled = false);
+    document.querySelectorAll(".seg button, #cuts button, #library button, #library select, #picks button").forEach(b => b.disabled = false);
   }
 
   window.onStatus = (d) => status("<b>" + d.text + "</b>");
@@ -984,9 +1091,9 @@
   }
 
   async function applyEdit(operation, tracks) {
-    if (state.view === "folder") {
-      // Across the folder: merge and split are kept as answers, discard
-      // is removed from every video's kept scan.
+    if (castView()) {
+      // Across every video in the set: merge and split are kept as
+      // answers, discard is removed from every video's kept scan.
       const r = await pywebview.api.edit_cast(operation, tracks || []);
       if (!r.applied) { status("<b>" + esc(r.reason) + "</b>"); return; }
       state.drawn.folder = r;
@@ -1011,7 +1118,7 @@
 
   // Names the one chosen card or person, in whichever view is showing.
   async function applyName(typed) {
-    if (state.view === "folder") {
+    if (castView()) {
       const r = await pywebview.api.name_cast_person(typed);
       if (!r.applied) { status("<b>" + r.reason + "</b>"); return; }
       state.drawn.folder = r;
@@ -1045,7 +1152,7 @@
   $("renameBtn").addEventListener("click", async () => {
     const person = state.people.find(p => p.index === state.selected[0]);
     const typed = window.prompt(
-      state.view === "folder"
+      castView()
         ? "What is this person called? The name is saved in every video they are in."
         : "What is this person called? Leave it empty to clear the name.",
       person && person.name ? person.name : (person && person.suggestion) || ""
@@ -1076,11 +1183,11 @@
     const person = state.people.find(p => p.index === state.selected[0]);
     if (!person || !person.suggestion) return;
     if (button.dataset.suggest === "yes") { await applyName(person.suggestion); return; }
-    const r = state.view === "folder"
+    const r = castView()
       ? await pywebview.api.decline_cast_suggestion(person.index, person.suggestion)
       : await pywebview.api.decline_suggestion(person.index, person.suggestion);
     if (!r.applied) return;
-    if (state.view === "folder") { state.drawn.folder = r; drawCast(r); }
+    if (castView()) { state.drawn.folder = r; drawCast(r); }
     else { state.drawn.video = r; keepSelection(r); }
     status("<b>Not " + esc(person.suggestion) + ".</b> It will not be offered for them again this session.");
   });
@@ -1141,7 +1248,7 @@
   // data -- the same fields the grid itself reads, so the merge panel
   // shows exactly what the grid would.
   function mergeCardHtml(p) {
-    const stat = state.view === "folder"
+    const stat = castView()
       ? `in ${p.videos} of ${(state.drawn.folder && state.drawn.folder.videoCount) || "?"} \u00b7 ${p.onScreen}`
       : `${p.detections} det`;
     return `<img class="thumb" src="${p.thumbnail}" alt="">
@@ -1313,7 +1420,7 @@
   $("discardBtn").addEventListener("click", () => applyEdit("discard"));
 
   $("splitBtn").addEventListener("click", async () => {
-    if (state.view === "folder") {
+    if (castView()) {
       const r = await pywebview.api.cards_of_cast(state.selected[0]);
       if (!r.cards.length) {
         status("<b>Nothing to split.</b> This person is one card in one video.");
@@ -1354,7 +1461,7 @@
 
   $("splitDo").addEventListener("click", async () => {
     const picked = [...document.querySelectorAll("#tracks .card[aria-pressed='true']")]
-      .map(c => state.view === "folder" ? c.dataset.t : Number(c.dataset.t));
+      .map(c => castView() ? c.dataset.t : Number(c.dataset.t));
     if (!picked.length) { status("<b>Pick the shots that are somebody else.</b>"); return; }
     $("split").hidden = true;
     const sourceCard = cardFor(state.selected[0]);
@@ -1365,15 +1472,41 @@
   // ------------------------------------------------------------ folder view
 
   window.onFolderScanned = (d) => {
+    castScanned(d, "Folder scanned.");
+  };
+
+  // The same cast, from videos picked one by one rather than a folder.
+  window.onVideosScanned = (d) => {
+    castScanned(d, "Videos scanned.");
+  };
+
+  function castScanned(d, headline) {
     takeFormat(d.format);
     idle();
     setBar(1);
     $("statusTime").textContent = "";
-    status("<b>Folder scanned.</b> " + d.people.length + " people across " +
+    status("<b>" + headline + "</b> " + d.people.length + " people across " +
       d.videoCount + " video" + (d.videoCount === 1 ? "" : "s") +
       (d.questions.length ? ", " + d.questions.length + " to check." : "."));
+    state.castSource = d.source;
+    takePicked(d);
     state.drawn.folder = d;
     drawCast(d);
+  }
+
+  // A video added to a set already on screen: it alone was scanned, and
+  // its people have joined the people who were there.
+  window.onVideosAdded = (d) => {
+    idle();
+    setBar(1);
+    $("statusTime").textContent = "";
+    takePicked(d);
+    state.drawn.folder = d;
+    drawCast(d);
+    if (d.chosen) showCastChoice(d.chosen);
+    status("<b>Added " + d.added.map(esc).join(", ") + ".</b> " + d.people.length +
+      " people across " + d.videoCount + " video" + (d.videoCount === 1 ? "" : "s") +
+      (d.questions.length ? ", " + d.questions.length + " to check." : "."));
   };
 
   function drawCast(d) {
@@ -1466,10 +1599,26 @@
     strip.innerHTML = '<p class="waiting">Reading the reel…</p>';
   }
 
+  // The rail for the people chosen out of a set of videos. Read again
+  // whenever the set changes under them, since a video added to it makes
+  // their reel a longer reel.
+  function showCastChoice(r) {
+    showPicked(r);
+    refreshCuts();
+    showSuggestion();
+    $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
+      " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file." +
+      (r.indexes.length > 1 ? " Any scene with any of them." : "") +
+      (r.repeated ? " Leaves out " + r.repeated +
+        " that later videos repeat of footage already in the reel." : "");
+    state.planFoot = $("foot").textContent;
+    showPackOfSelection();
+  }
+
   $("grid").addEventListener("click", async (e) => {
     const card = e.target.closest(".card");
     if (!card) return;
-    if (state.view === "folder") {
+    if (castView()) {
       const wasOn = state.selected.includes(Number(card.dataset.i));
       const r = await pywebview.api.select_cast_person(Number(card.dataset.i), $("fname").value);
       if (!r.accepted) return;
@@ -1486,16 +1635,7 @@
         closeCuts();
         return;
       }
-      showPicked(r);
-      refreshCuts();
-      showSuggestion();
-      $("foot").textContent = "Cuts " + r.cuts + " segments from " + r.videos +
-        " video" + (r.videos === 1 ? "" : "s") + " and joins them into one file." +
-        (r.indexes.length > 1 ? " Any scene with any of them." : "") +
-        (r.repeated ? " Leaves out " + r.repeated +
-          " that later videos repeat of footage already in the reel." : "");
-      state.planFoot = $("foot").textContent;
-      showPackOfSelection();
+      showCastChoice(r);
       return;
     }
     const wasOn = state.selected.includes(Number(card.dataset.i));
@@ -1888,7 +2028,7 @@
     drawLibrary(r);
     if (r.video) state.drawn.video = r.video;
     if (r.folder) state.drawn.folder = r.folder;
-    if (state.view === "folder" && r.folder) drawCast(r.folder);
+    if (castView() && r.folder) drawCast(r.folder);
     if (state.view === "video" && r.video) keepSelection(r.video);
     status("<b>" + esc(r.note) + "</b>");
   }
