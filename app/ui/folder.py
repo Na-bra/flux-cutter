@@ -7,6 +7,12 @@ does -- each episode is an ordinary scan, kept and reused like any other,
 and a person's reel is each episode's plan joined by `cut_clips` -- so the
 only new idea is the cast itself (app/faces/cast.py).
 
+A "folder" here is a set of videos, not a directory: `scan_folder` has
+always taken files, folders or a mix, and the window's videos view hands it
+files picked one by one from wherever they live. `add_videos` and
+`without_video` are that view's own, since a set picked by hand is the one
+that gets added to and taken from after it has been scanned.
+
 Like app/ui/worker.py this imports no toolkit, so all of it is tested
 without a window.
 """
@@ -115,6 +121,38 @@ def scan_folder(
         Cancelled: If `cancel` was set. Nothing scanned so far is kept open.
     """
     videos = collect_videos([Path(p) for p in paths], recursive=recursive)
+    results, skipped = _scan_each(
+        videos,
+        settings,
+        # Looked for straight after, in find_folder_repeats.
+        fingerprint=len(videos) > 1,
+        on_video=on_video,
+        on_progress=on_progress,
+        cancel=cancel,
+        on_download=on_download,
+    )
+    return FolderScan(
+        videos=results,
+        settings=settings,
+        skipped=skipped,
+        repeats=_repeats_of(results, on_status, cancel),
+    )
+
+
+def _scan_each(
+    videos: list[Path],
+    settings: ScanSettings,
+    fingerprint: bool,
+    on_video=None,
+    on_progress=None,
+    cancel: threading.Event | None = None,
+    on_download=None,
+) -> tuple[list[ScanResult], list[tuple[Path, str]]]:
+    """Scans each video in turn, and says which could not be read.
+
+    Raises:
+        Cancelled: If `cancel` was set. Nothing scanned so far is kept open.
+    """
     results: list[ScanResult] = []
     skipped: list[tuple[Path, str]] = []
 
@@ -134,8 +172,7 @@ def scan_folder(
                     on_progress=progress,
                     cancel=cancel,
                     on_download=on_download,
-                    # Looked for straight after, in find_folder_repeats.
-                    fingerprint=len(videos) > 1,
+                    fingerprint=fingerprint,
                 )
             )
         except Cancelled:
@@ -145,12 +182,24 @@ def scan_folder(
         except (VideoLoadError, CutterError, OSError) as error:
             skipped.append((path, str(error)))
 
-    return FolderScan(
-        videos=results,
-        settings=settings,
-        skipped=skipped,
-        repeats=find_folder_repeats(results, on_status=on_status, cancel=cancel),
-    )
+    return results, skipped
+
+
+def _repeats_of(
+    results: list[ScanResult], on_status=None, cancel: threading.Event | None = None
+) -> dict[tuple[int, int], list[Repeat]]:
+    """`find_folder_repeats`, releasing the scans if it is cancelled.
+
+    Cancelling during the repeats pass used to leave every scan of the
+    folder open, because the scans are only handed to a FolderScan -- whose
+    `close` releases them -- once the repeats are known.
+    """
+    try:
+        return find_folder_repeats(results, on_status=on_status, cancel=cancel)
+    except Cancelled:
+        for result in results:
+            result.close()
+        raise
 
 
 def find_folder_repeats(
@@ -188,6 +237,131 @@ def find_folder_repeats(
                 if repeats:
                     found[(later, earlier)] = repeats
     return found
+
+
+# ------------------------------------------------- adding and taking away
+
+
+def same_file(path: Path) -> Path:
+    """What says two paths are the same video, however each was typed.
+
+    Resolved, so `season-1/e3.mp4` and an absolute path to the same file are
+    one video. A path that cannot be resolved -- the file has gone since --
+    is left as it is rather than refused: it still names itself.
+    """
+    try:
+        return Path(path).resolve()
+    except OSError:
+        return Path(path)
+
+
+def add_videos(
+    folder: FolderScan,
+    paths: list[Path],
+    on_video=None,
+    on_progress=None,
+    cancel: threading.Event | None = None,
+    on_download=None,
+    on_status=None,
+) -> FolderScan:
+    """The set with these videos added, scanning only the ones it lacks.
+
+    A video already in the set is passed over, so adding a fourth episode
+    costs one scan rather than four; and that one scan reuses a kept scan
+    of the same footage under these settings, as any scan does. The
+    settings are the set's own, not whatever the window's boxes say now,
+    or the new episode's cards could not be compared with the rest.
+
+    Repeats are looked for across the whole set afterwards: what a new
+    episode repeats of an old one is the point of looking at all, and a
+    video fingerprinted when it was scanned is not read again for it.
+
+    Raises:
+        Cancelled: If `cancel` was set. The set is left as it was, and
+            nothing scanned here is kept open.
+    """
+    known = {same_file(result.video_path) for result in folder.videos}
+    wanted = []
+    for path in collect_videos([Path(p) for p in paths]):
+        if same_file(path) in known:
+            continue
+        known.add(same_file(path))
+        wanted.append(path)
+    if not wanted:
+        return folder
+
+    results, skipped = _scan_each(
+        wanted,
+        folder.settings,
+        fingerprint=len(folder.videos) + len(wanted) > 1,
+        on_video=on_video,
+        on_progress=on_progress,
+        cancel=cancel,
+        on_download=on_download,
+    )
+    videos = folder.videos + results
+    try:
+        repeats = find_folder_repeats(videos, on_status=on_status, cancel=cancel)
+    except Cancelled:
+        # Only the new scans are released: the ones the set already held
+        # are still its own, and still on screen.
+        for result in results:
+            result.close()
+        raise
+    return replace(
+        folder,
+        videos=videos,
+        skipped=folder.skipped + skipped,
+        repeats=repeats,
+    )
+
+
+def without_video(folder: FolderScan, path: Path) -> FolderScan:
+    """The set without this video, and its footage handle released.
+
+    Everything held by a video's position moves when one goes: `repeats` is
+    renumbered here, and the cast's answers are read again from what is
+    kept (`load_answers`), the way they are after a discard.
+
+    A video that could not be read is only in the list of what was skipped,
+    and taking it out takes it off that list.
+
+    Raises:
+        EditError: If the video is not in the set, or is the only one left.
+    """
+    wanted = same_file(path)
+    skipped = [pair for pair in folder.skipped if same_file(pair[0]) != wanted]
+    if len(skipped) != len(folder.skipped):
+        return replace(folder, skipped=skipped)
+
+    video = next(
+        (
+            position
+            for position, result in enumerate(folder.videos)
+            if same_file(result.video_path) == wanted
+        ),
+        None,
+    )
+    if video is None:
+        raise EditError("That video is not in this set.")
+    if len(folder.videos) < 2:
+        # The same rule as a discard that would empty a gallery: the view
+        # is of a set of videos, and a set of none has nothing to show.
+        raise EditError("This is the only video left. Add another first, or switch to Video.")
+
+    gone = folder.videos[video]
+    videos = [result for position, result in enumerate(folder.videos) if position != video]
+
+    def moved(position: int) -> int:
+        return position - 1 if position > video else position
+
+    repeats = {
+        (moved(later), moved(earlier)): found
+        for (later, earlier), found in folder.repeats.items()
+        if video not in (later, earlier)
+    }
+    gone.close()
+    return replace(folder, videos=videos, repeats=repeats)
 
 
 def cast_of(
@@ -289,6 +463,23 @@ def load_answers(folder: FolderScan) -> Answers:
         if first in keys and second in keys:
             answers.record(keys[first], keys[second], same=same)
     return answers
+
+
+def merged_answers(folder: FolderScan, answers: Answers) -> Answers:
+    """Every answer kept about this set's cards, and those given since.
+
+    For a set a video was just added to. The cards already in it keep their
+    places, so the answers in hand still describe them, while the new
+    video's cards have never been asked about in this window -- and an
+    answer given when the cache could not be written exists nowhere else.
+    """
+    grown = load_answers(folder)
+    for same, pairs in ((True, answers.same), (False, answers.different)):
+        for pair in pairs:
+            cards = tuple(pair)
+            if len(cards) == 2:
+                grown.record(cards[0], cards[1], same=same)
+    return grown
 
 
 def remember_answer(folder: FolderScan, first: CardRef, second: CardRef, same: bool) -> bool:

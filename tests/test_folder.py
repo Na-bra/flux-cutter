@@ -6,6 +6,7 @@ turning cards into a cast, and handing the right segments from the right
 videos to the cut.
 """
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,16 +15,19 @@ import pytest
 from PIL import Image
 
 from app.faces.cast import Answers, CardRef
+from app.faces.edits import EditError
 from app.faces.grouper import FaceIdentityGroup
 from app.ui import folder as folder_module
 from app.ui.folder import (
     FolderScan,
+    add_videos,
     cast_of,
     cast_preview_frames,
     export_cast,
     name_cast_person,
     plan_cast_export,
     scan_folder,
+    without_video,
 )
 from app.ui.worker import Cancelled, Person, ScanResult, ScanSettings
 from app.video.cutter import CutResult, CutterError
@@ -139,6 +143,243 @@ def test_cancelling_closes_what_was_already_scanned(tmp_path, monkeypatch):
     with pytest.raises(Cancelled):
         scan_folder([tmp_path], SETTINGS)
     assert closed == ["e1.mp4"]
+
+
+# ------------------------------------------------- adding and taking away
+
+
+def scanned_at(path, *people):
+    """A scan of a real path, so adding and removing can match the file."""
+    return ScanResult(
+        video_path=path,
+        video_duration=60.0,
+        sample_interval=0.5,
+        people=list(people) or [person(0, LEAD)],
+    )
+
+
+@pytest.fixture
+def two_folders(tmp_path, monkeypatch):
+    """Two videos in two folders, and the names of what gets scanned."""
+    scanned = []
+
+    def fake_scan(path, **kwargs):
+        scanned.append(path.name)
+        return scanned_at(path)
+
+    monkeypatch.setattr(folder_module, "scan", fake_scan)
+    monkeypatch.setattr(folder_module, "find_folder_repeats", lambda *a, **k: {})
+    paths = []
+    for folder, name in (("a", "e3.mp4"), ("b", "e7.mp4")):
+        (tmp_path / folder).mkdir()
+        paths.append(tmp_path / folder / name)
+        paths[-1].write_bytes(b"x")
+    return paths, scanned
+
+
+def test_a_set_is_the_files_it_was_given_whatever_folders_they_are_in(two_folders):
+    (first, second), scanned = two_folders
+
+    picked = scan_folder([first, second], SETTINGS)
+
+    assert [r.video_path for r in picked.videos] == [first, second]
+    assert scanned == ["e3.mp4", "e7.mp4"]
+
+
+def test_adding_a_video_scans_only_the_one_added(two_folders):
+    (first, second), scanned = two_folders
+    picked = scan_folder([first], SETTINGS)
+    assert scanned == ["e3.mp4"]
+
+    grown = add_videos(picked, [second])
+
+    assert scanned == ["e3.mp4", "e7.mp4"]
+    assert [r.video_path for r in grown.videos] == [first, second]
+    # The set it was added to is untouched, as any FolderScan is.
+    assert [r.video_path for r in picked.videos] == [first]
+
+
+def test_a_video_already_in_the_set_is_not_scanned_again(two_folders):
+    (first, second), scanned = two_folders
+    picked = scan_folder([first, second], SETTINGS)
+
+    assert add_videos(picked, [second, first]) is picked
+    assert scanned == ["e3.mp4", "e7.mp4"]
+
+
+def test_the_video_added_is_fingerprinted_for_the_repeats(tmp_path, monkeypatch):
+    """One video is never a repeat of anything, so a set of one does not
+    fingerprint; the second makes both worth looking at."""
+    asked = []
+
+    def fake_scan(path, fingerprint, **kwargs):
+        asked.append(fingerprint)
+        return scanned_at(path)
+
+    monkeypatch.setattr(folder_module, "scan", fake_scan)
+    monkeypatch.setattr(folder_module, "find_folder_repeats", lambda *a, **k: {})
+    for name in ("e1.mp4", "e2.mp4"):
+        (tmp_path / name).write_bytes(b"x")
+
+    add_videos(scan_folder([tmp_path / "e1.mp4"], SETTINGS), [tmp_path / "e2.mp4"])
+
+    assert asked == [False, True]
+
+
+def test_the_settings_are_the_set_s_own_not_whatever_is_current(tmp_path, monkeypatch):
+    """A card scanned under other settings cannot be compared with the
+    rest, so an addition scans under the settings the set was scanned on."""
+    asked = []
+
+    def remember(path, settings, **kwargs):
+        asked.append(settings)
+        return scanned_at(path)
+
+    monkeypatch.setattr(folder_module, "scan", remember)
+    monkeypatch.setattr(folder_module, "find_folder_repeats", lambda *a, **k: {})
+    added = tmp_path / "e2.mp4"
+    added.write_bytes(b"x")
+    picked = FolderScan(videos=[scanned_at(tmp_path / "e1.mp4")], settings=SETTINGS)
+
+    add_videos(picked, [added])
+
+    assert asked == [SETTINGS]
+
+
+def test_cancelling_an_addition_leaves_the_set_as_it_was(two_folders, monkeypatch):
+    (first, second), _ = two_folders
+    picked = scan_folder([first], SETTINGS)
+
+    def cancelled(path, **kwargs):
+        raise Cancelled()
+
+    monkeypatch.setattr(folder_module, "scan", cancelled)
+
+    with pytest.raises(Cancelled):
+        add_videos(picked, [second])
+    assert [r.video_path for r in picked.videos] == [first]
+
+
+def test_cancelling_the_search_for_repeats_releases_what_was_scanned(tmp_path, monkeypatch):
+    """The scans are only handed to a FolderScan -- whose `close` releases
+    them -- once the repeats are known, so a cancel in between has to."""
+    closed = []
+    for name in ("e1.mp4", "e2.mp4"):
+        (tmp_path / name).write_bytes(b"x")
+
+    def fake_scan(path, **kwargs):
+        return replace(
+            scanned_at(path),
+            source=SimpleNamespace(close=lambda name=path.name: closed.append(name)),
+        )
+
+    monkeypatch.setattr(folder_module, "scan", fake_scan)
+    monkeypatch.setattr(folder_module, "find_folder_repeats", _cancelled)
+
+    with pytest.raises(Cancelled):
+        scan_folder([tmp_path], SETTINGS)
+    assert closed == ["e1.mp4", "e2.mp4"]
+
+
+def test_cancelling_an_addition_keeps_the_set_s_own_footage_open(tmp_path, monkeypatch):
+    """The videos already in the set are still on screen: releasing their
+    footage under them would take the descriptor out of an export."""
+    closed = []
+    (tmp_path / "e2.mp4").write_bytes(b"x")
+    held = replace(
+        scanned_at(tmp_path / "e1.mp4"),
+        source=SimpleNamespace(close=lambda: closed.append("e1.mp4")),
+    )
+
+    def fake_scan(path, **kwargs):
+        return replace(
+            scanned_at(path), source=SimpleNamespace(close=lambda: closed.append("e2.mp4"))
+        )
+
+    monkeypatch.setattr(folder_module, "scan", fake_scan)
+    monkeypatch.setattr(folder_module, "find_folder_repeats", _cancelled)
+
+    with pytest.raises(Cancelled):
+        add_videos(FolderScan(videos=[held], settings=SETTINGS), [tmp_path / "e2.mp4"])
+    assert closed == ["e2.mp4"]
+
+
+def _cancelled(*args, **kwargs):
+    raise Cancelled()
+
+
+def test_removing_a_video_takes_its_cards_out_of_the_cast(season):
+    before = {p.label: p.detection_count for p in cast_of(season)[0]}
+    assert before["Person #1"] == 70  # the lead, in e1 and e2
+
+    shrunk = without_video(season, Path("/season/e2.mp4"))
+
+    assert [r.video_path.name for r in shrunk.videos] == ["e1.mp4", "e3.mp4"]
+    cast, _ = cast_of(shrunk)
+    assert [p.detection_count for p in cast] == [40, 10, 10]
+    assert all(len(p.videos) == 1 for p in cast)
+
+
+def test_removing_a_video_renumbers_the_repeats(season):
+    from app.video.repeats import Repeat
+
+    # e3 repeats e1's opening, and e2 repeats e1's.
+    season.repeats = {(2, 0): [Repeat(0.0, 30.0, 0.0, 60)], (1, 0): [Repeat(0.0, 5.0, 0.0, 10)]}
+
+    shrunk = without_video(season, Path("/season/e2.mp4"))
+
+    # What was video 2 is video 1 now, and e2's own repeat is gone with it.
+    assert list(shrunk.repeats) == [(1, 0)]
+    assert shrunk.repeats[(1, 0)][0].end == 30.0
+
+
+def test_removing_a_video_releases_its_footage(season):
+    closed = []
+    season.videos[1] = replace(
+        season.videos[1], source=SimpleNamespace(close=lambda: closed.append("e2"))
+    )
+
+    without_video(season, Path("/season/e2.mp4"))
+
+    assert closed == ["e2"]
+
+
+def test_the_only_video_left_cannot_be_removed(season):
+    one = FolderScan(videos=[season.videos[0]], settings=SETTINGS)
+
+    with pytest.raises(EditError):
+        without_video(one, Path("/season/e1.mp4"))
+
+
+def test_a_video_that_is_not_in_the_set_cannot_be_removed(season):
+    with pytest.raises(EditError):
+        without_video(season, Path("/season/e9.mp4"))
+
+
+def test_removing_a_video_that_could_not_be_read_takes_it_off_the_list(season):
+    season.skipped = [(Path("/season/broken.mp4"), "cannot read it")]
+
+    shrunk = without_video(season, Path("/season/broken.mp4"))
+
+    assert shrunk.skipped == []
+    assert len(shrunk.videos) == 3
+
+
+def test_an_answer_given_before_a_video_was_added_still_holds(on_disk, tmp_path):
+    """Answers are kept beside the scans, keyed by card; the ones given in
+    this window must survive a video joining the set, whether or not they
+    reached the cache."""
+    from app.ui.folder import merged_answers
+
+    answers = Answers()
+    answers.record(CardRef(0, 0), CardRef(1, 1), same=False)
+    added = tmp_path / "season" / "e3.mp4"
+    added.write_bytes(b"e3")
+    grown = replace(on_disk, videos=on_disk.videos + [scanned_at(added)])
+
+    merged = merged_answers(grown, answers)
+
+    assert frozenset({CardRef(0, 0), CardRef(1, 1)}) in merged.different
 
 
 # --------------------------------------------------------------------- cast
