@@ -4664,3 +4664,17 @@ only from the story, were set to unknown.
 `evaluation/baseline.json` has every number, per person. Measured on main at
 17c83ac.
 
+## 67. The nightly run and sleep (`scripts/nightly/run.sh`)
+
+`claude -p` runs under `caffeinate -i`, which holds a no-idle-sleep assertion
+until claude exits. `pmset repeat wakeorpoweron` wakes the Mac at 1:55, but
+nothing held it awake afterwards. On 22 November the run's transcript has six
+gaps of 16 to 53 minutes, and claude reported "Your computer went to sleep
+mid-response".
+
+The comment for a run that opened no pull request names the branch only when
+it is a `claude/` branch. A run that failed before branching used to say its
+work was on `main`.
+
+(Numbered 67 because #63's notes take 66.)
+

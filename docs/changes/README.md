@@ -3,6 +3,7 @@
 One page per change, newest first: what it does, why, what it means for your
 videos and kept scans, the numbers before and after, and how to undo it.
 
+- [2026-11-22 — The nightly run keeps the Mac awake until it finishes](2026-11-22-nightly-stays-awake.md)
 - [2026-11-21 — The evaluation suite measures the eight new test videos](2026-11-21-eight-new-evaluation-videos.md)
 - [2026-11-21 — Card pictures are made at the size the window shows them](2026-11-21-sharper-card-pictures.md)
 - [2026-11-20 — Up and down buttons for the scene pack length](2026-11-20-pack-length-steps.md)

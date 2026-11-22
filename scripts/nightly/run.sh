@@ -56,7 +56,12 @@ export BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=3600000
 # dontAsk: anything not listed is refused rather than asked about, since
 # nobody is there to answer. Merging, pushing to main, force-pushing and
 # deleting files are deliberately not listed.
-claude -p "$prompt" --permission-mode dontAsk --output-format text --allowedTools \
+#
+# caffeinate -i keeps the Mac from idle-sleeping until claude exits. The
+# 1:55 wake starts the run, but nothing kept the Mac awake after that: on
+# 22 November it slept mid-response and a three-hour run spent most of it
+# asleep. It lets the Mac sleep again as soon as the run ends.
+caffeinate -i claude -p "$prompt" --permission-mode dontAsk --output-format text --allowedTools \
   "Read" "Edit" "Write" "Glob" "Grep" \
   "Bash(git status*)" "Bash(git diff*)" "Bash(git log*)" "Bash(git show*)" \
   "Bash(git branch --show-current)" "Bash(git checkout -b claude/*)" "Bash(git checkout claude/*)" "Bash(git add *)" \
@@ -88,6 +93,13 @@ git checkout -q main || true
 # If no pull request came of it, say so on the issue, so a stopped run is
 # not mistaken for one still going.
 if ! gh pr list --state open --json headRefName --jq '.[].headRefName' | grep -q "^claude/issue-$issue-"; then
-  gh issue comment "$issue" --body "The nightly run on $(date +%Y-%m-%d) stopped without opening a pull request.${current:+ Its work so far is on \`$current\`.} The next run carries on from there. Log: \`~/Library/Logs/fluxcutter-nightly/$stamp.log\`." || true
+  # Only a claude branch holds the run's work; a run that stopped before
+  # making one has nothing saved, and naming main here sent you looking.
+  if [[ "$current" == claude/* ]]; then
+    where="Its work so far is on \`$current\`, and the next run carries on from there."
+  else
+    where="It stopped before making a branch, so the next run starts the issue afresh."
+  fi
+  gh issue comment "$issue" --body "The nightly run on $(date +%Y-%m-%d) stopped without opening a pull request. $where Log: \`~/Library/Logs/fluxcutter-nightly/$stamp.log\`." || true
 fi
 echo "== done $(date +%H:%M)"
