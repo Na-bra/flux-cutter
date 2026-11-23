@@ -92,7 +92,7 @@ def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
     # A filmstrip is six seeks of footage this test has no use for.
     monkeypatch.setattr(bridge, "_start_cast_preview", lambda: None)
     # Jobs run where they are started, so the measurement happens in order.
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: target(*args))
 
     # Two videos, picked from two folders.
     window.chosen = [str(first), str(second)]

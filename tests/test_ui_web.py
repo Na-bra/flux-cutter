@@ -15,6 +15,7 @@ milliseconds rather than the ten seconds a scan of the sample clip takes.
 """
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -112,19 +113,94 @@ class FakeWindow:
         return None
 
 
-class AliveWorker:
-    """Stands in for a running job without starting a thread."""
+class HeldJob:
+    """A job that runs until the test lets go of it, or cancels it.
 
-    @staticmethod
-    def is_alive() -> bool:
-        return True
+    Real rather than a stand-in. The queue runs its jobs on a thread of its
+    own, so a job that is "running" only because an attribute says so would
+    prove nothing about what runs in what order, or about what the window
+    refuses while something is running.
+    """
+
+    def __init__(
+        self,
+        bridge,
+        kind="export",
+        title="Export reel",
+        detail="reel.mp4",
+        needs=(),
+        waits=False,
+    ):
+        self.ran = threading.Event()
+        self.let_go = threading.Event()
+        self.cancelled = False
+        _held.append(self)
+        self.job = bridge._queue.add(
+            self._run, kind=kind, title=title, detail=detail, needs=needs
+        )
+        # `waits` for one queued behind another, which must not have run.
+        if not waits:
+            assert self.ran.wait(5), "the queue never ran the held job"
+
+    def _run(self, cancel: threading.Event) -> None:
+        self.ran.set()
+        while not self.let_go.is_set():
+            if cancel.is_set():
+                # What a worker does with a cancellation: stops, and does
+                # not raise past the queue.
+                self.cancelled = True
+                return
+            time.sleep(0.005)
+
+    def release(self) -> None:
+        self.let_go.set()
+
+
+_held: list[HeldJob] = []
+
+
+def run_export(bridge, output, settings=None, segments=None, pack=False, shots=None):
+    """Runs the export worker over what the window holds now.
+
+    A queued job is handed the scan, the people and the cuts rather than
+    reading them when it runs, so a test that drives the worker has to hand
+    them over too -- the same way `start_export` does.
+    """
+    bridge._export_worker(
+        bridge._scan_result,
+        list(bridge._selected),
+        Path(output),
+        settings or ExportSettings(),
+        bridge._cut_segments() if segments is None else segments,
+        pack,
+        shots,
+    )
+
+
+def run_folder_export(bridge, output, settings=None, plans=None, pack=False):
+    """`run_export` for a set of videos: the set and the cast person too."""
+    bridge._folder_export_worker(
+        bridge._folder,
+        bridge._cast_selected,
+        Path(output),
+        settings or ExportSettings(),
+        cuts.plans_from_cuts(bridge._cuts) if plans is None else plans,
+        pack,
+        [bridge._shots_for(result) for result in bridge._folder.videos],
+    )
 
 
 @pytest.fixture
 def bridge():
     made = web.Bridge()
     made.window = FakeWindow()
-    return made
+    yield made
+    # Nothing a test held on to outlives it.
+    for job in _held:
+        job.release()
+    _held.clear()
+    made.shutdown()
+    made._queue.wait(5)
 
 
 # -------------------------------------------------------------- the gallery
@@ -173,16 +249,18 @@ def test_selecting_a_face_previews_the_cut(bridge):
     assert "cuts" in answer["summary"]
 
 
-def test_the_gallery_ignores_clicks_while_a_job_runs(bridge):
-    """The running job already holds its own person.
-
-    Letting the click through changed the label and the filename to
-    describe someone the encode was not cutting.
-    """
+def test_the_gallery_takes_clicks_while_a_job_runs(bridge):
+    """It did not, before there was a queue: the running export read the
+    selection as it went, so a click described a reel it was not cutting.
+    Now a job is handed its own people when it is queued, and choosing
+    somebody else is how the next export gets queued at all."""
     bridge._scan_result = make_scan_result()
-    bridge._worker = AliveWorker()
+    HeldJob(bridge)
 
-    assert bridge.select_person(1, "reel.mp4") == {"accepted": False}
+    answer = bridge.select_person(1, "reel.mp4")
+
+    assert answer["accepted"] is True
+    assert answer["indexes"] == [1]
 
 
 def test_selecting_someone_who_is_not_there_is_refused(bridge):
@@ -333,12 +411,19 @@ def test_a_scan_needs_a_video_that_exists(bridge):
     assert "Choose a video" in answer["reason"]
 
 
-def test_a_second_scan_is_refused_while_one_runs(bridge, tmp_path):
+def test_a_second_scan_waits_its_turn_rather_than_being_refused(bridge, tmp_path):
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"not really a video")
-    bridge._worker = AliveWorker()
+    held = HeldJob(bridge)
 
-    assert bridge.start_scan(str(video), "live", 0.5)["started"] is False
+    answer = bridge.start_scan(str(video), "live", 0.5)
+
+    assert answer["started"] is True
+    assert answer["waiting"] == 1
+    assert [job["running"] for job in answer["queue"]] == [True, False]
+    assert answer["queue"][1]["detail"] == "clip.mp4"
+    # Nothing of the second job has run: the first still has the queue.
+    assert held.job.running
 
 
 def test_export_is_refused_before_anyone_is_chosen(bridge):
@@ -636,7 +721,7 @@ def test_the_gallery_refuses_edits_while_a_job_runs(bridge):
     bridge._scan_result = make_scan_result()
     bridge.select_person(0, "")
     bridge.select_person(1, "")
-    bridge._worker = AliveWorker()
+    HeldJob(bridge)
 
     answer = bridge.edit_people("merge")
 
@@ -655,17 +740,21 @@ def test_pressing_export_builds_settings_the_worker_accepts(bridge, monkeypatch)
     line that mattered.
     """
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     bridge._scan_result = make_scan_result()
     bridge.select_person(0, "")
 
     answer = bridge.start_export("/tmp/reels", "out.mp4", "libx264", "Standard")
 
-    assert answer == {"started": True}
-    path, settings, segments = started[0]
+    assert answer["started"] is True
+    result, people, path, settings, segments, pack, shots = started[0]
     assert segments, "the reel's cuts go to the worker, not a re-plan"
 
+    # Handed over when the job is queued, not read when it runs.
+    assert result is bridge._scan_result
+    assert [p.index for p in people] == [0]
+    assert pack is False and shots is None
     assert path == Path("/tmp/reels/out.mp4")
     assert settings.video_encoder == "libx264"
     assert isinstance(settings.quality, int)
@@ -675,7 +764,7 @@ def test_the_chosen_quality_level_reaches_the_encoder(bridge, monkeypatch):
     """The two encoders' scales run in opposite directions, so a level that
     did not translate would silently encode at the wrong quality."""
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     bridge._scan_result = make_scan_result()
     bridge.select_person(0, "")
@@ -683,8 +772,8 @@ def test_the_chosen_quality_level_reaches_the_encoder(bridge, monkeypatch):
     bridge.start_export("/tmp", "a.mp4", "libx264", "Maximum")
     bridge.start_export("/tmp", "b.mp4", "h264_videotoolbox", "Maximum")
 
-    libx264_quality = started[0][1].quality
-    videotoolbox_quality = started[1][1].quality
+    libx264_quality = started[0][3].quality
+    videotoolbox_quality = started[1][3].quality
     assert libx264_quality == quality_for("libx264", "Maximum")
     assert videotoolbox_quality == quality_for("h264_videotoolbox", "Maximum")
     assert libx264_quality != videotoolbox_quality
@@ -816,13 +905,13 @@ def test_cancelling_a_dialog_chooses_nothing(bridge):
 def test_pressing_scan_builds_settings_the_worker_accepts(bridge, tmp_path, monkeypatch):
     """The window's other headline button, and its body had never run."""
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
     video = tmp_path / "episode.mp4"
     video.write_bytes(b"pretend footage")
 
     answer = bridge.start_scan(str(video), "live", 0.25)
 
-    assert answer == {"started": True}
+    assert answer["started"] is True
     target, (path, settings) = started[0]
     assert target == bridge._scan_worker
     assert path == video
@@ -833,7 +922,7 @@ def test_pressing_scan_builds_settings_the_worker_accepts(bridge, tmp_path, monk
 
 
 def test_a_scan_remembers_the_mode_it_was_given(bridge, tmp_path, monkeypatch):
-    monkeypatch.setattr(bridge, "_start", lambda *args: None)
+    monkeypatch.setattr(bridge, "_start", lambda *args, **about: None)
     video = tmp_path / "episode.mp4"
     video.write_bytes(b"x")
 
@@ -847,7 +936,7 @@ def test_an_animation_scan_uses_animation_s_own_thresholds(bridge, tmp_path, mon
     animation's 0.75, which found 2 people in the animation sample instead
     of 6. And the edits made on it are saved under these settings' key."""
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     video = tmp_path / "episode.mp4"
     video.write_bytes(b"x")
 
@@ -862,7 +951,7 @@ def test_an_animation_scan_uses_animation_s_own_thresholds(bridge, tmp_path, mon
 
 def test_a_mode_the_app_does_not_have_is_ignored(bridge, tmp_path, monkeypatch):
     """The page sends it, so it is not trusted."""
-    monkeypatch.setattr(bridge, "_start", lambda *args: None)
+    monkeypatch.setattr(bridge, "_start", lambda *args, **about: None)
     video = tmp_path / "episode.mp4"
     video.write_bytes(b"x")
 
@@ -924,7 +1013,7 @@ def test_the_export_worker_makes_the_folder_and_reports_the_file(
     monkeypatch.setattr("app.ui.web.export", lambda *args, **kwargs: None)
     destination = tmp_path / "reels" / "out.mp4"
 
-    bridge._export_worker(destination, ExportSettings(), bridge._cut_segments())
+    run_export(bridge, destination)
 
     assert destination.parent.is_dir()
     assert window.emitted("onExported") is not None
@@ -941,7 +1030,7 @@ def test_a_cancelled_export_says_so(bridge, tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.ui.web.export", cancelled)
 
-    bridge._export_worker(tmp_path / "out.mp4", ExportSettings(), bridge._cut_segments())
+    run_export(bridge, tmp_path / "out.mp4")
 
     assert window.emitted("onExportCancelled") is not None
     assert window.emitted("onExported") is None
@@ -958,7 +1047,7 @@ def test_a_broken_export_reports_why(bridge, tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.ui.web.export", broken)
 
-    bridge._export_worker(tmp_path / "out.mp4", ExportSettings(), bridge._cut_segments())
+    run_export(bridge, tmp_path / "out.mp4")
 
     assert window.emitted("onFailed") is not None
     assert "the encoder is not available" in window.calls[-1]
@@ -991,8 +1080,10 @@ def test_the_split_picker_offers_nothing_for_a_card_that_is_not_there(bridge):
 
 
 def test_the_split_picker_is_quiet_while_a_job_runs(bridge):
+    """A split is an edit, and edits wait for the queue to empty, so there
+    is nothing to pick from."""
     bridge._scan_result = make_scan_result()
-    bridge._worker = AliveWorker()
+    HeldJob(bridge)
 
     assert bridge.tracks_of(0) == {"tracks": []}
 
@@ -1028,22 +1119,37 @@ def test_closing_a_window_that_never_scanned_is_fine(bridge):
 
 
 def test_cancelling_asks_the_running_job_to_stop(bridge):
-    """The action button becomes Cancel during a scan or an export, and
-    this is all it does -- the worker notices at its next checkpoint."""
-    assert bridge.cancel() == {"cancelling": True}
-    assert bridge._cancel.is_set()
+    """Cancel beside the progress bar, and this is all it does -- the worker
+    notices at its next checkpoint."""
+    held = HeldJob(bridge)
+
+    answer = bridge.cancel()
+
+    assert answer["cancelling"] is True
+    assert held.job.cancel.is_set()
+    assert bridge._queue.wait(5)
+    assert held.cancelled
 
 
-def test_starting_a_job_clears_a_cancellation_from_the_last_one(bridge, tmp_path):
-    """Otherwise a scan cancelled at noon would stop the next one dead."""
-    video = tmp_path / "episode.mp4"
-    video.write_bytes(b"x")
+def test_cancelling_with_nothing_running_cancels_nothing(bridge):
+    assert bridge.cancel()["cancelling"] is False
+
+
+def test_a_cancellation_does_not_carry_over_to_the_job_behind_it(bridge):
+    """Each job has its own flag, so cancelling the one running leaves the
+    next one to run in full. Before the queue there was one flag, cleared
+    when a job started, and only ever one job to clear it for."""
+    first = HeldJob(bridge, detail="one.mp4")
+    second = HeldJob(bridge, detail="two.mp4", waits=True)
+
     bridge.cancel()
+    assert second.ran.wait(5), "the second job never started"
+    second.release()
 
-    bridge.start_scan(str(video), "live", 1.0)
-    bridge._worker.join(timeout=5)
-
-    assert not bridge._cancel.is_set()
+    assert first.cancelled
+    assert not second.job.cancel.is_set()
+    assert bridge._queue.wait(5)
+    assert not second.cancelled
 
 
 # ------------------------------------------------------------------- folder
@@ -1126,9 +1232,9 @@ def test_a_folder_scan_needs_a_folder(bridge, tmp_path):
 
 def test_pressing_scan_on_a_folder_uses_the_mode_s_own_settings(bridge, tmp_path, monkeypatch):
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
 
-    assert bridge.start_folder_scan(str(tmp_path), "animation", 1.0) == {"started": True}
+    assert bridge.start_folder_scan(str(tmp_path), "animation", 1.0)["started"] is True
 
     target, (path, settings) = started[0]
     assert target == bridge._folder_worker
@@ -1257,21 +1363,22 @@ def test_a_folder_export_reports_what_was_left_out(with_folder, monkeypatch, tmp
         lambda folder, person, output, **kwargs: (None, [(Path("/season-1/e2.mp4"), "it is 25.000fps")]),
     )
 
-    with_folder._folder_export_worker(
-        tmp_path / "lead.mp4", ExportSettings(), cuts.plans_from_cuts(with_folder._cuts)
-    )
+    run_folder_export(with_folder, tmp_path / "lead.mp4")
 
     exported = with_folder.window.emitted("onExported")
     assert exported["path"] == str(tmp_path / "lead.mp4")
     assert exported["leftOut"] == [{"video": "e2.mp4", "reason": "it is 25.000fps"}]
 
 
-def test_the_cast_is_not_touched_while_a_job_runs(with_folder):
-    with_folder._worker = AliveWorker()
+def test_the_cast_is_not_edited_while_a_job_runs(with_folder):
+    """Choosing somebody is allowed -- that is how a second reel is queued
+    -- but anything that changes who the people are waits."""
+    HeldJob(with_folder)
 
-    assert with_folder.select_cast_person(0, "")["accepted"] is False
+    assert with_folder.select_cast_person(0, "")["accepted"] is True
     assert with_folder.answer_question(0, True)["applied"] is False
     assert with_folder.name_cast_person("Lead")["applied"] is False
+    assert with_folder.edit_cast("merge")["applied"] is False
 
 
 def test_the_page_and_the_bridge_agree_on_every_call_and_event():
@@ -1404,7 +1511,7 @@ def picking(bridge, monkeypatch):
 
     monkeypatch.setattr(folder_module, "scan", fake_scan)
     monkeypatch.setattr(folder_module, "find_folder_repeats", lambda *a, **k: {})
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: target(*args))
     monkeypatch.setattr(bridge, "_start_cast_preview", lambda: None)
     bridge.scanned = scanned
     return bridge
@@ -1465,10 +1572,10 @@ def test_a_video_that_is_not_there_is_not_picked(bridge, tmp_path):
 
 def test_pressing_scan_scans_the_videos_picked_as_one_set(bridge, two_videos, monkeypatch):
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
     pick(bridge, *two_videos)
 
-    assert bridge.start_videos_scan("animation", 1.0) == {"started": True}
+    assert bridge.start_videos_scan("animation", 1.0)["started"] is True
 
     target, (paths, settings) = started[0]
     assert target == bridge._videos_worker
@@ -1529,10 +1636,10 @@ def test_the_reel_of_whoever_is_chosen_grows_with_the_video_added(picking, two_v
     assert grown["chosen"]["filename"] is None
 
 
-def test_a_video_added_while_a_job_runs_waits_for_the_next_scan(bridge, two_videos, monkeypatch):
+def test_a_video_added_while_a_job_runs_waits_for_the_next_scan(bridge, two_videos):
     bridge._folder = make_folder()
     bridge._cast_source = "videos"
-    monkeypatch.setattr(bridge, "_worker", AliveWorker)
+    HeldJob(bridge)
 
     added = pick(bridge, two_videos[0])
 
@@ -1592,9 +1699,9 @@ def test_a_video_that_was_never_picked_is_not_removed(bridge, two_videos):
     assert bridge.remove_picked_video(str(two_videos[0]))["removed"] is False
 
 
-def test_a_video_is_not_removed_while_a_job_runs(bridge, two_videos, monkeypatch):
+def test_a_video_is_not_removed_while_a_job_runs(bridge, two_videos):
     pick(bridge, *two_videos)
-    monkeypatch.setattr(bridge, "_worker", AliveWorker)
+    HeldJob(bridge)
 
     refused = bridge.remove_picked_video(str(two_videos[0]))
 
@@ -1628,9 +1735,9 @@ def test_a_set_of_videos_exports_one_reel_across_them(picking, two_videos, monke
     picking.start_videos_scan("live", 0.5)
     picking.select_cast_person(0, "")
 
-    assert picking.start_folder_export(str(tmp_path), "reel.mp4", "libx264", "High") == {
-        "started": True
-    }
+    assert picking.start_folder_export(str(tmp_path), "reel.mp4", "libx264", "High")[
+        "started"
+    ] is True
 
     assert cut[0][0] == 2
     assert cut[0][1] == tmp_path / "reel.mp4"
@@ -1855,14 +1962,14 @@ def test_the_export_cuts_what_is_left_rather_than_planning_again(bridge, monkeyp
     because the encoder asked the same question of the same people."""
     picked(bridge, monkeypatch)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     planned = len(bridge._cuts)
 
     bridge.edit_cut(0, "drop")
     bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
 
-    _, _, segments = started[0]
+    segments = started[0][4]
     assert len(segments) == planned - 1
 
 
@@ -1935,14 +2042,15 @@ def test_choosing_someone_else_starts_from_their_own_plan(bridge, monkeypatch):
     assert bridge.cut_list()["dropped"] == 0
 
 
-def test_no_editing_while_an_export_runs(bridge, monkeypatch):
-    """The running job was handed its cuts when it started; accepting an
-    edit would say it had taken effect when it had not."""
+def test_the_list_is_edited_while_an_export_runs(bridge, monkeypatch):
+    """The export being cut was handed its own cuts when it was queued, so
+    an edit now belongs to the next one. Refused before there was a queue,
+    when the running export read this list as it went."""
     picked(bridge, monkeypatch)
-    monkeypatch.setattr(bridge, "_busy", lambda: True)
+    HeldJob(bridge)
 
-    assert bridge.edit_cut(0, "drop") == {"accepted": False}
-    assert bridge.cut_frames([0]) == {"frames": []}
+    assert bridge.edit_cut(0, "drop")["dropped"] == 1
+    assert bridge.restore_cuts()["dropped"] == 0
 
 
 def test_a_nonsense_edit_is_refused(bridge, monkeypatch):
@@ -1966,13 +2074,13 @@ def test_a_folder_export_cuts_the_edited_list(with_folder, monkeypatch):
     monkeypatch.setattr(with_folder, "_start_cast_preview", lambda: None)
     with_folder.select_cast_person(0, "")
     started = []
-    monkeypatch.setattr(with_folder, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(with_folder, "_start", lambda target, *args, **about: started.append(args))
     planned = len(with_folder._cuts)
 
     with_folder.edit_cut(0, "drop")
     with_folder.start_folder_export("/tmp", "lead.mp4", "libx264", "Standard")
 
-    _, _, plans = started[0]
+    plans = started[0][4]
     assert sum(len(segments) for _, segments in plans) == planned - 1
 
 
@@ -2159,7 +2267,7 @@ def test_a_typed_name_keeps_its_words_when_the_format_changes(bridge, monkeypatc
 
 def test_the_export_is_written_in_the_format_the_window_shows(bridge, monkeypatch):
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     monkeypatch.setattr(bridge, "_start_preview", lambda: None)
     bridge._scan_result = make_scan_result()
@@ -2167,7 +2275,7 @@ def test_the_export_is_written_in_the_format_the_window_shows(bridge, monkeypatc
 
     bridge.start_export("/tmp/reels", "out.mp4", "libx264", "Standard", "mkv")
 
-    assert started[0][0] == Path("/tmp/reels/out.mkv")
+    assert started[0][2] == Path("/tmp/reels/out.mkv")
 
 
 def test_a_format_that_is_not_offered_is_refused(bridge):
@@ -2258,14 +2366,16 @@ def test_a_pack_exports_as_one_video_of_its_pieces(bridge, monkeypatch, with_sho
     picked(bridge, monkeypatch)
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
     bridge.set_scene_pack("5")
 
     answer = bridge.start_export("/tmp", "ben.mp4", "libx264", "Standard", "mp4")
 
     assert answer["started"] is True
-    target, (path, _settings, segments) = started[0]
+    target, (_result, _people, path, _settings, segments, pack, shots) = started[0]
     assert target == bridge._export_worker and path.name == "ben.mp4"
+    # A pack travels as a pack, with the shots its edges are snapped to.
+    assert pack is True and shots == fake_shots()
     assert [(s.start_time, s.end_time) for s in segments] == [
         (c.start, c.end) for c in bridge._cuts if not c.dropped
     ]
@@ -2275,7 +2385,7 @@ def test_without_shots_the_pack_waits_and_finds_them_in_the_background(bridge, m
     picked(bridge, monkeypatch)
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
 
     waiting = bridge.set_scene_pack("5")
 
@@ -2296,7 +2406,7 @@ def test_shots_found_this_session_are_used_even_if_they_could_not_be_kept(bridge
     not wait for shots already found."""
     picked(bridge, monkeypatch)
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: target(*args))
     monkeypatch.setattr(web, "find_shots", lambda result, **_: fake_shots())
 
     bridge.set_scene_pack("5")
@@ -2309,7 +2419,7 @@ def test_cancelling_the_search_for_shots_leaves_no_pack(bridge, monkeypatch):
     picked(bridge, monkeypatch)
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     bridge.set_scene_pack("5")
 
     def cancelled(result, **_):
@@ -2327,7 +2437,7 @@ def test_without_a_pack_the_export_is_still_one_reel(bridge, monkeypatch):
     picked(bridge, monkeypatch)
     monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(target))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(target))
 
     bridge.start_export("/tmp", "out.mp4", "libx264", "Standard")
 
@@ -2340,7 +2450,7 @@ def test_the_wait_for_shots_is_announced_before_it_starts_whatever_starts_it(bri
     picked(bridge, monkeypatch)
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
     order = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: order.append("started"))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: order.append("started"))
     monkeypatch.setattr(bridge, "_emit", lambda name, payload=None: order.append(name))
 
     bridge.set_scene_pack("5")
@@ -2362,7 +2472,7 @@ def test_two_meaning_two_minutes_is_refused_with_a_hint(bridge, monkeypatch, wit
 def test_a_video_with_no_shots_at_all_does_not_leave_the_pack_waiting(bridge, monkeypatch):
     picked(bridge, monkeypatch)
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: target(*args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: target(*args))
     monkeypatch.setattr(web, "find_shots", lambda result, **_: [])
 
     answer = bridge.set_scene_pack("5")
@@ -2443,7 +2553,7 @@ def test_a_scan_without_known_shots_says_the_figure_is_being_worked_out(bridge, 
     with the length box empty, is the reel it always was."""
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
     picked(bridge, monkeypatch)
     whole = bridge.cut_list()
 
@@ -2463,7 +2573,7 @@ def test_a_scan_without_known_shots_says_the_figure_is_being_worked_out(bridge, 
 def test_the_figure_is_not_promised_once_the_read_has_been_stopped(bridge, monkeypatch):
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append((target, args)))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append((target, args)))
     picked(bridge, monkeypatch)
 
     def cancelled(result, **_):
@@ -2532,7 +2642,7 @@ def test_the_steps_are_free_of_a_ceiling_while_there_is_not_one(bridge, monkeypa
     """Nobody chosen, or the shots still being found: no figure to stop at,
     so a length can be stepped up as freely as it can be typed."""
     monkeypatch.setattr(web, "known_shots", lambda *a: None)
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: None)
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: None)
     picked(bridge, monkeypatch)
 
     assert bridge.cut_list()["maximum"] == {"waiting": True}
@@ -2561,14 +2671,16 @@ def test_a_press_builds_no_pack_by_itself(bridge, monkeypatch, with_shots):
     assert bridge.set_scene_pack("0:25")["pack"]["length"] == "0:25"
 
 
-def test_stepping_is_refused_while_a_job_runs(bridge, monkeypatch):
-    """The same answer typing a length gets, so the box is never stepped to
-    a length nothing is going to build."""
-    monkeypatch.setattr(bridge, "_busy", lambda: True)
+def test_the_length_is_stepped_and_built_while_a_job_runs(bridge, monkeypatch, with_shots):
+    """Both were refused before there was a queue. The length describes the
+    next export, and the one being cut was handed its own pieces."""
+    picked(bridge, monkeypatch)
+    HeldJob(bridge)
 
-    refused = bridge.step_scene_pack("0:30", 1)
+    stepped = bridge.step_scene_pack("0:30", 1)
 
-    assert refused["accepted"] is False and "Wait" in refused["reason"]
+    assert stepped["accepted"] is True
+    assert bridge.set_scene_pack(stepped["length"])["pack"]["length"] == stepped["length"]
 
 
 def test_the_page_has_buttons_and_arrow_keys_for_the_length():
@@ -2600,7 +2712,13 @@ def test_a_packs_export_moves_its_edges_to_the_exact_cuts(bridge, monkeypatch, w
     monkeypatch.setattr(web, "snap_to_cuts", fake_snap)
     monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append((segments, k["trim_slivers"])))
 
-    bridge._export_worker(Path("/tmp/ben.mp4"), web.ExportSettings(), planned)
+    run_export(
+        bridge,
+        "/tmp/ben.mp4",
+        segments=planned,
+        pack=True,
+        shots=bridge._shots_for(bridge._scan_result),
+    )
 
     assert asked[0][1] == planned and asked[0][0] == fake_shots()
     # Cut as snapped, and not trimmed: on animation the trimmer took effects
@@ -2616,7 +2734,7 @@ def test_a_reels_export_is_cut_exactly_as_planned(bridge, monkeypatch, with_shot
     monkeypatch.setattr(web, "snap_to_cuts", lambda *a: pytest.fail("a reel is not snapped"))
     monkeypatch.setattr(web, "export", lambda *a, segments, **k: cut.append((segments, k["trim_slivers"])))
 
-    bridge._export_worker(Path("/tmp/reel.mp4"), web.ExportSettings(), planned)
+    run_export(bridge, "/tmp/reel.mp4", segments=planned)
 
     assert cut == [(planned, True)]
 

@@ -133,6 +133,22 @@
   .status .msg b { color: var(--ink); font-weight: 600; }
   .status .time { font-family: var(--mono); font-size: .74rem; color: var(--faint); }
 
+  /* ------------------------------------------------------------- queue */
+
+  /* The jobs lined up: the running one first, then the ones waiting, in
+     the order they will run. Hidden entirely when the queue is empty, so
+     the window looks as it always did until something is queued. */
+  .queue { background: var(--surface); border-bottom: 1px solid var(--rule); padding: 8px 14px 10px; display: grid; gap: 5px; max-height: 30vh; overflow-y: auto; }
+  .queue .lead { font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); }
+  .queue .job { display: flex; align-items: center; gap: 9px; padding: 4px 4px 4px 9px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sunk); font-size: .76rem; }
+  .queue .job.now { border-color: var(--accent); }
+  .queue .job .place { font-family: var(--mono); font-size: .64rem; color: var(--faint); width: 1.2rem; text-align: right; }
+  .queue .job .what { display: grid; min-width: 0; flex: 1; }
+  .queue .job .what b { font-weight: 500; }
+  .queue .job .what span { font-family: var(--mono); font-size: .6rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queue .job button { height: 22px; min-width: 22px; padding: 0 6px; border: 1px solid var(--rule); border-radius: 3px; background: transparent; color: var(--muted); font-size: .72rem; line-height: 1; }
+  .queue .job button:hover:not(:disabled) { color: var(--signal); border-color: var(--signal); }
+
   /* ----------------------------------------------------------- gallery */
 
   .stage { display: grid; grid-template-columns: minmax(0, 1fr) 268px; flex: 1; min-height: 0; }
@@ -581,6 +597,11 @@
     <div class="bar"><span id="barFill" style="width:0%"></span></div>
     <span class="time" id="statusTime"></span>
   </div>
+
+  <!-- The jobs lined up: what is running, and what is waiting its turn.
+       Scans and exports both queue here, and each row can be cancelled,
+       taken out, or moved up and down. -->
+  <div class="queue" id="queue" hidden></div>
 
   <div class="stage">
     <div class="gallery">

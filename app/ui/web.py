@@ -51,7 +51,7 @@ from app.ui.worker import (
     snap_to_cuts,
 )
 from app.faces import library
-from app.ui import tuning
+from app.ui import jobs, tuning
 from app.faces.cast import Answers, CardRef
 from app.faces.edits import EditError
 from app.ui.folder import (
@@ -247,8 +247,15 @@ class Bridge:
         self.window = None
         self._initial_video = str(video_path) if video_path else ""
         self._mode = DEFAULT_MODE
+        # The cancel flag of the job that is running. The queue's runner
+        # thread puts each job's own flag here before calling it, and that
+        # thread is the only one that runs a job, so a worker reading this
+        # is always reading its own -- while a cancel aimed at the running
+        # job leaves the ones behind it alone (app/ui/jobs.py).
         self._cancel = threading.Event()
-        self._worker: threading.Thread | None = None
+        self._queue = jobs.JobQueue(
+            on_change=self._queue_changed, on_finished=self._job_finished
+        )
         self._scan_result: ScanResult | None = None
         # A list, because a reel can be of more than one person. Empty
         # means nothing is chosen; order is the order they were picked.
@@ -348,12 +355,83 @@ class Bridge:
         self._emit("onStatus", {"text": text})
 
     def _busy(self) -> bool:
-        return self._worker is not None and self._worker.is_alive()
+        """Whether a job is running or waiting to.
 
-    def _start(self, target, *args) -> None:
-        self._cancel.clear()
-        self._worker = threading.Thread(target=target, args=args, daemon=True)
-        self._worker.start()
+        What the window refuses while it is true is everything that would
+        change what a queued job is about to do: a correction to the
+        identities, a name, a tuning knob, the set of videos. Choosing
+        somebody and describing their reel is not among them -- that is
+        how a second job gets queued at all -- because a job is handed
+        what it needs when it is queued and reads nothing afterwards.
+        """
+        return self._queue.active()
+
+    def _start(self, target, *args, **about) -> None:
+        """Queues `target(*args)`, to run when the jobs before it are done.
+
+        `about` is what the queue needs to draw the job and to know what it
+        reads; see `jobs.JobQueue.add`.
+        """
+
+        def run(cancel: threading.Event) -> None:
+            # Where every worker below looks for its cancel flag.
+            self._cancel = cancel
+            target(*args)
+
+        self._queue.add(run, **about)
+
+    # ------------------------------------------------------------ the queue
+
+    def _queue_payload(self) -> dict:
+        """The queue as the page lists it: what runs, and what waits."""
+        queued = self._queue.jobs()
+        return {
+            "queue": [
+                {
+                    "id": job.id,
+                    "kind": job.kind,
+                    "title": job.title,
+                    "detail": job.detail,
+                    "status": job.status,
+                    "running": job.running,
+                    # Asked to stop and not stopped yet: an export finishes
+                    # the cut it is in the middle of first.
+                    "stopping": job.running and job.cancel.is_set(),
+                }
+                for job in queued
+            ],
+            "waiting": sum(1 for job in queued if not job.running),
+        }
+
+    def _queue_changed(self) -> None:
+        """Redraws the queue. Called from the runner thread as well as this one."""
+        self._emit("onQueue", self._queue_payload())
+
+    def _job_finished(self, job: jobs.Job) -> None:
+        """Lets go of what a finished job was the last to need."""
+        for owned in job.needs:
+            self._release(owned)
+        if job.error is not None:
+            # A worker that let something through. Each of them reports its
+            # own failures, so this should never fire -- and if it does, a
+            # job that vanished without a word would be worse.
+            self._emit(
+                "onFailed", {"title": f"{job.title} failed", "detail": str(job.error)}
+            )
+
+    def _release(self, owned) -> None:
+        """Closes a scan's footage handle, once nothing needs it any more.
+
+        A new scan replaces the one on screen, and the old one's descriptor
+        would once have been closed there and then. With a queue it can
+        still be the footage a queued export is going to cut, so the close
+        waits for the last job that needs it (`jobs.Job.needs`).
+        """
+        if owned is None or owned is self._scan_result or owned is self._folder:
+            return
+        if self._queue.holds(owned):
+            return
+        owned.close()
 
     # -------------------------------------------------------- what to draw
 
@@ -464,9 +542,7 @@ class Bridge:
     # ---------------------------------------------------------------- scan
 
     def start_scan(self, video: str, mode: str, interval: float) -> dict:
-        if self._busy():
-            return {"started": False, "reason": "already running"}
-
+        """Queues a scan of one video. It runs when the jobs before it are done."""
         path = Path(video.strip()) if video else None
         if path is None or not path.is_file():
             return {"started": False, "reason": "Choose a video first."}
@@ -475,8 +551,16 @@ class Bridge:
             self._mode = mode
         settings = self._tuned(float(interval))
         self._scan_settings = settings
-        self._start(self._scan_worker, path, settings)
-        return {"started": True}
+        self._start(
+            self._scan_worker,
+            path,
+            settings,
+            kind="scan",
+            title="Scan",
+            detail=path.name,
+            status=f"Scanning {path.name}…",
+        )
+        return {"started": True, **self._queue_payload()}
 
     def _scan_worker(self, video_path: Path, settings: ScanSettings) -> None:
         """Runs on a worker thread. Only reports; never touches the DOM."""
@@ -505,9 +589,16 @@ class Bridge:
             self._emit("onFailed", {"title": "Scan failed", "detail": str(error)})
             return
 
-        if self._scan_result is not None:
-            self._scan_result.close()
+        replaced = self._scan_result
         self._scan_result = result
+        # The settings this scan ran under, which `start_scan` recorded when
+        # it was queued: said again here because another scan can have been
+        # queued since, and an edit is written back to the entry these key.
+        self._scan_settings = settings
+        # An export queued against the scan this one replaces is still going
+        # to cut that footage, so the handle is let go of only when no job
+        # needs it any more.
+        self._release(replaced)
         self._selected = []
         self._format = export_format_for(result.video_path)
         # The last suggestion is deliberately kept. Forgetting it made the
@@ -771,11 +862,12 @@ class Bridge:
         is in" is one reel, and it is a thing people ask for. Clicking the
         only selected card clears the selection.
         """
-        # The gallery stays visible during an export but must not accept a
-        # new selection: the running job already holds its own people, so
-        # letting the click through would describe a reel it is not
-        # cutting.
-        if self._busy() or self._scan_result is None:
+        # Accepted while a job runs, which it was not before the queue: a
+        # job is handed its own people when it is queued and reads nothing
+        # afterwards, so choosing somebody else describes the next reel
+        # rather than disturbing the one being cut. It is also the only way
+        # three scene packs of three people get queued at all.
+        if self._scan_result is None:
             return {"accepted": False}
 
         person = next(
@@ -1059,11 +1151,13 @@ class Bridge:
         a frame is the video's own frame and the page has no business
         knowing how long one lasts.
 
-        Refused while an export runs: that job was handed its cuts when it
-        started, so accepting an edit would change a list the encode is
-        not using and say it had taken effect.
+        Accepted while an export runs. That job was handed its cuts when it
+        was queued, so an edit made now belongs to the next export rather
+        than to the one being encoded -- which is what a queue means, and
+        the opposite of the old refusal, which existed because the running
+        export read this list as it went.
         """
-        if self._busy() or not self._cuts:
+        if not self._cuts:
             return {"accepted": False}
         index = int(index)
         if index < 0 or index >= len(self._cuts):
@@ -1095,8 +1189,6 @@ class Bridge:
 
     def restore_cuts(self) -> dict:
         """Back to the plan: nothing dropped, no end moved."""
-        if self._busy():
-            return {"accepted": False}
         self._rebuild_cuts()
         return self._cut_payload()
 
@@ -1108,8 +1200,12 @@ class Bridge:
         minute of decoding nobody asked for if it is done up front. The
         ends rather than the middle, because the ends are what the buttons
         beside them move.
+
+        Drawn while a job runs, as the filmstrip is: these pictures come
+        from the footage's own open file rather than the shared descriptor
+        an export holds (`worker._preview_container`).
         """
-        if self._busy() or not self._cuts:
+        if not self._cuts:
             return {"frames": []}
         wanted = [
             position
@@ -1251,13 +1347,13 @@ class Bridge:
         """
         self._pack_pieces, self._pack_edge_loss, self._pack_missing = self._pieces_of(planned)
         self._pack_waiting = self._pack_seconds is not None and bool(self._pack_missing)
-        if self._pack_waiting and not self._busy():
+        if self._pack_waiting:
             # Said before the job starts, whatever started it -- a pack
             # length, a new selection, an edit in folder view -- so the
             # page always shows the wait and its Cancel, and always
             # hears it before the "onPackReady" that ends it.
             self._emit("onPackWaiting", {"length": _clock(self._pack_seconds)})
-            self._start(self._shots_worker, self._pack_missing)
+            self._look_for_shots(self._pack_missing)
         if self._pack_seconds is None or not planned or self._pack_missing:
             return planned
         return scenepack.choose(self._pack_pieces, self._pack_seconds, self._pack_edge_loss)
@@ -1303,18 +1399,36 @@ class Bridge:
         """Starts the one-off read the longest-pack figure needs, if it does.
 
         Only for a scan kept from before shots were recorded: a scan made
-        since carries them, and this never runs. The read is a job rather
-        than a loose thread because the footage takes one reader at a time
-        (app/video/source.py), so it shows the usual progress bar and its
-        Cancel, and it is never started while something else is running.
-        With a pack length already typed, `_packed` has started it instead.
+        since carries them, and this never runs. With a pack length already
+        typed, `_packed` has queued it instead.
         """
         if self._pack_seconds is not None or not self._pack_missing:
             return
-        if self._busy() or self._stopped_looking:
+        if self._stopped_looking:
             return
         self._emit("onPackWaiting", {"length": None})
-        self._start(self._shots_worker, self._pack_missing)
+        self._look_for_shots(self._pack_missing)
+
+    def _look_for_shots(self, videos: list[int]) -> None:
+        """Queues the read that finds where the camera cuts in these videos.
+
+        A job rather than a loose thread because the footage takes one
+        reader at a time (app/video/source.py), so it waits its turn behind
+        an export like everything else, and it has the usual progress bar
+        and the usual Cancel.
+
+        Keyed by the videos it would read, so clicking through four cards
+        of the same set queues one read rather than four.
+        """
+        self._start(
+            self._shots_worker,
+            list(videos),
+            kind="shots",
+            title="Find the camera cuts",
+            detail=", ".join(self._video_name(video) for video in videos),
+            status="Finding where the camera cuts…",
+            key=("shots", self._cuts_view, tuple(videos)),
+        )
 
     def _shots_for(self, result: ScanResult) -> list | None:
         found = known_shots(result)
@@ -1398,9 +1512,10 @@ class Bridge:
         edits made to the list are given up as "Back to the plan" gives
         them up. While shots are still being found the answer says it is
         waiting, and "onPackReady" brings the pack when it is ready.
+
+        Changed while a job runs: the length describes the next export, and
+        the export being cut was handed its own pieces when it was queued.
         """
-        if self._busy():
-            return {"accepted": False, "reason": "Wait for this to finish first."}
         try:
             seconds = scenepack.parse_length(length or "")
         except ValueError:
@@ -1436,8 +1551,6 @@ class Bridge:
         holds now rather than the length last built, since the presses in
         between are not built.
         """
-        if self._busy():
-            return {"accepted": False, "reason": "Wait for this to finish first."}
         try:
             seconds = scenepack.parse_length(length or "")
         except ValueError:
@@ -1513,8 +1626,14 @@ class Bridge:
     def start_export(
         self, folder: str, filename: str, encoder: str, quality: str, export_format: str | None = None
     ) -> dict:
-        if self._busy():
-            return {"started": False, "reason": "already running"}
+        """Queues a reel or a scene pack of whoever is chosen.
+
+        Everything the job will need is worked out here, while the window
+        still shows what was asked for: the scan, the people, the cuts, the
+        encoder and the file. By the time it runs the gallery can be
+        showing somebody else -- that is the whole point of a queue -- so a
+        job that read any of this when it started would cut the wrong reel.
+        """
         if self._scan_result is None or not self._selected:
             return {"started": False, "reason": "Choose a person first."}
         if not self._ensure_source_available():
@@ -1532,10 +1651,52 @@ class Bridge:
         )
         if export_format in EXPORT_FORMATS:
             self._format = export_format
+        output = output_path(folder, filename, self._format)
+        taken = self._writes_to(output)
+        if taken is not None:
+            return {"started": False, "reason": taken}
+
+        result = self._scan_result
+        pack = self._pack_seconds is not None
         self._start(
-            self._export_worker, output_path(folder, filename, self._format), settings, segments
+            self._export_worker,
+            result,
+            list(self._selected),
+            output,
+            settings,
+            segments,
+            pack,
+            self._shots_for(result) if pack else None,
+            **self._about_export(output, pack, needs=(result,)),
         )
-        return {"started": True}
+        return {"started": True, **self._queue_payload()}
+
+    def _about_export(self, output: Path, pack: bool, needs) -> dict:
+        """How the queue draws an export, and what it has to keep open for it."""
+        return {
+            "kind": "export",
+            "title": "Export scene pack" if pack else "Export reel",
+            "detail": output.name,
+            "status": f"Exporting {output.name}…",
+            "needs": needs,
+            # Also what `_writes_to` asks about: one file, one job.
+            "key": ("export", str(output)),
+        }
+
+    def _writes_to(self, output: Path) -> str | None:
+        """Why this export cannot be queued: something queued writes there.
+
+        Two exports to one name is the second quietly overwriting the first
+        -- an encode that ran for half an hour, gone without a word. The
+        suggested name follows whoever is chosen, so this catches the name
+        that was typed by hand and then left alone.
+        """
+        if self._queue.keyed(("export", str(output))) is None:
+            return None
+        return (
+            f"A job already queued writes {output.name}. "
+            "Change the file name first."
+        )
 
     def _ensure_source_available(self) -> bool:
         """Makes sure the scanned footage can still be read, asking if not.
@@ -1582,7 +1743,24 @@ class Bridge:
         self._emit("onRelocated", {"path": str(source.path)})
         return True
 
-    def _export_worker(self, output_path: Path, settings: ExportSettings, segments) -> None:
+    def _export_worker(
+        self,
+        result: ScanResult,
+        people: list[Person],
+        output_path: Path,
+        settings: ExportSettings,
+        segments,
+        pack: bool,
+        shots,
+    ) -> None:
+        """Cuts one queued export, from what it was handed and nothing else.
+
+        The scan, the people, the cuts and the shots all came with the job
+        rather than being read off the window now: between this being
+        queued and being run, the gallery can be showing another person, or
+        another video.
+        """
+
         def report(fraction: float, done: int, total: int) -> None:
             self._emit(
                 "onExportProgress", {"fraction": fraction, "done": done, "total": total}
@@ -1590,16 +1768,14 @@ class Bridge:
 
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            if self._pack_seconds is not None:
+            if pack:
                 # A pack's pieces end on the exact frames the show cuts on.
                 self._emit("onStatus", {"text": "Finding the exact frame of each cut…"})
-                segments = snap_to_cuts(
-                    self._scan_result, self._shots_for(self._scan_result), segments, self._cancel
-                )
+                segments = snap_to_cuts(result, shots, segments, self._cancel)
                 self._emit("onStatus", {"text": "Exporting…"})
             export(
-                self._scan_result,
-                self._selected,
+                result,
+                people,
                 output_path,
                 settings=settings,
                 on_progress=report,
@@ -1610,24 +1786,21 @@ class Bridge:
                 # trim. On animation the trimmer took effects near an edge
                 # -- a red flash, speed lines -- for cuts and dropped 2.4s
                 # of a 2:00 pack's footage (Instructions.md 58).
-                trim_slivers=self._pack_seconds is None,
+                trim_slivers=not pack,
             )
         except Cancelled:
-            self._emit("onExportCancelled")
+            self._emit("onExportCancelled", {"path": str(output_path)})
             return
         except Exception as error:
             self._emit("onFailed", {"title": "Export failed", "detail": str(error)})
             return
 
-        self._emit("onExported", {"path": str(output_path), "pack": self._pack_seconds is not None})
+        self._emit("onExported", {"path": str(output_path), "pack": pack})
 
     # -------------------------------------------------------------- folder
 
     def start_folder_scan(self, folder: str, mode: str, interval: float) -> dict:
-        """Scans every video in a folder, reusing any already scanned."""
-        if self._busy():
-            return {"started": False, "reason": "already running"}
-
+        """Queues a scan of every video in a folder, reusing any already scanned."""
         path = Path(folder.strip()) if folder else None
         if path is None or not path.is_dir():
             return {"started": False, "reason": "Choose a folder of videos first."}
@@ -1635,8 +1808,16 @@ class Bridge:
         if mode in MODES:
             self._mode = mode
         settings = self._tuned(float(interval))
-        self._start(self._folder_worker, path, settings)
-        return {"started": True}
+        self._start(
+            self._folder_worker,
+            path,
+            settings,
+            kind="scan",
+            title="Scan folder",
+            detail=path.name,
+            status=f"Scanning {path.name}…",
+        )
+        return {"started": True, **self._queue_payload()}
 
     def _folder_worker(self, folder: Path, settings: ScanSettings) -> None:
         self._scan_set(
@@ -1682,9 +1863,11 @@ class Bridge:
             self._emit("onFailed", {"title": "Scan failed", "detail": str(error)})
             return
 
-        if self._folder is not None:
-            self._folder.close()
+        replaced = self._folder
         self._folder = scanned
+        # Let go of the set this replaces only once no queued export is
+        # still going to cut it (`_release`).
+        self._release(replaced)
         self._cast_source = source
         # Answers given the last time these videos were open still hold.
         self._answers = load_answers(scanned)
@@ -1816,8 +1999,10 @@ class Bridge:
 
         A toggle, as in one video: a second person joins the first, and the
         reel is every scene either of them is in, across the folder.
+
+        Accepted while a job runs, for the reason `select_person` gives.
         """
-        if self._busy() or self._folder is None:
+        if self._folder is None:
             return {"accepted": False}
         clicked = next((p for p in self._cast if p.index == int(index)), None)
         if clicked is None:
@@ -2060,8 +2245,6 @@ class Bridge:
     def start_folder_export(
         self, folder: str, filename: str, encoder: str, quality: str, export_format: str | None = None
     ) -> dict:
-        if self._busy():
-            return {"started": False, "reason": "already running"}
         if self._folder is None or self._cast_selected is None:
             return {"started": False, "reason": "Choose a person first."}
 
@@ -2077,25 +2260,52 @@ class Bridge:
         )
         if export_format in EXPORT_FORMATS:
             self._format = export_format
-        self._start(
-            self._folder_export_worker, output_path(folder, filename, self._format), settings, plans
-        )
-        return {"started": True}
+        output = output_path(folder, filename, self._format)
+        taken = self._writes_to(output)
+        if taken is not None:
+            return {"started": False, "reason": taken}
 
-    def _folder_export_worker(self, output: Path, settings: ExportSettings, plans) -> None:
+        # As in one video: the set, the person and the cuts travel with the
+        # job, because the cast can have been edited or rescanned by the
+        # time it runs.
+        scanned, person = self._folder, self._cast_selected
+        pack = self._pack_seconds is not None
+        self._start(
+            self._folder_export_worker,
+            scanned,
+            person,
+            output,
+            settings,
+            plans,
+            pack,
+            [self._shots_for(result) for result in scanned.videos] if pack else None,
+            **self._about_export(output, pack, needs=(scanned,)),
+        )
+        return {"started": True, **self._queue_payload()}
+
+    def _folder_export_worker(
+        self,
+        scanned: FolderScan,
+        person: CastPerson,
+        output: Path,
+        settings: ExportSettings,
+        plans,
+        pack: bool,
+        shots,
+    ) -> None:
         def report(fraction: float, done: int, total: int) -> None:
             self._emit("onExportProgress", {"fraction": fraction, "done": done, "total": total})
 
         try:
             output.parent.mkdir(parents=True, exist_ok=True)
-            if self._pack_seconds is not None:
+            if pack:
                 self._emit("onStatus", {"text": "Finding the exact frame of each cut…"})
                 plans = [
                     (
                         video,
                         snap_to_cuts(
-                            self._folder.videos[video],
-                            self._shots_for(self._folder.videos[video]),
+                            scanned.videos[video],
+                            shots[video],
                             segments,
                             self._cancel,
                         ),
@@ -2104,17 +2314,17 @@ class Bridge:
                 ]
                 self._emit("onStatus", {"text": "Exporting…"})
             _, left_out = export_cast(
-                self._folder,
-                self._cast_selected,
+                scanned,
+                person,
                 output,
                 settings=settings,
                 on_progress=report,
                 cancel=self._cancel,
                 plans=plans,
-                trim_slivers=self._pack_seconds is None,
+                trim_slivers=not pack,
             )
         except Cancelled:
-            self._emit("onExportCancelled")
+            self._emit("onExportCancelled", {"path": str(output)})
             return
         except Exception as error:
             self._emit("onFailed", {"title": "Export failed", "detail": str(error)})
@@ -2124,7 +2334,7 @@ class Bridge:
             "onExported",
             {
                 "path": str(output),
-                "pack": self._pack_seconds is not None,
+                "pack": pack,
                 "leftOut": [{"video": path.name, "reason": reason} for path, reason in left_out],
             },
         )
@@ -2156,12 +2366,20 @@ class Bridge:
 
         if not added:
             return {**self._picked_payload(), "added": 0, "scanning": False}
-        # Not while something runs: the scan would be a second job, and two
-        # jobs must never read the same footage at once. The videos stay in
-        # the list for the next press of Scan.
+        # Not while anything is queued. This scan grows the set on screen,
+        # and a set that is about to be replaced or cut by a job already in
+        # the queue is not the set it would be growing. The videos stay in
+        # the list, and the next press of Scan queues them like any other.
         growing = self._folder is not None and self._cast_source == "videos" and not self._busy()
         if growing:
-            self._start(self._add_worker, added)
+            self._start(
+                self._add_worker,
+                added,
+                kind="scan",
+                title="Scan what was added",
+                detail=", ".join(path.name for path in added),
+                status="Scanning what was added…",
+            )
         return {**self._picked_payload(), "added": len(added), "scanning": growing}
 
     def remove_picked_video(self, path: str) -> dict:
@@ -2223,17 +2441,24 @@ class Bridge:
         }
 
     def start_videos_scan(self, mode: str, interval: float) -> dict:
-        """Scans the videos picked, as one set with one cast."""
-        if self._busy():
-            return {"started": False, "reason": "already running"}
+        """Queues a scan of the videos picked, as one set with one cast."""
         if not self._picked:
             return {"started": False, "reason": "Choose some videos first."}
 
         if mode in MODES:
             self._mode = mode
         settings = self._tuned(float(interval))
-        self._start(self._videos_worker, list(self._picked), settings)
-        return {"started": True}
+        picked = list(self._picked)
+        self._start(
+            self._videos_worker,
+            picked,
+            settings,
+            kind="scan",
+            title="Scan videos",
+            detail=f"{len(picked)} video{'s' if len(picked) != 1 else ''}",
+            status=f"Scanning {len(picked)} video{'s' if len(picked) != 1 else ''}…",
+        )
+        return {"started": True, **self._queue_payload()}
 
     def _videos_worker(self, paths: list[Path], settings: ScanSettings) -> None:
         self._scan_set(paths, settings, source="videos", event="onVideosScanned", name="")
@@ -2295,13 +2520,52 @@ class Bridge:
 
     # --------------------------------------------------------------- other
 
-    def cancel(self) -> dict:
-        """Stops a scan at the next frame, or an export after this cut."""
-        self._cancel.set()
-        return {"cancelling": True}
+    def cancel(self, job: int | None = None) -> dict:
+        """Stops the running job: a scan at the next frame, an export after
+        this cut. The one behind it starts.
+
+        With a job's id this cancels that job, whichever it is; a waiting
+        one is taken out of the queue instead, since it has nothing to
+        stop. Without one it means the job that is running, which is what
+        the Cancel button beside the progress bar means.
+        """
+        stopped = self._queue.cancel(None if job is None else int(job))
+        if stopped is None:
+            return {"cancelling": False, **self._queue_payload()}
+        if not stopped.running:
+            self._dropped(stopped)
+        return {"cancelling": True, **self._queue_payload()}
+
+    def remove_job(self, job: int) -> dict:
+        """Takes a waiting job out of the queue, so it never runs."""
+        dropped = self._queue.remove(int(job))
+        if dropped is None:
+            return {
+                "removed": False,
+                # The one job that cannot be removed is the one already
+                # running, which is cancelled instead.
+                "reason": "That job is already running. Cancel it instead.",
+                **self._queue_payload(),
+            }
+        self._dropped(dropped)
+        return {"removed": True, **self._queue_payload()}
+
+    def move_job(self, job: int, direction: int) -> dict:
+        """Moves a waiting job one place up or down the queue."""
+        moved = self._queue.move(int(job), jobs.UP if int(direction) < 0 else jobs.DOWN)
+        return {"moved": moved, **self._queue_payload()}
+
+    def _dropped(self, job: jobs.Job) -> None:
+        """A job that left the queue without running: let go of its footage."""
+        for owned in job.needs:
+            self._release(owned)
 
     def shutdown(self) -> dict:
+        # Whatever is running, and anything a worker between checkpoints is
+        # still watching: the window is going away.
         self._cancel.set()
+        for job in self._queue.stop():
+            self._dropped(job)
         if self._scan_result is not None:
             self._scan_result.close()
         if self._folder is not None:
