@@ -34,11 +34,14 @@ def write_marked_video(
     rate: int | None = RATE,
     width: int = 160,
     height: int = 90,
+    background: int = 0,
 ) -> None:
     """Footage with a white frame and a tone burst on every whole second.
 
     `rate=None` writes picture only. The other parameters exist so a reel
-    can be cut from videos that differ the ways real episodes do.
+    can be cut from videos that differ the ways real episodes do;
+    `background` is what the frames between the flashes are worth, which is
+    how a reel is told which video a stretch of it came from.
     """
     container = av.open(str(path), mode="w")
     video = container.add_stream("libx264", rate=fps)
@@ -50,7 +53,7 @@ def write_marked_video(
         audio.layout = "mono"
 
     for n in range(seconds * fps):
-        shade = 255 if n % fps == 0 else 0
+        shade = 255 if n % fps == 0 else background
         frame = av.VideoFrame.from_ndarray(
             np.full((height, width, 3), shade, dtype=np.uint8), format="rgb24"
         )

@@ -255,6 +255,71 @@ def test_no_click_at_a_join_between_videos(tmp_path):
     assert np.abs(np.diff(reel[2048:-2048])).max() < 2 * source_steps.max()
 
 
+# ------------------------------------------- the order they are joined in
+
+
+# Three videos that differ only in how dark they are between the flashes,
+# so a reel cut from them says which of them each stretch of it came from.
+# All three stay well under the brightness a flash is read by.
+SHADES = (20, 60, 100)
+
+
+@pytest.fixture(scope="module")
+def picked(tmp_path_factory):
+    """Three videos in three folders, as a set picked by hand is."""
+    folder = tmp_path_factory.mktemp("picked")
+    paths = []
+    for position, background in enumerate(SHADES, start=1):
+        path = folder / f"show-{position}" / f"e{position}.mp4"
+        path.parent.mkdir()
+        write_marked_video(path, seconds=4, background=background)
+        paths.append(path)
+    return paths
+
+
+def order_of(path, each=1.5):
+    """Which video each stretch of the reel came from, in order.
+
+    Every clip is `each` seconds long, and its video is the one whose shade
+    the frames between the flashes carry. The median of a stretch rather
+    than any one frame of it, so a frame landing either side of a join is
+    not what the answer rests on.
+    """
+    container = av.open(str(path))
+    try:
+        shades = {}
+        for frame in container.decode(container.streams.video[0]):
+            if frame.time is None:
+                continue
+            mean = float(frame.to_ndarray(format="gray").mean())
+            if mean > 128:  # A flash, which every video has.
+                continue
+            shades.setdefault(int(frame.time / each), []).append(mean)
+    finally:
+        container.close()
+    return [
+        min(range(len(SHADES)), key=lambda n: abs(SHADES[n] - float(np.median(means)))) + 1
+        for _, means in sorted(shades.items())
+    ]
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2), (2, 0, 1), (2, 1, 0)])
+def test_the_reel_joins_the_videos_in_the_order_it_is_given_them(picked, tmp_path, order):
+    """What the whole thing promises: footage from all three videos, in the
+    order asked for, and joins that hold -- sound with picture, nothing
+    carried in from beyond a cut."""
+    output = tmp_path / "reel.mp4"
+    cut_clips([Clip(picked[n], FOUR[:1]) for n in order], output)
+
+    assert order_of(output) == [n + 1 for n in order]
+    flashes, bursts, fragments = read_marks(output)
+    assert len(flashes) == len(bursts) == 3
+    assert fragments == 0
+    spread = offsets(flashes, bursts)
+    # The same bound the single-video sync test holds itself to.
+    assert spread.max() - spread.min() < 0.05
+
+
 def test_progress_is_reported_per_video_and_counted_across_the_reel(footage, tmp_path):
     clips_started, segments_done = [], []
     cut_clips(

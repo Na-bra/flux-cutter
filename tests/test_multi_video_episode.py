@@ -149,11 +149,13 @@ def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
     assert output.is_file()
 
     # The order the three are joined in: the last episode moved to the
-    # front, and a reel of the lead cut in that order.
+    # front, a press of the up button at a time, and a reel of the lead cut
+    # in that order. `moved` is the second press, so it is the set as it
+    # stands when the reel is cut.
     bridge.set_scene_pack("")
+    assert bridge.move_picked_video(str(third), -1)["moved"] is True
     moved = bridge.move_picked_video(str(third), -1)
     assert moved["moved"] is True
-    assert bridge.move_picked_video(str(third), -1)["moved"] is True
     chosen_again = bridge._chosen_payload(None)
     moved_order = joined(bridge)
     reel = tmp_path / f"reel.{bridge._format}"
