@@ -407,6 +407,23 @@ class Bridge:
         """Redraws the queue. Called from the runner thread as well as this one."""
         self._emit("onQueue", self._queue_payload())
 
+    def _queued_already(self, key: tuple, what: str) -> dict | None:
+        """The refusal for a job the queue already holds, or None to go ahead.
+
+        Pressing Scan twice is the obvious way to ask for one, and the
+        second read would find exactly what the first is finding, half an
+        hour later. Said out loud rather than swallowed: `JobQueue.add`
+        refuses a repeated key in silence, and a button that looks ignored
+        gets pressed again.
+        """
+        if self._queue.keyed(key) is None:
+            return None
+        return {
+            "started": False,
+            "reason": f"{what} is already in the queue.",
+            **self._queue_payload(),
+        }
+
     def _job_finished(self, job: jobs.Job) -> None:
         """Lets go of what a finished job was the last to need."""
         for owned in job.needs:
@@ -550,6 +567,10 @@ class Bridge:
         if mode in MODES:
             self._mode = mode
         settings = self._tuned(float(interval))
+        key = ("scan", str(path), settings)
+        refused = self._queued_already(key, "That scan")
+        if refused is not None:
+            return refused
         self._scan_settings = settings
         self._start(
             self._scan_worker,
@@ -559,6 +580,7 @@ class Bridge:
             title="Scan",
             detail=path.name,
             status=f"Scanning {path.name}…",
+            key=key,
         )
         return {"started": True, **self._queue_payload()}
 
@@ -1654,7 +1676,7 @@ class Bridge:
         output = output_path(folder, filename, self._format)
         taken = self._writes_to(output)
         if taken is not None:
-            return {"started": False, "reason": taken}
+            return taken
 
         result = self._scan_result
         pack = self._pack_seconds is not None
@@ -1683,8 +1705,8 @@ class Bridge:
             "key": ("export", str(output)),
         }
 
-    def _writes_to(self, output: Path) -> str | None:
-        """Why this export cannot be queued: something queued writes there.
+    def _writes_to(self, output: Path) -> dict | None:
+        """The refusal for an export something queued already writes.
 
         Two exports to one name is the second quietly overwriting the first
         -- an encode that ran for half an hour, gone without a word. The
@@ -1693,10 +1715,14 @@ class Bridge:
         """
         if self._queue.keyed(("export", str(output))) is None:
             return None
-        return (
-            f"A job already queued writes {output.name}. "
-            "Change the file name first."
-        )
+        return {
+            "started": False,
+            "reason": (
+                f"A job already queued writes {output.name}. "
+                "Change the file name first."
+            ),
+            **self._queue_payload(),
+        }
 
     def _ensure_source_available(self) -> bool:
         """Makes sure the scanned footage can still be read, asking if not.
@@ -1808,6 +1834,10 @@ class Bridge:
         if mode in MODES:
             self._mode = mode
         settings = self._tuned(float(interval))
+        key = ("folder-scan", str(path), settings)
+        refused = self._queued_already(key, "That folder's scan")
+        if refused is not None:
+            return refused
         self._start(
             self._folder_worker,
             path,
@@ -1816,6 +1846,7 @@ class Bridge:
             title="Scan folder",
             detail=path.name,
             status=f"Scanning {path.name}…",
+            key=key,
         )
         return {"started": True, **self._queue_payload()}
 
@@ -2263,7 +2294,7 @@ class Bridge:
         output = output_path(folder, filename, self._format)
         taken = self._writes_to(output)
         if taken is not None:
-            return {"started": False, "reason": taken}
+            return taken
 
         # As in one video: the set, the person and the cuts travel with the
         # job, because the cast can have been edited or rescanned by the
@@ -2449,6 +2480,10 @@ class Bridge:
             self._mode = mode
         settings = self._tuned(float(interval))
         picked = list(self._picked)
+        key = ("videos-scan", tuple(str(path) for path in picked), settings)
+        refused = self._queued_already(key, "That scan of these videos")
+        if refused is not None:
+            return refused
         self._start(
             self._videos_worker,
             picked,
@@ -2457,6 +2492,7 @@ class Bridge:
             title="Scan videos",
             detail=f"{len(picked)} video{'s' if len(picked) != 1 else ''}",
             status=f"Scanning {len(picked)} video{'s' if len(picked) != 1 else ''}…",
+            key=key,
         )
         return {"started": True, **self._queue_payload()}
 
@@ -2538,17 +2574,25 @@ class Bridge:
 
     def remove_job(self, job: int) -> dict:
         """Takes a waiting job out of the queue, so it never runs."""
-        dropped = self._queue.remove(int(job))
-        if dropped is None:
-            return {
-                "removed": False,
-                # The one job that cannot be removed is the one already
-                # running, which is cancelled instead.
-                "reason": "That job is already running. Cancel it instead.",
-                **self._queue_payload(),
-            }
-        self._dropped(dropped)
-        return {"removed": True, **self._queue_payload()}
+        wanted = int(job)
+        dropped = self._queue.remove(wanted)
+        if dropped is not None:
+            self._dropped(dropped)
+            return {"removed": True, **self._queue_payload()}
+        return {
+            "removed": False,
+            # The one job that cannot be taken out is the one already
+            # running, which is cancelled instead. A job that is not there
+            # at all finished between the row being drawn and the x being
+            # pressed, and that wants no words: the list redrawn without it
+            # says everything.
+            "reason": (
+                "That job is already running. Cancel it instead."
+                if self._queue.find(wanted) is not None
+                else None
+            ),
+            **self._queue_payload(),
+        }
 
     def move_job(self, job: int, direction: int) -> dict:
         """Moves a waiting job one place up or down the queue."""

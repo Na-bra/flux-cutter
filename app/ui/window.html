@@ -736,7 +736,10 @@
   // `drawn.folder` is the cast on screen, from a folder or from videos
   // picked one by one; `castSource` says which, because Python holds one
   // cast and scanning in either view replaces the other's.
-  let state = { video: "", folder: "", picked: [], castSource: "folder", adding: false, view: "video", people: [], selected: [], busy: null, previewToken: 0, pack: "", planFoot: "", drawn: { video: null, folder: null } };
+  // `queue` is the jobs lined up as Python last listed them, and `running`
+  // the id of the one in front: what says whether the window is locked, and
+  // whether a job taking the queue is a new one to announce.
+  let state = { video: "", folder: "", picked: [], castSource: "folder", adding: false, view: "video", people: [], selected: [], busy: null, queue: [], running: 0, previewToken: 0, pack: "", planFoot: "", drawn: { video: null, folder: null } };
 
   // Whether the view showing is one of the two that draw a cast of several
   // videos. Everything about a cast -- the cards, the corrections, the
@@ -975,45 +978,116 @@
     if (!r.applied) status("<b>" + esc(r.reason) + "</b>");
   });
 
+  // Scan and Export both queue: neither waits for what is running, and
+  // neither is refused because something is. The answer carries the queue
+  // back with it, so the list below the bar is drawn before the first
+  // event about the new job arrives.
   $("actionBtn").addEventListener("click", async () => {
-    if (state.busy) { pywebview.api.cancel(); $("actionBtn").disabled = true; return; }
     const r = state.view === "folder"
       ? await pywebview.api.start_folder_scan(state.folder, $("mode").value, Number($("interval").value))
       : state.view === "videos"
       ? await pywebview.api.start_videos_scan($("mode").value, Number($("interval").value))
       : await pywebview.api.start_scan(state.video, $("mode").value, Number($("interval").value));
-    if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
-    busy("scan");
-    status("<b>Scanning…</b>");
+    if (r.queue) drawQueue(r);
+    if (!r.started && r.reason) status("<b>" + esc(r.reason) + "</b>");
   });
 
   $("exportBtn").addEventListener("click", async () => {
     const start = castView() ? pywebview.api.start_folder_export : pywebview.api.start_export;
     const r = await start($("folder").textContent, $("fname").value, $("enc").value, $("q").value, $("fmt").value);
-    if (!r.started) { if (r.reason) status("<b>" + r.reason + "</b>"); return; }
-    busy("export");
-    status("<b>Exporting…</b>");
+    if (r.queue) drawQueue(r);
+    if (!r.started && r.reason) status("<b>" + esc(r.reason) + "</b>");
   });
+
+  // What a queued job rules out, and all it rules out: the corrections that
+  // would change what that job is about to do -- a tuning knob, a name, a
+  // merge, the set of videos, the view. Choosing somebody, editing the cut
+  // list, typing a pack length and pressing Export stay live, because a job
+  // is handed what it needs when it is queued and reads nothing afterwards.
+  // That is what lets scene packs of three people be asked for one after
+  // another instead of sitting through each encode before describing the next.
+  const LOCKED = ".seg button, #advanced input, #advanced button, #library button, #library select, #picks button";
 
   function busy(kind) {
     state.busy = kind;
-    $("actionBtn").textContent = "Cancel";
-    $("exportBtn").disabled = true;
-    ["mode","interval","enc","q","fname","fmt","pack","packUp","packDown","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = true);
-    document.querySelectorAll("#advanced input, #advanced button").forEach(c => c.disabled = true);
-    document.querySelectorAll(".seg button, #cuts button, #library button, #library select, #picks button").forEach(b => b.disabled = true);
+    document.querySelectorAll(LOCKED).forEach(c => c.disabled = true);
   }
 
   function idle() {
+    // Only once the queue has emptied. Every event that ends a job calls
+    // this, and a job ending with others still waiting must leave the
+    // window exactly as locked as it was; "onQueue" calls it again when the
+    // last job has gone.
+    if (state.queue.length) return;
     state.busy = null;
     state.adding = false;
-    $("actionBtn").textContent = "Scan for people";
-    $("actionBtn").disabled = false;
     $("exportBtn").disabled = !state.selected.length;
-    ["mode","interval","enc","q","fname","fmt","pack","packUp","packDown","chooseVideo","chooseFolder"].forEach(id => $(id).disabled = false);
     if (state.tuning) drawTuning(state.tuning);
-    document.querySelectorAll(".seg button, #cuts button, #library button, #library select, #picks button").forEach(b => b.disabled = false);
+    document.querySelectorAll(LOCKED).forEach(b => b.disabled = false);
   }
+
+  // ---------------------------------------------------------------- queue
+  //
+  // The jobs lined up, under the progress bar: the one running first, then
+  // the ones waiting in the order they will run. The running row cancels;
+  // a waiting row moves up, moves down, or comes out of the queue without
+  // ever having run. Hidden while nothing is queued, so the window looks as
+  // it always did until a second job is asked for.
+
+  window.onQueue = (d) => drawQueue(d);
+
+  function drawQueue(d) {
+    const was = state.running;
+    state.queue = d.queue || [];
+    const running = state.queue.find(j => j.running) || null;
+    state.running = running ? running.id : 0;
+
+    const box = $("queue");
+    box.hidden = !state.queue.length;
+    box.innerHTML = !state.queue.length ? "" :
+      '<span class="lead">' + (d.waiting ? "Running — " + d.waiting + " waiting" : "Running") +
+      "</span>" + state.queue.map(jobRow).join("");
+
+    if (running) busy(running.kind); else idle();
+    // A job taking the queue says what it is doing, once. After that the
+    // job reports for itself, and saying it again here would talk over it.
+    if (running && running.id !== was) {
+      setBar(0);
+      $("statusTime").textContent = "";
+      status("<b>" + esc(running.status) + "</b>");
+    }
+  }
+
+  function jobRow(job, place) {
+    const name = esc(job.title) + (job.detail ? " — " + esc(job.detail) : "");
+    const buttons = job.running
+      ? `<button type="button" data-cancel="${job.id}" ${job.stopping ? "disabled" : ""}
+                 title="Stop ${name}">${job.stopping ? "Stopping…" : "Cancel"}</button>`
+      : `<button type="button" data-up="${job.id}" title="Run ${name} sooner" aria-label="Move ${name} up">&uarr;</button>
+         <button type="button" data-down="${job.id}" title="Run ${name} later" aria-label="Move ${name} down">&darr;</button>
+         <button type="button" data-drop="${job.id}" title="Take ${name} out of the queue"
+                 aria-label="Take ${name} out of the queue">&times;</button>`;
+    return `
+      <div class="job${job.running ? " now" : ""}">
+        <span class="place">${job.running ? "&#9654;" : place}</span>
+        <span class="what"><b>${esc(job.title)}</b><span>${esc(job.detail)}</span></span>
+        ${buttons}
+      </div>`;
+  }
+
+  $("queue").addEventListener("click", async (e) => {
+    const button = e.target.closest("button");
+    if (!button) return;
+    const d = button.dataset;
+    const r = d.cancel ? await pywebview.api.cancel(Number(d.cancel))
+      : d.up ? await pywebview.api.move_job(Number(d.up), -1)
+      : d.down ? await pywebview.api.move_job(Number(d.down), 1)
+      : d.drop ? await pywebview.api.remove_job(Number(d.drop))
+      : null;
+    if (!r) return;
+    drawQueue(r);
+    if (r.reason) status("<b>" + esc(r.reason) + "</b>");
+  });
 
   window.onStatus = (d) => status("<b>" + d.text + "</b>");
   window.onScanProgress = (d) => { setBar(d.fraction); $("statusTime").textContent = clock(d.timestamp); };
@@ -1832,7 +1906,9 @@
         " cut" + (d.kept === 1 ? "" : "s") + ", about " + d.reel + " of footage.";
     }
     // Nothing left to cut is not an export, and nor is a pack still waiting.
-    $("exportBtn").disabled = !d.kept || !!state.busy || !!(d.pack && d.pack.waiting);
+    // A job running is no longer a reason: that is how the next one is asked
+    // for while this one is being cut.
+    $("exportBtn").disabled = !d.kept || !!(d.pack && d.pack.waiting);
   }
 
   // The longest pack that can be made of whoever is chosen, beside the

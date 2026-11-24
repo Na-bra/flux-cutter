@@ -102,7 +102,7 @@ FluxCutter/
 
 This structure should grow only in response to a stage actually needing it — e.g. `app/faces/tracker.py` and `app/video/export.py` are natural additions once stages 0.2 and 0.3/0.4 begin, but shouldn't be scaffolded in advance.
 
-What has actually been added since, and why: `app/faces/tracker.py` and `app/faces/embedder.py` (0.2), `app/video/timeline.py` (0.2), `app/video/export.py` (0.3/0.4), `app/__main__.py` (the CLI, split out of `main.py` once it outgrew it), and `app/ui/app.py` + `app/ui/worker.py` (the desktop window, section 7k).
+What has actually been added since, and why: `app/faces/tracker.py` and `app/faces/embedder.py` (0.2), `app/video/timeline.py` (0.2), `app/video/export.py` (0.3/0.4), `app/__main__.py` (the CLI, split out of `main.py` once it outgrew it), `app/ui/app.py` + `app/ui/worker.py` (the desktop window, section 7k), and `app/ui/jobs.py` (the queue the window runs its jobs through, section 68).
 
 ---
 
@@ -4743,4 +4743,63 @@ it is a `claude/` branch. A run that failed before branching used to say its
 work was on `main`.
 
 (Numbered 67 because #63's notes take 66.)
+
+## 68. A queue of scans and exports (`app/ui/jobs.py`)
+
+The window ran one job at a time and refused the next while one ran
+(`Bridge._start` cleared one cancel flag and started one thread; `_busy`
+answered "already running"). Three scene packs of three people meant sitting
+through each encode before the next could be described, because the gallery,
+the cut list and the pack length were all refused while a job ran.
+
+**A job is a callable, a cancel flag and some words to draw it with.**
+`JobQueue` knows nothing about scans or exports, which is what lets the
+order, the removal, the reordering and the cancellation be tested without
+decoding a frame (`tests/test_jobs.py`), and keeps every decision about
+footage in `app/ui/worker.py` where it already was. Like `worker` it imports
+no toolkit, so all of it runs with no display attached.
+
+**One at a time, by design rather than for want of effort.** Two jobs
+reading one video would be two readers of one descriptor, which share a file
+offset and seek each other sideways (`app/video/source.py`); and two encodes
+are two halves of one machine, so the second does not finish sooner for
+having started early. One runner thread, started by `_wake` under the same
+lock the runner clears `_runner` under, so no job is ever added to a queue
+whose runner has decided to stop.
+
+**Each job carries its own cancel flag.** There was one flag for the window,
+cleared when a job started. With a queue that would have stopped the job
+behind the cancelled one before it ran a frame. `Bridge._start` puts the
+running job's flag in `self._cancel` on the runner thread before calling the
+worker, so every worker still finds its own there and none of them changed.
+
+**A job is handed what it needs when it is queued.** `start_export` works
+out the scan, the people, the cuts, the pack and its shots, the settings and
+the output path, and passes all of it to `_export_worker` -- which used to
+read `self._scan_result`, `self._selected` and `self._pack_seconds` as it
+went. That is what lets `select_person`, `edit_cut`, `set_scene_pack` and
+`step_scene_pack` stop refusing: an edit made now describes the next export.
+What still waits for the queue to empty is everything that would change what
+a queued job is about to do -- the identity corrections, names, answers, the
+Advanced settings, the named-people library, the set of videos.
+
+**`Job.needs` is what says footage is still in use.** A new scan replaced
+the one on screen and closed its handle there and then; it can now be what a
+queued export will cut, so `_release` closes only what no job `holds` --
+compared by identity, since the question is whether this very handle is
+open.
+
+**Two jobs that must not both be queued.** `Job.key` refuses a repeat:
+`("shots", view, videos)` so clicking through four cards queues one read of
+the camera cuts rather than four, and `("export", path)` so a second export
+cannot quietly overwrite a file the first spent half an hour on. Scans are
+keyed on their video and their settings. Three exports of one reel to three
+names have no key and are three exports; it is not the queue's place to say
+otherwise.
+
+The page draws the queue under the progress bar from `onQueue` and acts on
+it by job id (`cancel(id)`, `move_job`, `remove_job`). Cancel moved off the
+toolbar button onto the running job's row, because "the running job" is now
+one of several. `tests/test_ui_web.py` renders the strip under Node with a
+stub DOM, the nightly run having no way to open the window.
 

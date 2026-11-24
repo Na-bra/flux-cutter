@@ -513,6 +513,135 @@ def test_the_page_s_javascript_parses(tmp_path):
     assert checked.returncode == 0, checked.stderr
 
 
+def run_page(driver, tmp_path):
+    """Loads the page's script under Node with a stub DOM, and runs `driver`.
+
+    Not a browser and not trying to be one: the stub is enough for the few
+    functions that only build a string and set `innerHTML`. It exists
+    because the queue's rows are the whole visible side of the queue and
+    the nightly run cannot open the window to look at them.
+
+    Returns what the driver printed, parsed, or skips where Node is not
+    installed.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not installed")
+
+    page = web._page()
+    opened = page.index("<script>") + len("<script>")
+    script = tmp_path / "window.js"
+    script.write_text(
+        STUB_DOM + page[opened : page.rindex("</script>")] + driver, encoding="utf-8"
+    )
+
+    ran = subprocess.run([node, str(script)], capture_output=True, text=True)
+    assert ran.returncode == 0, ran.stderr
+    return json.loads(ran.stdout)
+
+
+STUB_DOM = """
+const made = {};
+const element = (id) => (made[id] = made[id] || {
+  id, innerHTML: "", textContent: "", value: "", hidden: false, disabled: false,
+  style: {}, dataset: {}, classList: { add() {}, remove() {} },
+  addEventListener() {}, querySelectorAll: () => [], closest: () => null,
+  selectedOptions: [],
+});
+globalThis.document = {
+  getElementById: element,
+  querySelectorAll: () => [],
+  addEventListener() {},
+  createElement: () => element("made"),
+  body: element("body"),
+};
+globalThis.window = globalThis;
+globalThis.addEventListener = () => {};
+globalThis.IntersectionObserver = class { observe() {} unobserve() {} };
+globalThis.drawn = () => made;
+"""
+
+
+def test_the_page_draws_a_row_for_the_running_job_and_each_one_waiting(tmp_path):
+    """What the window shows while three exports are queued, rendered."""
+    drawn = run_page(
+        """
+        drawQueue({ waiting: 2, queue: [
+          { id: 7, kind: "export", title: "Export scene pack", detail: "jamie-pack.mp4",
+            status: "Exporting jamie-pack.mp4…", running: true, stopping: false },
+          { id: 8, kind: "export", title: "Export reel", detail: "sam.mp4",
+            status: "Exporting sam.mp4…", running: false, stopping: false },
+          { id: 9, kind: "scan", title: "Scan", detail: "episode2.mp4",
+            status: "Scanning episode2.mp4…", running: false, stopping: false },
+        ]});
+        console.log(JSON.stringify({
+          html: drawn().queue.innerHTML,
+          hidden: drawn().queue.hidden,
+          said: drawn().statusMsg.innerHTML,
+          exportDisabled: drawn().exportBtn.disabled,
+        }));
+        """,
+        tmp_path,
+    )
+
+    assert drawn["hidden"] is False
+    assert "Running — 2 waiting" in drawn["html"]
+    # The running job: its name, and a Cancel that names the job it stops.
+    assert "Export scene pack" in drawn["html"] and "jamie-pack.mp4" in drawn["html"]
+    assert 'data-cancel="7"' in drawn["html"]
+    # The ones waiting: their place in the queue, and all three buttons.
+    assert 'data-up="8"' in drawn["html"] and 'data-down="8"' in drawn["html"]
+    assert 'data-drop="9"' in drawn["html"]
+    assert drawn["html"].count("data-drop=") == 2
+    assert "episode2.mp4" in drawn["html"]
+    # The job that took the queue says what it is doing, once.
+    assert "Exporting jamie-pack.mp4" in drawn["said"]
+    # And Export is still pressable, which is how a fourth job is queued.
+    assert drawn["exportDisabled"] is False
+
+
+def test_the_page_hides_the_queue_once_the_last_job_is_done(tmp_path):
+    drawn = run_page(
+        """
+        drawQueue({ waiting: 0, queue: [
+          { id: 1, kind: "scan", title: "Scan", detail: "a.mp4", status: "Scanning a.mp4…",
+            running: true, stopping: false },
+        ]});
+        const during = drawn().queue.hidden;
+        drawQueue({ waiting: 0, queue: [] });
+        console.log(JSON.stringify({
+          during, after: drawn().queue.hidden, html: drawn().queue.innerHTML,
+        }));
+        """,
+        tmp_path,
+    )
+
+    assert drawn["during"] is False
+    assert drawn["after"] is True
+    assert drawn["html"] == ""
+
+
+def test_the_page_says_when_a_job_has_been_asked_to_stop(tmp_path):
+    """A Cancel that looks ignored gets pressed again, and an export stops
+    only after the cut it is in the middle of."""
+    drawn = run_page(
+        """
+        drawQueue({ waiting: 0, queue: [
+          { id: 3, kind: "export", title: "Export reel", detail: "sam.mp4",
+            status: "Exporting sam.mp4…", running: true, stopping: true },
+        ]});
+        console.log(JSON.stringify({ html: drawn().queue.innerHTML }));
+        """,
+        tmp_path,
+    )
+
+    assert "Stopping…" in drawn["html"]
+    assert "disabled" in drawn["html"]
+
+
 def test_the_frozen_build_reads_the_page_from_the_bundle(tmp_path, monkeypatch):
     """PyInstaller unpacks data files somewhere else entirely."""
     bundled = tmp_path / "bundle"
@@ -1150,6 +1279,307 @@ def test_a_cancellation_does_not_carry_over_to_the_job_behind_it(bridge):
     assert not second.job.cancel.is_set()
     assert bridge._queue.wait(5)
     assert not second.cancelled
+
+
+# -------------------------------------------------------------------- queue
+#
+# Several jobs lined up, driven the way the window drives them: Export
+# pressed three times, then rows cancelled, taken out and moved. The encode
+# itself is faked -- these write a few bytes where the reel would go, which
+# is enough to say which files were written and in what order -- and
+# tests/test_jobs.py proves the queue's own order, removal and reordering
+# without a bridge at all.
+
+
+class FakeEncode:
+    """The encoder, faked: a few bytes where each reel would go.
+
+    It holds the first export open until the test lets go, so the ones
+    behind it are seen to wait rather than to have already run.
+    """
+
+    def __init__(self, hold="first.mp4"):
+        self.written = []
+        self.hold = hold
+        self.running = threading.Event()
+        self.let_go = threading.Event()
+
+    def __call__(self, result, people, output, **kwargs):
+        if output.name == self.hold:
+            self.running.set()
+            assert self.let_go.wait(5), "the held export was never let go"
+        self.written.append(output.name)
+        output.write_bytes(b"a reel")
+
+    def release(self) -> None:
+        self.let_go.set()
+
+
+def queued_exports(bridge, monkeypatch, tmp_path, names, encode):
+    """Presses Export once per name, with `encode` standing in for the cut."""
+    picked(bridge, monkeypatch)
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    monkeypatch.setattr(web, "export", encode)
+    for name in names:
+        answer = bridge.start_export(str(tmp_path), name, "libx264", "Standard")
+        assert answer["started"] is True, answer.get("reason")
+    return bridge
+
+
+def test_three_exports_run_one_after_another_and_each_writes_its_file(
+    bridge, monkeypatch, tmp_path
+):
+    """The whole point of the queue: three reels asked for in a row, while
+    the first is still being cut, instead of one at a time."""
+    encode = FakeEncode()
+    queued_exports(
+        bridge, monkeypatch, tmp_path, ["first.mp4", "second.mp4", "third.mp4"], encode
+    )
+    assert encode.running.wait(5), "the first export never started"
+
+    # Queued, not run: the first still has the queue, and nothing else has
+    # opened the footage.
+    listed = bridge._queue_payload()
+    assert [job["detail"] for job in listed["queue"]] == [
+        "first.mp4",
+        "second.mp4",
+        "third.mp4",
+    ]
+    assert listed["waiting"] == 2
+    assert encode.written == []
+
+    encode.release()
+    assert bridge._queue.wait(5)
+
+    assert encode.written == ["first.mp4", "second.mp4", "third.mp4"]
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "first.mp4",
+        "second.mp4",
+        "third.mp4",
+    ]
+    assert bridge._queue_payload() == {"queue": [], "waiting": 0}
+
+
+def test_cancelling_the_export_that_is_running_leaves_no_file_and_runs_the_next(
+    bridge, monkeypatch, tmp_path
+):
+    """Cancel on the running row. The file it was writing goes with it, and
+    the job behind it starts rather than being cancelled too."""
+    written = []
+    names = ["first.mp4", "second.mp4", "third.mp4"]
+    reached = {name: threading.Event() for name in names}
+
+    def encode(result, people, output, *, cancel, **kwargs):
+        reached[output.name].set()
+        if output.name == "second.mp4":
+            # What a real export does when it is stopped mid-cut: it raises
+            # and takes its half-written file with it (app/video/export.py).
+            while not cancel.is_set():
+                time.sleep(0.005)
+            raise web.Cancelled()
+        written.append(output.name)
+        output.write_bytes(b"a reel")
+
+    queued_exports(bridge, monkeypatch, tmp_path, names, encode)
+    assert reached["second.mp4"].wait(5), "the second export never started"
+
+    assert bridge.cancel()["cancelling"] is True
+    assert bridge._queue.wait(5)
+
+    assert written == ["first.mp4", "third.mp4"]
+    assert not (tmp_path / "second.mp4").exists()
+    assert bridge.window.emitted("onExportCancelled")["path"] == str(
+        tmp_path / "second.mp4"
+    )
+
+
+def test_an_export_taken_out_of_the_queue_never_runs(bridge, monkeypatch, tmp_path):
+    encode = FakeEncode()
+    queued_exports(bridge, monkeypatch, tmp_path, ["first.mp4", "second.mp4"], encode)
+    assert encode.running.wait(5)
+    second = bridge._queue.waiting()[0].id
+
+    answer = bridge.remove_job(second)
+    encode.release()
+    assert bridge._queue.wait(5)
+
+    assert answer["removed"] is True
+    assert [job["detail"] for job in answer["queue"]] == ["first.mp4"]
+    assert encode.written == ["first.mp4"]
+    assert not (tmp_path / "second.mp4").exists()
+
+
+def test_the_running_job_is_not_taken_out_of_the_queue(bridge):
+    """It is cancelled instead, and the answer says so: taking it out would
+    leave the encode running with nothing on screen listing it."""
+    held = HeldJob(bridge)
+
+    answer = bridge.remove_job(held.job.id)
+
+    assert answer["removed"] is False
+    assert "Cancel it instead" in answer["reason"]
+    assert [job["running"] for job in answer["queue"]] == [True]
+
+
+def test_removing_a_job_that_has_already_finished_says_nothing(bridge):
+    """The x pressed as the job left the queue. The list redrawn without it
+    says everything there is to say."""
+    answer = bridge.remove_job(404)
+
+    assert answer["removed"] is False
+    assert answer["reason"] is None
+
+
+def test_a_waiting_job_moved_up_runs_sooner(bridge, monkeypatch, tmp_path):
+    """The pack wanted tonight, ahead of the one queued before it."""
+    encode = FakeEncode()
+    queued_exports(
+        bridge, monkeypatch, tmp_path, ["first.mp4", "second.mp4", "third.mp4"], encode
+    )
+    assert encode.running.wait(5)
+    third = bridge._queue.waiting()[-1].id
+
+    moved = bridge.move_job(third, -1)
+    encode.release()
+    assert bridge._queue.wait(5)
+
+    assert moved["moved"] is True
+    assert [job["detail"] for job in moved["queue"]] == [
+        "first.mp4",
+        "third.mp4",
+        "second.mp4",
+    ]
+    assert encode.written == ["first.mp4", "third.mp4", "second.mp4"]
+
+
+def test_a_job_is_not_moved_past_the_ends_of_the_queue(bridge):
+    held = HeldJob(bridge, detail="running.mp4")
+    waiting = HeldJob(bridge, detail="waiting.mp4", waits=True)
+
+    assert bridge.move_job(waiting.job.id, -1)["moved"] is False
+    assert bridge.move_job(waiting.job.id, 1)["moved"] is False
+    assert bridge.move_job(held.job.id, 1)["moved"] is False
+    assert [job["detail"] for job in bridge._queue_payload()["queue"]] == [
+        "running.mp4",
+        "waiting.mp4",
+    ]
+
+
+def test_the_queue_says_what_each_job_is_so_the_page_can_draw_it(bridge):
+    """One row per job: what it is, the one line of detail under it, and
+    whether it is the one running."""
+    HeldJob(bridge, kind="export", title="Export scene pack", detail="jamie-pack.mp4")
+
+    listed = bridge._queue_payload()["queue"]
+
+    assert listed[0]["kind"] == "export"
+    assert listed[0]["title"] == "Export scene pack"
+    assert listed[0]["detail"] == "jamie-pack.mp4"
+    assert listed[0]["running"] is True and listed[0]["stopping"] is False
+    assert listed[0]["id"]
+
+
+def test_a_job_asked_to_stop_says_so_until_it_has(bridge):
+    """An export finishes the cut it is in the middle of first, and a Cancel
+    that looks ignored gets pressed again."""
+    HeldJob(bridge)
+
+    bridge.cancel()
+
+    assert bridge._queue_payload()["queue"][0]["stopping"] is True
+
+
+def test_the_same_scan_is_not_queued_twice(bridge, monkeypatch, tmp_path):
+    """Pressing Scan twice is the obvious way to ask for it, and the second
+    read would find exactly what the first is finding, hours later."""
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result())
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    HeldJob(bridge)
+    assert bridge.start_scan(str(video), "live", 0.5)["started"] is True
+
+    again = bridge.start_scan(str(video), "live", 0.5)
+
+    assert again["started"] is False
+    assert "already in the queue" in again["reason"]
+    assert [job["detail"] for job in again["queue"]].count("clip.mp4") == 1
+
+
+def test_the_same_video_scanned_differently_is_a_different_job(
+    bridge, monkeypatch, tmp_path
+):
+    """Refused while that very read is queued, not forever: a scan at
+    another sampling interval is a different scan and finds different
+    people."""
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result())
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not really a video")
+    HeldJob(bridge)
+    assert bridge.start_scan(str(video), "live", 0.5)["started"] is True
+
+    assert bridge.start_scan(str(video), "live", 1.0)["started"] is True
+
+
+def test_two_exports_to_one_file_are_refused(bridge, monkeypatch, tmp_path):
+    """The second would overwrite the first without a word -- an encode that
+    ran for half an hour, gone -- so the name has to be changed first."""
+    encode = FakeEncode(hold="out.mp4")
+    queued_exports(bridge, monkeypatch, tmp_path, ["out.mp4"], encode)
+
+    refused = bridge.start_export(str(tmp_path), "out.mp4", "libx264", "Standard")
+
+    assert refused["started"] is False
+    assert "out.mp4" in refused["reason"] and "name" in refused["reason"]
+    assert refused["waiting"] == 0
+
+
+def test_the_page_draws_the_queue_and_can_act_on_every_row():
+    """A queue nobody can see is a window that looks hung, and a row that
+    cannot be acted on is a job that has to be sat through."""
+    page = web._page()
+
+    assert 'id="queue"' in page
+    assert "window.onQueue" in page
+    # Cancel the one running; move a waiting one either way, or take it out.
+    assert "pywebview.api.cancel(" in page
+    assert "pywebview.api.move_job(" in page
+    assert "pywebview.api.remove_job(" in page
+    assert "data-up=" in page and "data-down=" in page and "data-drop=" in page
+    # Export is no longer disabled while a job runs: that is how the second
+    # reel is asked for while the first is being cut.
+    locked = page.split("const LOCKED")[1].split("\n")[0]
+    assert "exportBtn" not in locked
+
+
+def test_the_footage_a_queued_export_will_cut_is_not_closed_under_it(
+    bridge, monkeypatch, tmp_path
+):
+    """A new scan replaces the one on screen and used to close its footage
+    there and then. With a queue that footage can still be what a queued
+    export is going to cut, so the close waits for the last job needing it."""
+    source = ClosingSource()
+    first = make_scan_result(source=source)
+    encode = FakeEncode(hold="out.mp4")
+    monkeypatch.setattr(bridge, "_start_preview", lambda: None)
+    monkeypatch.setattr(bridge, "_ensure_source_available", lambda: True)
+    monkeypatch.setattr(web, "export", encode)
+    monkeypatch.setattr(web, "scan", lambda *a, **k: make_scan_result("/videos/next.mp4"))
+    bridge._scan_result = first
+    bridge.select_person(0, "")
+    bridge.start_export(str(tmp_path), "out.mp4", "libx264", "Standard")
+    assert encode.running.wait(5)
+
+    # A scan of another video finishes while the export is still running.
+    bridge._scan_worker(Path("/videos/next.mp4"), ScanSettings())
+
+    assert bridge._scan_result is not first
+    assert source.closed == 0, "the footage the queued export cuts was closed"
+
+    encode.release()
+    assert bridge._queue.wait(5)
+    assert source.closed == 1
 
 
 # ------------------------------------------------------------------- folder
@@ -2689,8 +3119,9 @@ def test_the_page_has_buttons_and_arrow_keys_for_the_length():
     assert 'id="packUp"' in page and 'id="packDown"' in page
     assert "step_scene_pack" in page
     assert "ArrowUp" in page and "ArrowDown" in page
-    # Disabled with the rest of the panel while a job runs.
-    assert page.count('"pack","packUp","packDown"') == 2
+    # Live while a job runs, where the whole panel used to be disabled: the
+    # length describes the next export, not the one being cut.
+    assert "packUp" not in page.split("const LOCKED")[1].split("\n")[0]
 
 
 # ------------------------------------------------- a pack's exact cuts
