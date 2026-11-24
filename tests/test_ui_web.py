@@ -2115,7 +2115,7 @@ def test_the_only_video_left_in_a_scanned_set_is_not_removed(picking, two_videos
 
 def test_the_page_offers_the_three_things_that_can_be_scanned():
     """A view that is not in the switch cannot be reached, and a set with
-    no list under it cannot be added to or taken from."""
+    no list under it cannot be added to, taken from or put in an order."""
     page = web._page()
 
     assert 'data-view="videos"' in page
@@ -2123,6 +2123,152 @@ def test_the_page_offers_the_three_things_that_can_be_scanned():
     assert "start_videos_scan" in page
     assert "choose_videos" in page
     assert "remove_picked_video" in page
+    assert "move_picked_video" in page
+    assert "data-move=" in page
+
+
+# ------------------------------------------- the order they are joined in
+
+
+def test_moving_a_video_down_the_set_moves_it_down_the_reel(picking, two_videos):
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+
+    moved = picking.move_picked_video(str(two_videos[0]), 1)
+
+    assert moved["moved"] is True
+    assert [v["name"] for v in moved["picked"]] == ["e7.mp4", "e3.mp4"]
+    # The set itself is in the new order, which is what an export cuts.
+    assert moved["videos"] == ["e7.mp4", "e3.mp4"]
+    assert [r.video_path.name for r in picking._folder.videos] == ["e7.mp4", "e3.mp4"]
+    assert "e3.mp4 is now video 2 of 2" in moved["note"]
+
+
+def test_moving_a_video_up_the_set(picking, two_videos):
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+
+    moved = picking.move_picked_video(str(two_videos[1]), -1)
+
+    assert [v["name"] for v in moved["picked"]] == ["e7.mp4", "e3.mp4"]
+
+
+def test_the_reel_is_cut_in_the_order_the_set_is_in(picking, two_videos, monkeypatch, tmp_path):
+    """The promise of the whole thing: changing the order changes the order
+    the cut joins the videos in."""
+    cut = []
+
+    def fake_export(folder, person, output, plans=None, **kwargs):
+        cut.append([folder.videos[video].video_path.name for video, _ in plans])
+        return None, []
+
+    monkeypatch.setattr(web, "export_cast", fake_export)
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+    picking.select_cast_person(0, "")
+    picking.start_folder_export(str(tmp_path), "first.mp4", "libx264", "High")
+
+    picking.move_picked_video(str(two_videos[0]), 1)
+    picking.start_folder_export(str(tmp_path), "second.mp4", "libx264", "High")
+
+    assert cut == [["e3.mp4", "e7.mp4"], ["e7.mp4", "e3.mp4"]]
+
+
+def test_whoever_is_chosen_stays_chosen_when_the_order_changes(picking, two_videos):
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+    chosen = picking.select_cast_person(0, "")
+    assert chosen["videos"] == 2
+
+    moved = picking.move_picked_video(str(two_videos[0]), 1)
+
+    assert moved["selected"] == [0]
+    # Still the same person across both videos, and still the same reel.
+    assert moved["chosen"]["videos"] == 2
+    assert moved["chosen"]["cuts"] == chosen["cuts"]
+    assert moved["chosen"]["reel"] == chosen["reel"]
+    # Nobody typed in the name box, so nothing is put in it.
+    assert moved["chosen"]["filename"] is None
+
+
+def test_an_answer_about_a_card_follows_its_video_when_the_order_changes(picking, two_videos):
+    """An answer is about two cards, and a card is a video's position in
+    the set: an answer left where it was would be about another video."""
+    from app.faces.cast import CardRef
+
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+    picking._answers.record(CardRef(0, 1), CardRef(1, 1), same=True)
+
+    picking.move_picked_video(str(two_videos[0]), 1)
+
+    assert frozenset({CardRef(1, 1), CardRef(0, 1)}) in picking._answers.same
+
+
+def test_the_first_video_cannot_move_up_and_the_last_cannot_move_down(picking, two_videos):
+    pick(picking, *two_videos)
+    picking.start_videos_scan("live", 0.5)
+
+    assert picking.move_picked_video(str(two_videos[0]), -1)["moved"] is False
+    assert picking.move_picked_video(str(two_videos[1]), 1)["moved"] is False
+    assert [r.video_path.name for r in picking._folder.videos] == ["e3.mp4", "e7.mp4"]
+
+
+def test_the_order_can_be_changed_before_anything_is_scanned(bridge, two_videos):
+    pick(bridge, *two_videos)
+
+    moved = bridge.move_picked_video(str(two_videos[1]), -1)
+
+    assert moved["moved"] is True
+    assert [v["name"] for v in moved["picked"]] == ["e7.mp4", "e3.mp4"]
+    # No cast to redraw: nothing has been scanned.
+    assert "people" not in moved
+
+
+def test_a_video_that_was_never_picked_cannot_be_moved(bridge, two_videos):
+    assert bridge.move_picked_video(str(two_videos[0]), 1)["moved"] is False
+
+
+def test_the_order_is_not_changed_while_a_job_runs(bridge, two_videos):
+    pick(bridge, *two_videos)
+    HeldJob(bridge)
+
+    refused = bridge.move_picked_video(str(two_videos[0]), 1)
+
+    assert refused["moved"] is False
+    assert [p.name for p in bridge._picked] == ["e3.mp4", "e7.mp4"]
+
+
+def test_the_page_numbers_the_set_and_offers_arrows_at_both_ends(tmp_path):
+    """What the list under the toolbar looks like, rendered: the number is
+    the video's place in the reel, and the arrows are how it is changed."""
+    drawn = run_page(
+        """
+        state.view = "videos";
+        state.picked = [
+          { path: "/a/e3.mp4", name: "e3.mp4", folder: "show-a", scanned: true },
+          { path: "/b/e7.mp4", name: "e7.mp4", folder: "show-b", scanned: true },
+          { path: "/c/e9.mp4", name: "e9.mp4", folder: "show-c", scanned: false },
+        ];
+        drawPicks();
+        console.log(JSON.stringify({ html: drawn().picks.innerHTML }));
+        """,
+        tmp_path,
+    )
+    html = drawn["html"]
+
+    assert '<span class="order">1</span>' in html
+    assert '<span class="order">3</span>' in html
+    assert html.count('data-move="/b/e7.mp4"') == 2
+    assert "Joined in this order" in html
+    # The first cannot go earlier and the last cannot go later, so those
+    # two buttons are drawn dead rather than pressed and refused.
+    first = html[html.index('data-move="/a/e3.mp4" data-dir="-1"'):]
+    assert "disabled" in first[: first.index("</button>")]
+    last = html[html.index('data-move="/c/e9.mp4" data-dir="1"'):]
+    assert "disabled" in last[: last.index("</button>")]
+    middle = html[html.index('data-move="/b/e7.mp4" data-dir="-1"'):]
+    assert "disabled" not in middle[: middle.index("</button>")]
 
 
 def test_a_video_that_was_never_picked_is_not_removed(bridge, two_videos):

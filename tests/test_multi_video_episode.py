@@ -9,10 +9,11 @@ makes, and the only thing that makes it worth having.
 
 So this scans three real episodes once, as a set picked from three folders,
 adds the third after the first two are on screen, exports a scene pack
-across all three, and then opens the same three as a folder and compares
-the two casts. The episodes are symlinked into the scratch folders, and a
-kept scan is keyed by the resolved path, so the folder view reuses the
-scans the videos view just made rather than paying for them twice.
+across all three, puts the three in another order and cuts a reel of them
+in it, and then opens the same three as a folder and compares the two
+casts. The episodes are symlinked into the scratch folders, and a kept scan
+is keyed by the resolved path, so the folder view reuses the scans the
+videos view just made rather than paying for them twice.
 
 It scans for real -- about four minutes for the three when this was
 written, against three and a half for the whole suite -- which is why it is
@@ -76,6 +77,22 @@ def seconds_of(path: Path) -> float:
         return get_video_info(container)["duration"] or 0.0
 
 
+def joined(bridge) -> list[str]:
+    """The videos the cut list draws on, in the order the output plays them.
+
+    A cut's number is its place in the finished file, so the videos in the
+    order they are first cut from is the order they are joined in.
+    """
+    order = []
+    for cut in bridge._cuts:
+        if cut.dropped:
+            continue
+        name = bridge._video_name(cut.video)
+        if name not in order:
+            order.append(name)
+    return order
+
+
 @pytest.mark.measured
 def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
     missing = [name for name in EPISODES if not (VIDEOS / name).is_file()]
@@ -120,7 +137,9 @@ def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
     # The lead across all three, and a scene pack cut from the lot.
     lead = max(bridge._cast, key=lambda person: person.detection_count)
     chosen = bridge.select_cast_person(lead.index, "")
+    reel_order = joined(bridge)
     bridge.set_scene_pack("0:30")
+    pack_order = joined(bridge)
     output = tmp_path / f"pack.{bridge._format}"
     started = time.monotonic()
     assert bridge.start_folder_export(
@@ -128,6 +147,28 @@ def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
     )["started"]
     export_seconds = time.monotonic() - started
     assert output.is_file()
+
+    # The order the three are joined in: the last episode moved to the
+    # front, and a reel of the lead cut in that order.
+    bridge.set_scene_pack("")
+    moved = bridge.move_picked_video(str(third), -1)
+    assert moved["moved"] is True
+    assert bridge.move_picked_video(str(third), -1)["moved"] is True
+    chosen_again = bridge._chosen_payload(None)
+    moved_order = joined(bridge)
+    reel = tmp_path / f"reel.{bridge._format}"
+    started = time.monotonic()
+    assert bridge.start_folder_export(
+        str(tmp_path), reel.name, default_encoder(), "Standard"
+    )["started"]
+    reel_seconds = time.monotonic() - started
+    assert reel.is_file()
+
+    # And back to the order they were picked in, so the cast comparison
+    # below is of the same set the folder view would find.
+    assert bridge.move_picked_video(str(third), 1)["moved"] is True
+    assert bridge.move_picked_video(str(third), 1)["moved"] is True
+    assert [r.video_path for r in bridge._folder.videos] == [first, second, third]
 
     # A video taken back out again.
     removed = bridge.remove_picked_video(str(third))
@@ -175,6 +216,20 @@ def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
                     "came_out_seconds": round(seconds_of(output), 1),
                     "megabytes": round(output.stat().st_size / 1e6, 1),
                     "export_seconds": round(export_seconds, 1),
+                    "videos_in_the_order_they_play": pack_order,
+                },
+                "the_order_they_are_joined_in": {
+                    "as_picked": reel_order,
+                    "after_moving_the_third_to_the_front": moved_order,
+                    "the_set_itself": moved["videos"],
+                    "note": moved["note"],
+                    "reel_after_the_move": chosen_again["reel"],
+                    "repeated_left_out_after_the_move": chosen_again["repeated"],
+                },
+                "reel_in_the_new_order": {
+                    "came_out_seconds": round(seconds_of(reel), 1),
+                    "megabytes": round(reel.stat().st_size / 1e6, 1),
+                    "export_seconds": round(reel_seconds, 1),
                 },
                 "after_removing_the_third": {
                     "people": len(removed["people"]),
@@ -197,3 +252,13 @@ def test_three_episodes_picked_from_three_folders(tmp_path, monkeypatch):
     assert all(reused), "the folder view should have reused the scans just made"
     assert removed["videoCount"] == 2
     assert seconds_of(output) > 0
+
+    # Footage from all three, in the order asked for, and the order follows
+    # the set. A 0:30 pack is the clearest half-minute of them, which need
+    # not touch every episode -- what it must do is play them in the set's
+    # order, so its videos are the set's with some left out.
+    assert reel_order == EPISODES
+    assert pack_order == [name for name in EPISODES if name in pack_order]
+    assert moved_order == [EPISODES[2], EPISODES[0], EPISODES[1]]
+    assert moved["videos"] == moved_order
+    assert seconds_of(reel) > 0

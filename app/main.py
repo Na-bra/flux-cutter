@@ -1073,12 +1073,15 @@ def _without_repeats(plans: list["ExportPlan"]) -> tuple[list["ExportPlan"], dic
 
 
 def collect_videos(paths: list[Path], recursive: bool = False) -> list[Path]:
-    """Expands a mix of files and folders into a sorted list of videos.
+    """Expands a mix of files and folders into a list of videos.
 
-    Sorted because a season is watched in order and a report that jumps
-    around is harder to read than one that does not. Duplicates are
-    dropped: naming a folder and one file inside it is a reasonable thing
-    to type and should not cut the same reel twice.
+    In the order they were given, because that order is the order a
+    combined reel joins them in (`_run_combined`) and the order a report
+    reads in: `batch b/e7.mp4 a/e3.mp4 --combine reel.mp4` plays e7 first.
+    A folder's own videos are sorted by name, since a season is watched in
+    order and nothing else said which. Duplicates are dropped: naming a
+    folder and one file inside it is a reasonable thing to type and should
+    not cut the same reel twice.
     """
     found: list[Path] = []
     for path in paths:

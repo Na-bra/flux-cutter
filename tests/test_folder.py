@@ -26,6 +26,7 @@ from app.ui.folder import (
     export_cast,
     name_cast_person,
     plan_cast_export,
+    reordered,
     scan_folder,
     without_video,
 )
@@ -380,6 +381,121 @@ def test_an_answer_given_before_a_video_was_added_still_holds(on_disk, tmp_path)
     merged = merged_answers(grown, answers)
 
     assert frozenset({CardRef(0, 0), CardRef(1, 1)}) in merged.different
+
+
+# ------------------------------------------------------------- their order
+
+
+def test_the_set_is_put_in_the_order_asked_for(season):
+    moved, places = reordered(
+        season,
+        [Path("/season/e3.mp4"), Path("/season/e1.mp4"), Path("/season/e2.mp4")],
+    )
+
+    assert [r.video_path.name for r in moved.videos] == ["e3.mp4", "e1.mp4", "e2.mp4"]
+    assert places == {0: 1, 1: 2, 2: 0}
+    # The set it was asked of is untouched, as every FolderScan is.
+    assert [r.video_path.name for r in season.videos] == ["e1.mp4", "e2.mp4", "e3.mp4"]
+
+
+def test_a_video_the_order_says_nothing_about_keeps_its_place_behind(season):
+    """The videos view's list can hold a video that has not been scanned
+    into the set yet, so an order can name fewer videos than the set holds."""
+    moved, places = reordered(season, [Path("/season/e2.mp4")])
+
+    assert [r.video_path.name for r in moved.videos] == ["e2.mp4", "e1.mp4", "e3.mp4"]
+    assert places == {0: 1, 1: 0, 2: 2}
+
+
+def test_an_order_that_changes_nothing_changes_nothing(season):
+    moved, places = reordered(season, [r.video_path for r in season.videos])
+
+    assert [r.video_path.name for r in moved.videos] == ["e1.mp4", "e2.mp4", "e3.mp4"]
+    assert places == {0: 0, 1: 1, 2: 2}
+
+
+def test_the_reel_is_joined_in_the_set_s_new_order(season, monkeypatch):
+    monkeypatch.setattr(
+        folder_module, "plan_export", lambda cards, **kwargs: (None, [AppearanceInterval(1.0, 2.0)])
+    )
+    person = cast_of(season)[0][0]  # the lead, in e1 and e2
+
+    moved, places = reordered(season, [Path("/season/e2.mp4"), Path("/season/e1.mp4")])
+    renumbered = folder_module.renumbered_people([person], places)[0]
+
+    assert [r.video_path.name for r, _ in plan_cast_export(season, person)] == ["e1.mp4", "e2.mp4"]
+    assert [r.video_path.name for r, _ in plan_cast_export(moved, renumbered)] == [
+        "e2.mp4",
+        "e1.mp4",
+    ]
+
+
+def test_a_repeat_whose_videos_swap_is_told_the_other_way_round(season):
+    """A repeat is footage two videos share, and which of them is the later
+    one is exactly what reordering changes. It is turned round rather than
+    looked for again, which would mean reading both videos."""
+    from app.video.repeats import Repeat
+
+    # e2's 0-30s is e1's 10-40s: t in e2 is t + 10 in e1.
+    season.repeats = {(1, 0): [Repeat(0.0, 30.0, 10.0, 60)]}
+
+    moved, _ = reordered(season, [Path("/season/e2.mp4"), Path("/season/e1.mp4")])
+
+    # e1 is the later one now, and the same footage is its 10-40s.
+    assert list(moved.repeats) == [(1, 0)]
+    repeat = moved.repeats[(1, 0)][0]
+    assert (repeat.start, repeat.end, repeat.offset) == (10.0, 40.0, -10.0)
+    assert repeat.frames == 60
+
+
+def test_a_repeat_whose_videos_keep_their_order_is_untouched(season):
+    from app.video.repeats import Repeat
+
+    season.repeats = {(2, 0): [Repeat(0.0, 30.0, 0.0, 60)]}
+
+    moved, _ = reordered(season, [Path("/season/e1.mp4"), Path("/season/e3.mp4")])
+
+    # e3 is video 1 now, and still the later of the two.
+    assert list(moved.repeats) == [(1, 0)]
+    assert moved.repeats[(1, 0)][0].offset == 0.0
+
+
+def test_the_reel_still_leaves_out_what_is_already_in_it_after_a_reorder(season, monkeypatch):
+    """The order decides which of two videos loses the footage they share:
+    whichever plays second."""
+    from app.video.repeats import Repeat
+
+    monkeypatch.setattr(
+        folder_module,
+        "plan_export",
+        lambda cards, **kwargs: (None, [AppearanceInterval(10.0, 12.0)]),
+    )
+    # e1's and e2's 0-60s are the same footage at no offset, so the lead at
+    # 10-12s is the same two seconds in both.
+    season.repeats = {(1, 0): [Repeat(0.0, 60.0, 0.0, 120)]}
+    person = cast_of(season)[0][0]
+
+    before = plan_cast_export(season, person)
+    moved, places = reordered(season, [Path("/season/e2.mp4"), Path("/season/e1.mp4")])
+    after = plan_cast_export(moved, folder_module.renumbered_people([person], places)[0])
+
+    # Either way one video carries the footage and the other does not: the
+    # one that plays first keeps it.
+    assert [r.video_path.name for r, _ in before] == ["e1.mp4"]
+    assert [r.video_path.name for r, _ in after] == ["e2.mp4"]
+
+
+def test_the_answers_move_with_the_videos_they_are_about(season):
+    answers = Answers()
+    answers.record(CardRef(0, 0), CardRef(1, 1), same=True)
+    answers.record(CardRef(2, 0), CardRef(0, 1), same=False)
+
+    _, places = reordered(season, [Path("/season/e3.mp4")])
+    moved = folder_module.renumbered_answers(answers, places)
+
+    # e3 is video 0 now; e1 is video 1 and e2 video 2.
+    assert moved.same == {frozenset({CardRef(1, 0), CardRef(2, 1)})}
+    assert moved.different == {frozenset({CardRef(0, 0), CardRef(1, 1)})}
 
 
 # --------------------------------------------------------------------- cast

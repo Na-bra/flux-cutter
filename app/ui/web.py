@@ -70,6 +70,9 @@ from app.ui.folder import (
     name_cast_person,
     plan_cast_by_video,
     remember_answer,
+    renumbered_answers,
+    renumbered_people,
+    reordered,
     repeated_seconds,
     same_file,
     scan_folder,
@@ -283,10 +286,12 @@ class Bridge:
         # on screen -- there is one, and scanning in either view replaces
         # the other's.
         self._cast_source = "folder"
-        # The videos picked one by one, in the order they were picked: the
-        # videos view's own source, as a folder path is the folder view's.
-        # They are what the next scan of that view scans, and they outlive
-        # it, so one more can be added to a set already on screen.
+        # The videos picked one by one, in the order they are joined in --
+        # the order they were picked until somebody changes it
+        # (`move_picked_video`). The videos view's own source, as a folder
+        # path is the folder view's. They are what the next scan of that
+        # view scans, and they outlive it, so one more can be added to a
+        # set already on screen.
         self._picked: list[Path] = []
         self._answers = Answers()
         self._cast: list[CastPerson] = []
@@ -2448,11 +2453,72 @@ class Bridge:
         self._picked = [p for p in self._picked if same_file(p) != wanted]
         return {"removed": True, **self._picked_payload()}
 
+    def move_picked_video(self, path: str, direction: int) -> dict:
+        """Moves one video up or down the set, and so up or down the reel.
+
+        The set's order is the order a reel or a scene pack joins its
+        videos in (`folder.reordered`), and this is how it is chosen:
+        episodes picked in whatever order the dialogs offered them can be
+        put in the order they should play.
+
+        A set already on screen is put in the new order there and then --
+        nothing is scanned again -- so the rail describes the reel the
+        export would now cut. The cut list goes back to the plan, as it
+        does when a video joins the set: a cut's number is its place in the
+        finished file, and every one of them has just moved.
+
+        Refused while a job runs, like every other change to the set: the
+        export in the queue was handed its own cuts, and the reel it is
+        writing is the one that was asked for.
+        """
+        if self._busy():
+            return {"moved": False, "reason": "Not while a job is running."}
+        wanted = same_file(Path(str(path)))
+        at = next(
+            (position for position, p in enumerate(self._picked) if same_file(p) == wanted),
+            None,
+        )
+        if at is None:
+            return {"moved": False, "reason": "That video is not in this set."}
+        to = at + (1 if int(direction) > 0 else -1)
+        if not 0 <= to < len(self._picked):
+            # Already first or last. No complaint: the button that would do
+            # it is drawn disabled, and a keyboard can still reach it.
+            return {"moved": False, "reason": None, **self._picked_payload()}
+        self._picked[at], self._picked[to] = self._picked[to], self._picked[at]
+
+        if self._folder is None or self._cast_source != "videos":
+            return {"moved": True, **self._picked_payload()}
+
+        self._folder, places = reordered(self._folder, self._picked)
+        # Everything held by a video's position moves with it: the answers
+        # about its cards, whoever is chosen, and how long its frame lasts.
+        self._answers = renumbered_answers(self._answers, places)
+        self._cast_chosen = renumbered_people(self._cast_chosen, places)
+        self._frame_seconds = {
+            places.get(video, video): seconds
+            for video, seconds in self._frame_seconds.items()
+        }
+        self._rebuild_cast()
+        moved = self._picked[to].name
+        return {
+            "moved": True,
+            **self._picked_payload(),
+            **self._cast_payload(),
+            # Their reel is joined in another order now, so the rail is
+            # given the new one. The name in the box is left alone: nobody
+            # typed in it.
+            "chosen": self._chosen_payload(None) if self._cast_chosen else None,
+            "note": f"{moved} is now video {to + 1} of {len(self._picked)}.",
+        }
+
     def _picked_payload(self) -> dict:
         """The videos picked, as the page lists them.
 
-        Each says whether its people are in the cast on screen, so one
-        just added is not drawn as though it had already been scanned.
+        In the order they are joined in, which is the order the list shows
+        and `move_picked_video` changes. Each says whether its people are
+        in the cast on screen, so one just added is not drawn as though it
+        had already been scanned.
         """
         scanned = set()
         if self._folder is not None and self._cast_source == "videos":

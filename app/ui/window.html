@@ -347,12 +347,16 @@
   .picks .lead { font-family: var(--mono); font-size: .64rem; letter-spacing: .1em; text-transform: uppercase; color: var(--faint); margin-right: 3px; }
   .picks .pick { display: inline-flex; align-items: center; gap: 7px; max-width: 24rem; padding: 3px 4px 3px 9px; border: 1px solid var(--rule); border-radius: 4px; background: var(--sunk); font-size: .76rem; }
   .picks .pick.waiting { border-style: dashed; }
+  /* Its place in the reel, beside the arrows that change it. */
+  .picks .pick .order { font-family: var(--mono); font-size: .64rem; color: var(--faint); font-variant-numeric: tabular-nums; }
   .picks .pick .what { display: grid; min-width: 0; }
   .picks .pick .what b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picks .pick .what span { font-family: var(--mono); font-size: .6rem; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .picks .pick button { height: 20px; width: 20px; padding: 0; border: 0; background: transparent; color: var(--faint); font-size: .8rem; line-height: 1; }
   .picks .pick button:hover:not(:disabled) { color: var(--signal); }
+  .picks .pick button:disabled { opacity: .3; }
   .picks .empty { font-size: .8rem; color: var(--muted); margin: 0; }
+  .picks .hint { font-family: var(--mono); font-size: .62rem; letter-spacing: .04em; color: var(--faint); }
 
   /* A name offered from earlier videos: a question until someone answers. */
   .suggested { font-style: italic; color: var(--signal); font-weight: 500; }
@@ -859,20 +863,45 @@
       box.innerHTML = '<p class="empty">Press <b>Add…</b> to choose videos. They can come from different folders — episodes 3, 7 and 12 of a show kept in three places are one set.</p>';
       return;
     }
-    box.innerHTML = '<span class="lead">In the set</span>' + state.picked.map(v => `
+    // Numbered, because the number is the order the reel joins them in --
+    // and the arrows beside it are how that order is chosen.
+    const last = state.picked.length - 1;
+    box.innerHTML = '<span class="lead">In the set</span>' + state.picked.map((v, i) => `
       <span class="pick${v.scanned ? "" : " waiting"}" title="${esc(v.path)}">
+        <span class="order">${i + 1}</span>
         <span class="what">
           <b>${esc(v.name)}</b>
           <span>${esc(v.folder)}${v.scanned ? "" : " · not scanned yet"}</span>
         </span>
+        <button type="button" data-move="${esc(v.path)}" data-dir="-1" title="Play ${esc(v.name)} earlier"
+                aria-label="Play ${esc(v.name)} earlier" ${state.busy || i === 0 ? "disabled" : ""}>&uarr;</button>
+        <button type="button" data-move="${esc(v.path)}" data-dir="1" title="Play ${esc(v.name)} later"
+                aria-label="Play ${esc(v.name)} later" ${state.busy || i === last ? "disabled" : ""}>&darr;</button>
         <button type="button" data-remove="${esc(v.path)}" title="Take ${esc(v.name)} out of the set"
                 aria-label="Take ${esc(v.name)} out of the set" ${state.busy ? "disabled" : ""}>&times;</button>
-      </span>`).join("");
+      </span>`).join("") +
+      (state.picked.length > 1
+        ? '<span class="hint">Joined in this order — use ↑ ↓ to change it</span>'
+        : "");
   }
 
   function takePicked(r) {
     state.picked = r.picked || [];
     showSource();
+  }
+
+  // The set's order is the order a reel or a scene pack joins the videos
+  // in, so moving one redraws what the rail says the export would cut.
+  async function movePicked(path, direction) {
+    const r = await pywebview.api.move_picked_video(path, direction);
+    if (r.picked) takePicked(r);
+    if (!r.moved) { if (r.reason) status("<b>" + esc(r.reason) + "</b>"); return; }
+    if (r.people) {
+      state.drawn.folder = r;
+      drawCast(r);
+      if (r.chosen) showCastChoice(r.chosen);
+    }
+    status("<b>" + esc(r.note || "Moved it.") + "</b>");
   }
 
   async function addVideos() {
@@ -889,6 +918,8 @@
   }
 
   $("picks").addEventListener("click", async (e) => {
+    const mover = e.target.closest("button[data-move]");
+    if (mover) { await movePicked(mover.dataset.move, Number(mover.dataset.dir)); return; }
     const button = e.target.closest("button[data-remove]");
     if (!button) return;
     const r = await pywebview.api.remove_picked_video(button.dataset.remove);

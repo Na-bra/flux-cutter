@@ -294,6 +294,46 @@ def test_a_season_becomes_one_reel_in_episode_order(season):
     assert outcomes[0].reel_seconds == 3.0
 
 
+def test_videos_picked_from_three_folders_become_one_reel_in_that_order(season):
+    """A set of files, not a folder: the reel joins them in the order they
+    were given, so `batch c/e.mp4 a/e.mp4 --combine` plays c first."""
+    picked = [
+        video(season.tmp / "show-c", "e1.mp4"),
+        video(season.tmp / "show-a", "e4.mp4"),
+        video(season.tmp / "show-b", "e5.mp4"),
+    ]
+    reel = season.tmp / "jamie.mp4"
+
+    outcomes = run_batch(
+        picked, season.reference, season.tmp / "unused", export_settings={}, combine_path=reel,
+    )
+
+    assert [Path(c.video).parent.name for c in season.state.clips] == [
+        "show-c", "show-a", "show-b",
+    ]
+    assert all(o.succeeded for o in outcomes)
+    assert {o.output_path for o in outcomes} == {reel}
+
+
+def test_changing_the_order_changes_the_order_of_the_reel(season):
+    first = video(season.tmp / "show-a", "e1.mp4")
+    second = video(season.tmp / "show-b", "e5.mp4")
+
+    run_batch(
+        [first, second], season.reference, season.tmp / "unused",
+        export_settings={}, combine_path=season.tmp / "one.mp4",
+    )
+    before = [Path(c.video).parent.name for c in season.state.clips]
+
+    run_batch(
+        [second, first], season.reference, season.tmp / "unused",
+        export_settings={}, combine_path=season.tmp / "two.mp4",
+    )
+
+    assert before == ["show-a", "show-b"]
+    assert [Path(c.video).parent.name for c in season.state.clips] == ["show-b", "show-a"]
+
+
 def test_every_video_that_is_left_out_says_why(season):
     outcomes = run_batch(
         [season.folder], season.reference, season.tmp / "unused",
