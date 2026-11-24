@@ -1,5 +1,7 @@
 """The Advanced settings in the window: what is kept, and what a scan gets."""
 
+import threading
+
 import pytest
 
 from app.ui import tuning
@@ -104,7 +106,7 @@ web = pytest.importorskip("app.ui.web")
 def test_a_scan_from_the_window_uses_what_was_changed(tmp_path, monkeypatch):
     bridge = web.Bridge()
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
     video = tmp_path / "episode.mp4"
     video.write_bytes(b"x")
 
@@ -119,7 +121,7 @@ def test_a_scan_from_the_window_uses_what_was_changed(tmp_path, monkeypatch):
 def test_a_folder_scan_uses_it_too(tmp_path, monkeypatch):
     bridge = web.Bridge()
     started = []
-    monkeypatch.setattr(bridge, "_start", lambda target, *args: started.append(args))
+    monkeypatch.setattr(bridge, "_start", lambda target, *args, **about: started.append(args))
 
     bridge.set_tuning("screen_time", 4)
     bridge.start_folder_scan(str(tmp_path), "live", 0.5)
@@ -138,18 +140,20 @@ def test_changing_mode_shows_that_mode_s_settings():
     assert face["value"] == 24 and face["changed"] is False
 
 
-def test_settings_cannot_change_while_a_job_runs():
-    class Alive:
-        @staticmethod
-        def is_alive():
-            return True
-
+def test_settings_cannot_change_while_a_job_is_queued():
+    """They decide what a scan finds, and a queued scan was handed its own
+    when it was queued: changing them now would say it had taken effect."""
     bridge = web.Bridge()
-    bridge._worker = Alive()
+    waiting = threading.Event()
+    bridge._queue.add(lambda cancel: waiting.wait(5), kind="scan", title="Scan")
 
-    assert bridge.set_tuning("face_size", 70)["applied"] is False
-    assert bridge.reset_tuning()["applied"] is False
-    assert tuning.changed("live") == {}
+    try:
+        assert bridge.set_tuning("face_size", 70)["applied"] is False
+        assert bridge.reset_tuning()["applied"] is False
+        assert tuning.changed("live") == {}
+    finally:
+        waiting.set()
+        bridge._queue.wait(5)
 
 
 def test_the_window_opens_with_the_panel_s_settings():

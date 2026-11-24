@@ -3,6 +3,7 @@
 One page per change, newest first: what it does, why, what it means for your
 videos and kept scans, the numbers before and after, and how to undo it.
 
+- [2026-11-24 — A queue of scans and exports](2026-11-24-job-queue.md)
 - [2026-11-22 — The nightly run keeps the Mac awake until it finishes](2026-11-22-nightly-stays-awake.md)
 - [2026-11-22 — Add more than one video to the window](2026-11-22-several-videos.md)
 - [2026-11-21 — The evaluation suite measures the eight new test videos](2026-11-21-eight-new-evaluation-videos.md)
