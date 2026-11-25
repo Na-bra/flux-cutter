@@ -14,18 +14,41 @@ stamp="$(date +%Y-%m-%d-%H%M)"
 exec >>"$LOGS/$stamp.log" 2>&1
 echo "== $stamp"
 
+# Awake from here to the last line, not only while claude works: waiting
+# for the network and saving the work at the end both need the Mac up.
+# (On 22 November it slept mid-run; caffeinate -w lets go when we exit.)
+caffeinate -i -w $$ &
+
+# Runs a command up to TRIES times, PAUSE seconds apart, until it succeeds.
+# The network here drops for minutes at a time: on 24 November a run gave
+# up at 2am with GitHub unreachable, and two more stopped before they could
+# push what they had done.
+retry() {
+  local tries=$1 pause=$2 n
+  shift 2
+  for n in {1..$tries}; do
+    "$@" && return 0
+    (( n < tries )) && { echo "retrying in ${pause}s: $*" >&2; sleep "$pause"; }
+  done
+  return 1
+}
+
 # Your own unfinished work is never touched: no run on a dirty tree.
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "working tree has uncommitted changes; leaving it alone"
   exit 0
 fi
 git checkout -q main
-git pull -q --ff-only
+# Up to an hour for the network to come back before giving the night up.
+if ! retry 12 300 git pull -q --ff-only; then
+  echo "GitHub unreachable for an hour; no run tonight"
+  exit 0
+fi
 
 issue="${1:-}"
 if [[ -z "$issue" ]]; then
-  open_branches="$(gh pr list --state open --json headRefName --jq '.[].headRefName')"
-  for n in $(gh issue list --label claude --state open --json number --jq 'sort_by(.number) | .[].number'); do
+  open_branches="$(retry 3 60 gh pr list --state open --json headRefName --jq '.[].headRefName')"
+  for n in $(retry 3 60 gh issue list --label claude --state open --json number --jq 'sort_by(.number) | .[].number'); do
     if ! grep -q "^claude/issue-$n-" <<<"$open_branches"; then
       issue="$n"
       break
@@ -43,9 +66,11 @@ export FLUXCUTTER_SCAN_DIR="$SCRATCH/scans"
 export FLUXCUTTER_PEOPLE_DIR="$SCRATCH/people"
 export FLUXCUTTER_SETTINGS_DIR="$SCRATCH/settings"
 
-# A branch an earlier run left unfinished is continued, not started again.
-git fetch -q origin
-branch="$(git branch -r --list "origin/claude/issue-$issue-*" | head -1 | sed 's|^ *origin/||')"
+# A branch an earlier run left unfinished is continued, not started again:
+# the local one first, since a run whose push failed has work only here.
+retry 3 60 git fetch -q origin || true
+branch="$(git branch --list "claude/issue-$issue-*" | head -1 | sed 's|^[* ]*||')"
+[[ -n "$branch" ]] || branch="$(git branch -r --list "origin/claude/issue-$issue-*" | head -1 | sed 's|^ *origin/||')"
 prompt="$(sed -e "s/{{ISSUE}}/$issue/g" -e "s/{{DATE}}/$(date +%Y-%m-%d)/g" \
   -e "s|{{BRANCH}}|${branch:-none}|g" scripts/nightly/prompt.md)"
 
@@ -56,12 +81,7 @@ export BASH_DEFAULT_TIMEOUT_MS=600000 BASH_MAX_TIMEOUT_MS=3600000
 # dontAsk: anything not listed is refused rather than asked about, since
 # nobody is there to answer. Merging, pushing to main, force-pushing and
 # deleting files are deliberately not listed.
-#
-# caffeinate -i keeps the Mac from idle-sleeping until claude exits. The
-# 1:55 wake starts the run, but nothing kept the Mac awake after that: on
-# 22 November it slept mid-response and a three-hour run spent most of it
-# asleep. It lets the Mac sleep again as soon as the run ends.
-caffeinate -i claude -p "$prompt" --permission-mode dontAsk --output-format text --allowedTools \
+claude -p "$prompt" --permission-mode dontAsk --output-format text --allowedTools \
   "Read" "Edit" "Write" "Glob" "Grep" \
   "Bash(git status*)" "Bash(git diff*)" "Bash(git log*)" "Bash(git show*)" \
   "Bash(git branch --show-current)" "Bash(git checkout -b claude/*)" "Bash(git checkout claude/*)" "Bash(git add *)" \
@@ -81,8 +101,11 @@ if [[ -n "$(git status --porcelain)" ]]; then
     git add -A
     git commit -q -m "wip: unfinished nightly run on #$issue" \
       -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-    git push -q -u origin "$current"
-    echo "left unfinished work on $current"
+    if retry 5 60 git push -q -u origin "$current"; then
+      echo "left unfinished work on $current"
+    else
+      echo "left unfinished work on $current, committed here but not pushed"
+    fi
   else
     git stash push -q -u -m "nightly #$issue: changes made outside a claude branch"
     echo "stashed changes made on $current"
