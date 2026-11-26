@@ -150,6 +150,24 @@ cramped, that holding the pointer over an arrow says the right thing
 that moving a video with a big cast on screen redraws without a visible
 flicker.
 
+## Merging this
+
+The branch was started on 24 November, before "the nightly run waits out a
+dropped connection" (#68) went in, so GitHub asks you to resolve two
+conflicts before you can merge. Both are documentation, both are two
+changes adding text in the same place, and in both cases the answer is
+**keep both** — nothing either change says contradicts the other:
+
+- `docs/changes/README.md` — two new lines at the top of the list. Keep
+  both, newest first: the 2026-11-26 join-order line above the 2026-11-24
+  nightly line.
+- `Instructions.md` — two new sections at the end. Keep both: #68's
+  "### Dropped connections (24 November)", which belongs to section 68,
+  and then "## 69. The order videos are joined in".
+
+No code conflicts: #68 only touched `scripts/nightly/run.sh` and those two
+documents.
+
 ## How to undo
 
 Revert the commit. Nothing is stored differently, so there is nothing to
