@@ -638,7 +638,9 @@ def main():
         "video_paths",
         type=Path,
         nargs="+",
-        help="Videos, folders of videos, or a mix of both.",
+        help="Videos, folders of videos, or a mix of both. With --combine they "
+        "are joined in the order given here, and a folder's own videos in "
+        "name order.",
     )
     batch_parser.add_argument(
         "--person",
@@ -657,7 +659,8 @@ def main():
         type=Path,
         default=None,
         metavar="REEL",
-        help="Write one reel joining every video, instead of one reel each.",
+        help="Write one reel joining every video, in the order they were "
+        "given, instead of one reel each.",
     )
     batch_parser.add_argument(
         "--keep-repeats",

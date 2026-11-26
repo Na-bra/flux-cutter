@@ -337,7 +337,9 @@ Without `--combine`, each video gets its own reel, named after it
 where a reel can be one — an MKV season gets MKV reels; `--format mp4|mkv|mov`
 chooses instead. With `--combine`, the file name's extension decides. Nobody named yet? `--reference
 photos/lead.jpg` matches a photograph instead. Folders, files, or a mix;
-`--recursive` searches at any depth.
+`--recursive` searches at any depth. With `--combine` the videos are joined
+in the order you name them — `batch b/e7.mp4 a/e3.mp4 --combine reel.mp4`
+plays e7 first — and a folder's own videos in name order.
 
 **One reel from many videos.** Every video is scanned and planned before
 anything is encoded, so a video that cannot contribute is found out before
@@ -587,6 +589,8 @@ Pick a video, press **Scan for people**, click a face, press **Export reel**. Cl
 **A whole folder.** Switch the source to **Folder**, pick a season, and scan: each episode is scanned (or its kept scan reused) and the window shows one card per person across all of them, with a strip of their face from each episode and how many they are in. Where two cards look alike but not clearly enough to join on their own, the window asks **Same person?** with the two faces side by side — nothing is guessed. Click a person to see their reel across the folder, name them once to name them in every episode, and export one reel. No photo of anyone is needed.
 
 **Videos from anywhere.** Switch the source to **Videos** and press **Add…** to pick files one at a time, or several at once, from as many folders as you like — episodes 3, 7 and 12 of a show kept in three places are one set. They scan and behave exactly as a folder does: one cast across them, the same **Same person?** questions, recaps left out of the reel, one reel or scene pack cut from the lot. The set is listed under the toolbar and stays live after the scan: **Add…** another video and only that one is scanned (the rest keep the scans they already have, and whoever you have chosen keeps their place as their reel grows), and the **×** beside a video takes it and its cards out of the cast. On three 28-minute episodes the cast came out exactly as the folder view's: 34 people, 5 of them in all three.
+
+**The order they are joined in.** Each video in the set is numbered, and the **↑ ↓** beside it move it up and down the list. That number is its place in the finished file: a reel or a scene pack plays the videos in the set's order, so episodes picked in whatever order the dialogs offered them can be put in the order they should play. Moving one re-reads the reel there and then — no video is scanned again — and the rail says what the export would now cut. The order also decides which of two videos loses the footage they share: a recap stays in whichever of them plays first.
 
 **Format**, beside the file name, is what the reel is saved as: MP4, MKV or MOV. It follows the video you scanned — an MKV episode makes an MKV reel, a MOV makes a MOV — and anything else makes an MP4; change it before exporting and the name's extension follows. All three hold the same H.264 picture and AAC sound, so the choice costs nothing in time or quality. WebM and AVI are not offered as outputs: neither holds that pair, and saving to them would mean a different, much slower encode.
 

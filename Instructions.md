@@ -4746,6 +4746,19 @@ work was on `main`.
 
 (Numbered 67 because #63's notes take 66.)
 
+### Dropped connections (24 November)
+
+`retry TRIES PAUSE cmd...` repeats a command until it succeeds, and writes its
+"retrying" messages to stderr, so `$(retry ...)` captures only the command's
+output. It is used for:
+- the opening `git pull`, 12 times at 300 s, before giving the night up;
+- `gh pr list`, `gh issue list` and `git fetch`, 3 times at 60 s;
+- the push of unfinished work, 5 times at 60 s.
+
+A failed push no longer stops the script under `set -e`. It goes on to
+`git checkout main`. The branch to continue is looked up locally first, then
+on origin, so work that was committed but never pushed is found.
+
 ## 68. A queue of scans and exports (`app/ui/jobs.py`)
 
 The window ran one job at a time and refused the next while one ran
@@ -4805,16 +4818,69 @@ toolbar button onto the running job's row, because "the running job" is now
 one of several. `tests/test_ui_web.py` renders the strip under Node with a
 stub DOM, the nightly run having no way to open the window.
 
-### Dropped connections (24 November)
+## 69. The order videos are joined in (`folder.reordered`)
 
-`retry TRIES PAUSE cmd...` repeats a command until it succeeds, and writes its
-"retrying" messages to stderr, so `$(retry ...)` captures only the command's
-output. It is used for:
-- the opening `git pull`, 12 times at 300 s, before giving the night up;
-- `gh pr list`, `gh issue list` and `git fetch`, 3 times at 60 s;
-- the push of unfinished work, 5 times at 60 s.
+A reel of a set is each video's own plan one after the other, in the set's
+order (`plan_cast_export`), and a scene pack is chosen from that same list.
+So the set's order *is* the order a joined output plays in -- and nothing
+could change it. The set came out of `collect_videos`: a folder's videos in
+name order, picked files in the order the dialogs happened to return them.
 
-A failed push no longer stops the script under `set -e`. It goes on to
-`git checkout main`. The branch to continue is looked up locally first, then
-on origin, so work that was committed but never pushed is found.
+**One function does it, and it is not a rescan.** `reordered(folder, order)`
+returns the set with its videos in that order and `places`, old position ->
+new. Everything else keyed by a position is renumbered from `places` rather
+than read again: `folder.repeats`, the remembered answers
+(`renumbered_answers`), the people chosen (`renumbered_people`), the
+bridge's `_frame_seconds`, and the cut list, which `_chosen_payload`
+rebuilds from the plan. `_pack_missing` comes back out of `_pieces_of` with
+the new plan, so the longest-pack figure follows too.
+
+**A repeat is turned round, not looked for again.** A `Repeat` is a stretch
+of footage two videos share, held in the *later* video's time with an
+`offset` that converts it to the earlier one's. Which of the two is the
+later one is exactly what reordering changes, so a pair that has swapped
+keeps the same stretch told the other way round:
+`Repeat(start + offset, end + offset, -offset, frames)`. Reading the
+fingerprints again would be about 13s a video; this is free. It matters
+because the order decides which of two videos loses what they share -- the
+one that plays first keeps it.
+
+**`order` may name fewer videos than the set holds.** The videos view's list
+can hold a video that has not been scanned into the set yet, so the sort is
+stable on "position in `order`, or the end" and a video the order says
+nothing about keeps its place behind the ones it does.
+
+**In the window.** Each row of the picked list is numbered and carries
+**↑ ↓**; `Bridge.move_picked_video(path, direction)` swaps two entries of
+`_picked`, reorders the set if that set is what is on screen, and returns
+the picked list, the cast and the rail together -- the same payload
+`onVideosAdded` draws, through the same page code. Refused while a job runs,
+like every other change to the set: a queued export was handed its own cuts.
+The file-name box is left alone (`_chosen_payload(None)`), so the suggestion
+does not follow the first video's folder out from under a name typed by
+hand. The first row's ↑ and the last row's ↓ are drawn disabled; pressed
+anyway by a keyboard, they answer `moved: false` with no complaint.
+
+**On the command line.** `collect_videos` already returned paths in the
+order they were given -- its docstring said "sorted", which it had not been
+since folders and files could be mixed. `batch b/e7.mp4 a/e3.mp4 --combine
+reel.mp4` plays e7 first; a folder's own videos are still sorted by name,
+since nothing else said which. No code changed, only the docstring, the
+`--combine` help and the README.
+
+### Measured
+
+Three consecutive 28-minute animation episodes, symlinked into three
+folders and picked one at a time
+(`tests/test_multi_video_episode.py --measure`):
+
+    as picked                   animation5, animation6, animation7
+    0:30 pack of the lead       plays 5 then 6: 28.9s, 10.3 MB, in 5.9s
+    animation7 moved to front   animation7, animation5, animation6
+    the reel after the move     57 cuts, 3:32, 0:06 recap left out (same)
+    the reel, written           194.9s, 69.2 MB, in 26.5s
+    the cast after the move     34 people, 5 in all three (unchanged)
+
+`evaluate animation5 animation6 animation7` matches `evaluation/baseline.json`
+to four decimal places: nothing the suite measures is on this path.
 

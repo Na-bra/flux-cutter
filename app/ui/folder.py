@@ -9,9 +9,10 @@ only new idea is the cast itself (app/faces/cast.py).
 
 A "folder" here is a set of videos, not a directory: `scan_folder` has
 always taken files, folders or a mix, and the window's videos view hands it
-files picked one by one from wherever they live. `add_videos` and
-`without_video` are that view's own, since a set picked by hand is the one
-that gets added to and taken from after it has been scanned.
+files picked one by one from wherever they live. `add_videos`,
+`without_video` and `reordered` are that view's own, since a set picked by
+hand is the one that gets added to, taken from and put in an order after it
+has been scanned.
 
 Like app/ui/worker.py this imports no toolkit, so all of it is tested
 without a window.
@@ -364,6 +365,91 @@ def without_video(folder: FolderScan, path: Path) -> FolderScan:
     return replace(folder, videos=videos, repeats=repeats)
 
 
+def reordered(
+    folder: FolderScan, order: list[Path]
+) -> tuple[FolderScan, dict[int, int]]:
+    """The set with its videos in this order, and where each one went.
+
+    A reel is each video's own plan one after the other, in the set's order
+    (`plan_cast_export`), and a scene pack is chosen from the same list, so
+    the set's order *is* the order a joined output plays in -- and this is
+    the only thing that changes it. Nothing is scanned again: the same
+    scans are held in a different order.
+
+    `order` names the videos wanted first, in the order wanted. Any the set
+    holds that it does not name keep their places behind the ones it does,
+    and a name that is not in the set is passed over -- the videos view's
+    list can hold a video that has not been scanned into the set yet.
+
+    What a later video repeats of an earlier one is turned round rather
+    than looked for again. A repeat is a stretch of footage two videos
+    share, and which of the two is the later one is exactly what has
+    changed, so a pair that has swapped keeps the same stretch told in the
+    other video's time (`Repeat.offset`): free, where reading the
+    fingerprints again is about 13s a video.
+
+    Returns:
+        The set, and old position -> new position for everything else held
+        by one: the remembered answers (`renumbered_answers`), the people
+        chosen (`renumbered_people`), a cut's video number.
+    """
+    wanted = [same_file(path) for path in order]
+
+    def place(position: int) -> int:
+        key = same_file(folder.videos[position].video_path)
+        return wanted.index(key) if key in wanted else len(wanted)
+
+    # Stable, so the videos the order says nothing about keep their own.
+    moved = sorted(range(len(folder.videos)), key=place)
+    places = {old: new for new, old in enumerate(moved)}
+    repeats: dict[tuple[int, int], list[Repeat]] = {}
+    for (later, earlier), found in folder.repeats.items():
+        first, second = places[later], places[earlier]
+        if first > second:
+            repeats[(first, second)] = found
+        else:
+            repeats[(second, first)] = [
+                Repeat(
+                    repeat.start + repeat.offset,
+                    repeat.end + repeat.offset,
+                    -repeat.offset,
+                    repeat.frames,
+                )
+                for repeat in found
+            ]
+    videos = [folder.videos[old] for old in moved]
+    return replace(folder, videos=videos, repeats=repeats), places
+
+
+def renumbered_answers(answers: Answers, places: dict[int, int]) -> Answers:
+    """The same answers, about the videos where they have moved to.
+
+    An answer is about two cards, and a card is a video's position in the
+    set and a place in that video's gallery -- so reordering the set moves
+    every answer. Renumbered rather than read from what is kept, so an
+    answer given in this window when the cache could not be written is not
+    lost to a press of the up button.
+    """
+    moved = Answers()
+    for same, pairs in ((True, answers.same), (False, answers.different)):
+        for pair in pairs:
+            cards = [CardRef(places.get(ref.video, ref.video), ref.person) for ref in pair]
+            if len(cards) == 2:
+                moved.record(cards[0], cards[1], same=same)
+    return moved
+
+
+def renumbered_people(people: list[CastPerson], places: dict[int, int]) -> list[CastPerson]:
+    """The same people, holding cards from the videos where they moved to."""
+    return [
+        replace(
+            person,
+            appearances=[(places.get(video, video), card) for video, card in person.appearances],
+        )
+        for person in people
+    ]
+
+
 def cast_of(
     folder: FolderScan, answers: Answers | None = None
 ) -> tuple[list[CastPerson], list[SamePersonQuestion]]:
@@ -631,7 +717,10 @@ def plan_cast_export(
     person: CastPerson,
     settings: ExportSettings | None = None,
 ) -> list[tuple[ScanResult, list]]:
-    """Each video's segments for this person, in folder order.
+    """Each video's segments for this person, in the set's own order.
+
+    Which is the order the reel joins them in, so putting the set in
+    another order (`reordered`) puts the reel in it too.
 
     Leaving out what an earlier video in the reel has already shown -- see
     `repeated_seconds` for how much that is.
