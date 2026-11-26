@@ -4732,8 +4732,10 @@ title still come from the first video's folder.
 
 ## 67. The nightly run and sleep (`scripts/nightly/run.sh`)
 
-`claude -p` runs under `caffeinate -i`, which holds a no-idle-sleep assertion
-until claude exits. `pmset repeat wakeorpoweron` wakes the Mac at 1:55, but
+`caffeinate -i -w $$`, started just after the log is opened, holds a
+no-idle-sleep assertion until the script exits. It first wrapped only
+`claude -p`; waiting for the network and pushing at the end need the Mac
+awake too. `pmset repeat wakeorpoweron` wakes the Mac at 1:55, but
 nothing held it awake afterwards. On 22 November the run's transcript has six
 gaps of 16 to 53 minutes, and claude reported "Your computer went to sleep
 mid-response".
@@ -4743,6 +4745,19 @@ it is a `claude/` branch. A run that failed before branching used to say its
 work was on `main`.
 
 (Numbered 67 because #63's notes take 66.)
+
+### Dropped connections (24 November)
+
+`retry TRIES PAUSE cmd...` repeats a command until it succeeds, and writes its
+"retrying" messages to stderr, so `$(retry ...)` captures only the command's
+output. It is used for:
+- the opening `git pull`, 12 times at 300 s, before giving the night up;
+- `gh pr list`, `gh issue list` and `git fetch`, 3 times at 60 s;
+- the push of unfinished work, 5 times at 60 s.
+
+A failed push no longer stops the script under `set -e`. It goes on to
+`git checkout main`. The branch to continue is looked up locally first, then
+on origin, so work that was committed but never pushed is found.
 
 ## 68. A queue of scans and exports (`app/ui/jobs.py`)
 
