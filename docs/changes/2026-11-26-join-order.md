@@ -1,7 +1,7 @@
 # Choose the order videos are joined in
 
-**Status:** on branch `claude/issue-54-join-order`, waiting for you to
-merge. Closes [#54](https://github.com/Na-bra/flux-cutter/issues/54).
+**Status:** merged into `main`. Closes
+[#54](https://github.com/Na-bra/flux-cutter/issues/54).
 
 ## What changed
 
@@ -150,23 +150,29 @@ cramped, that holding the pointer over an arrow says the right thing
 that moving a video with a big cast on screen redraws without a visible
 flicker.
 
-## Merging this
+## The arrow keys (added after you tried it)
 
-The branch was started on 24 November, before "the nightly run waits out a
-dropped connection" (#68) went in, so GitHub asks you to resolve two
-conflicts before you can merge. Both are documentation, both are two
-changes adding text in the same place, and in both cases the answer is
-**keep both** — nothing either change says contradicts the other:
+You tried the list with the keyboard's arrow keys. They did nothing, and
+macOS played its "can't do that" sound, because only the ↑ and ↓ buttons
+were wired up.
 
-- `docs/changes/README.md` — two new lines at the top of the list. Keep
-  both, newest first: the 2026-11-26 join-order line above the 2026-11-24
-  nightly line.
-- `Instructions.md` — two new sections at the end. Keep both: #68's
-  "### Dropped connections (24 November)", which belongs to section 68,
-  and then "## 69. The order videos are joined in".
+Now:
 
-No code conflicts: #68 only touched `scripts/nightly/run.sh` and those two
-documents.
+- **Selecting a video:** click it, or reach it with Tab. A ring shows which
+  one is selected.
+- **Moving it:** ↑ or ← moves it earlier, and ↓ or → moves it later. Left and
+  right work too because the videos sit side by side in a row.
+- **Keeping your place:** the video stays selected after it moves, so you can
+  keep pressing. Clicking its ↑ or ↓ selects it too.
+- **No more sound:** the keys are claimed even at the first or last place,
+  where nothing moves.
+
+This was checked two ways. A real browser engine was sent real key presses:
+the video moved, stayed selected and the key was claimed. A test drives the
+same handler. Nobody has heard the window stay quiet yet: try it.
+
+The clash with `main` that this section used to describe has been resolved
+on the branch.
 
 ## How to undo
 

@@ -2271,6 +2271,57 @@ def test_the_page_numbers_the_set_and_offers_arrows_at_both_ends(tmp_path):
     assert "disabled" not in middle[: middle.index("</button>")]
 
 
+def test_the_arrow_keys_move_the_focused_video(tmp_path):
+    """Pressing an arrow key in the list did nothing but sound macOS's
+    alert: only the buttons were wired. Each video is now focusable, and
+    the keys move whichever has the focus, and say so to the page."""
+    seen = run_page(
+        """
+        state.view = "videos";
+        state.picked = [
+          { path: "/a/e3.mp4", name: "e3.mp4", folder: "show-a", scanned: true },
+          { path: "/b/e7.mp4", name: "e7.mp4", folder: "show-b", scanned: true },
+        ];
+        const asked = [];
+        globalThis.pywebview = { api: {
+          move_picked_video: async (path, dir) => { asked.push([path, dir]); return { moved: true, note: "Moved." }; },
+        } };
+        const press = async (key, path, busyNow) => {
+          state.busy = busyNow || null;
+          let claimed = false;
+          await onPicksKey({
+            key,
+            target: { closest: () => ({ dataset: { path } }) },
+            preventDefault: () => { claimed = true; },
+          });
+          return claimed;
+        };
+        (async () => {
+          const result = {
+            down: await press("ArrowDown", "/a/e3.mp4"),
+            right: await press("ArrowRight", "/a/e3.mp4"),
+            up: await press("ArrowUp", "/b/e7.mp4"),
+            upAtTop: await press("ArrowUp", "/a/e3.mp4"),
+            whileBusy: await press("ArrowDown", "/a/e3.mp4", "scan"),
+            letter: await press("a", "/a/e3.mp4"),
+          };
+          drawPicks();
+          result.asked = asked;
+          result.html = drawn().picks.innerHTML;
+          console.log(JSON.stringify(result));
+        })();
+        """,
+        tmp_path,
+    )
+
+    assert seen["asked"] == [["/a/e3.mp4", 1], ["/a/e3.mp4", 1], ["/b/e7.mp4", -1]]
+    # Claimed, so no alert sound, even where nothing can move.
+    assert seen["down"] and seen["right"] and seen["up"]
+    assert seen["upAtTop"] and seen["whileBusy"]
+    assert seen["letter"] is False
+    assert 'tabindex="0"' in seen["html"] and 'data-path="/b/e7.mp4"' in seen["html"]
+
+
 def test_a_video_that_was_never_picked_is_not_removed(bridge, two_videos):
     assert bridge.remove_picked_video(str(two_videos[0]))["removed"] is False
 
