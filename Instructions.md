@@ -4884,3 +4884,194 @@ folders and picked one at a time
 `evaluate animation5 animation6 animation7` matches `evaluation/baseline.json`
 to four decimal places: nothing the suite measures is on this path.
 
+## 70. Reviewing the animation pipeline (#65)
+
+Animation was the suite's weakest mode: 3.4% to 7.8% contamination on the six
+new episodes against 1.5% to 1.9% for live action, characters on up to 8 extra
+cards, and junk-drawer cards -- `animation5` card 2, 201 faces, 76 of them
+four other characters'. This is what reading each stage found, in the order
+#65 lists them, and what each finding cost or bought.
+
+The whole answer, measured as `evaluate` over the eight animated episodes
+(`animation`, `animation2`, `animation4`-`animation9`):
+
+    contamination, each episode weighted by its faces   5.13% -> 3.62%
+    wrong faces on cards, counted                         351 -> 243
+    extra cards from splits                                39 -> 45
+    faces found, precision, recall per episode          every one unchanged
+    every live-action number                            unchanged
+
+### The finding that mattered: a ceiling in the wrong units
+
+§15's co-occurrence rule is the only hard evidence in the pipeline, and §55
+already recorded that it was inert in animation: its similarity ceiling was
+live action's 0.50, which on CCIP's scale sits *below* animation's own 0.75
+similarity floor, so every pair that could merge was already above it and the
+rule never blocked one. A ceiling under the floor cannot fire, on any scale.
+
+§55 measured 0.90 on `animation` and `animation2` and concluded it "does not
+reach the merges it was expected to". That conclusion did not survive the six
+new episodes, which have the crowded scenes the first two do not:
+
+All three columns have the other fixes below in place, so the ceiling is the
+only thing moving; 0.50 is the value as it was shipped.
+
+    ceiling          0.50          0.85      0.90
+    animation        0.96%         0.96%     0.98%
+    animation2       6.15%         6.15%     6.15%
+    animation4       4.76%         3.48%     2.56%
+    animation5       8.07%         6.00%     3.67%
+    animation6       3.13%         3.12%     2.68%
+    animation7       3.38%         3.37%     4.30%
+    animation8       3.41%         3.45%     3.45%
+    animation9       4.47%         4.47%     4.51%
+    weighted         4.78%         4.20%     3.62%
+    extra cards         41            42        45
+
+0.90 is shipped. It sits above the similarity floor and above the
+consolidation threshold, so the only pair it exempts is one a frame is showing
+twice -- which is what the exemption is for. `test_modes` pinned the old hole
+deliberately; that test now pins the opposite, and says why.
+
+The gain is not the leads being cut up. On `animation5` the blond boy, the
+red-marked boy and the goggles girl keep exactly the share of their faces they
+had; what moves is 57 of the 76 foreign faces off that one card.
+
+### The margin rule, re-asked
+
+§55 chose `margin_threshold` 0.02 *because* co-occurrence could not reach
+those merges. With the ceiling working that reason is gone, so it was
+re-measured. It is still carrying its weight:
+
+    margin, at ceiling 0.90      0.02      0.0
+    weighted contamination      3.62%     6.70%
+    animation9                  4.51%    12.01%
+    animation2                  6.15%    10.48%
+    extra cards                    45        24
+
+A third reading was tried and rejected. `_competing_identity` counts a
+competitor struck out to -inf -- one the footage proves is not the partner --
+as the clearest case of "a different identity nearby". The opposite reading
+(hard evidence settles the pair, so there is no coin to flip) is cheaper in
+cards and worse where it matters: animation 0.98% -> 2.28%, animation6 2.68%
+-> 4.96%, animation4 2.56% -> 3.58%, for 3 fewer extra cards. The comment in
+`_competing_identity` now records that rather than leaving it to be
+rediscovered.
+
+### Tracking: `split_track` could not survive a face it could not measure
+
+`split_track` normalised each observation by its own length. A zero-length or
+non-finite embedding made every similarity involving it NaN, and `np.argmin`
+returns the first NaN while `NaN >= threshold` is False -- so the answer was
+not "no cut here" but "cut here", at every position, and one unusable face
+broke a shot into single frames. `_comparable_similarity` now carries a mask
+of the pairs that can be compared at all; an unusable face contributes no
+evidence either way. On valid data the matrix and every cut are bit-identical,
+which is why no number moved for it.
+
+Neither embedder can currently produce such a vector (both reject a zero
+norm, and the grouper drops non-finite ones) -- but the guard is three lines
+and the failure was silent and total.
+
+The recursion went with it. `split_track` rebuilt the normalisation and the
+matrix for each piece it cut and recursed once per cut, so a track that cut at
+every frame recursed as deep as it was long. It now takes the worst cut of a
+stretch from a block of the one matrix, with an explicit stack. A piece's
+block of the whole matrix *is* the matrix that piece would have built -- same
+dot products of the same unit vectors -- so the pieces are the same, in the
+same order.
+
+### Grouping: a refusal outlived its reason
+
+A pair the margin rule refuses is blocked so it is not retried forever. The
+block was dropped when either *end* merged, but not when the competitor the
+refusal rested on did -- and that competitor merging is exactly what stops it
+being a near-tie. `_Refusals` records what each refusal rests on and offers
+the pair again when that cluster merges, in clustering and in consolidation
+both. Live action never sees it: at margin 0.0 nothing is ever refused.
+
+On its own (ceiling still 0.50) it is a mixed trade -- animation 1.62% ->
+0.96% and animation6 5.41% -> 3.13%, against animation5 7.79% -> 8.07% and
+animation9 4.09% -> 4.47%, with 2 more extra cards. It is shipped as a
+correctness fix, not for the numbers.
+
+### The two other leftovers from §60
+
+**The hard-coded IoU 0.3.** `DEFAULT_IOU_THRESHOLD` moves to `detector.py`,
+beside `intersection_over_union`, which is already there for being shared.
+The tracker and `_neighbouring_card` now read one number. Same value, so
+nothing moved.
+
+**The profile rescue counted too easily.** `ATTACH_MIN_NEIGHBOURS` is 5, and a
+face has two adjacent frames, so counting every overlap let three faces cast
+five votes. Each face now names one card at most, whichever of its neighbours
+it overlaps best. Inert in animation (no landmarks, so `min_group_eye_span` is
+0 and nothing is ever flagged) and it changes nothing on `test` through
+`test_5`: §60 found test_3 flags 13 groups and attaches none, and test_4 and
+test_5 behave the same. §52's "26 neighbours, 23 of them his" was counted the
+old way, and the comment says so.
+
+**The centroid drifting after a card's first edit is deliberately left.** A
+rescued group's faces join a card without moving its centroid (§52), because
+that centroid is what matches the card across videos; `edits._recompute` then
+rebuilds it from every face, profile shots included. Separating the two means
+marking rescued observations in the card and in the kept scan, which is a
+`SCAN_FORMAT` bump and so every kept scan. It cannot affect animation at all.
+
+### Detection and embedding
+
+**Focus was measured on the wrong thing.** `quality.sharpness`'s own docstring
+says Laplacian variance scales with crop size and the caller must pass a
+fixed-size crop; live mode passes its aligned 112x112, and animation passed
+the raw crop, which runs from 24 px to most of the frame. So the number mostly
+restated the box size, and with `REPRESENTATIVE_SHARPNESS_SATURATION` at 200
+nearly every animation face saturated the term that exists to keep blurred
+faces off cards. `AnimeFaceEmbedder.fitted` is now its own step and the focus
+is measured there, at 384x384. Nothing the suite measures reads sharpness, so
+no number moves; what changes is which face a card shows and which clips a
+scene pack picks (§56).
+
+**`embed_batch` no longer builds a batch.** The session's batch is pinned at 1
+(§47), so stacking every crop of a frame at model size before running them was
+peak memory for nothing. Each crop is now prepared and run in turn, from the
+same arithmetic.
+
+**Left alone: the box-mapping loop in `AnimeFaceDetector.detect`.** Vectorising
+it is the obvious tidy, and it would change every box by a fraction of a pixel
+(float32 numpy scalars against a Python float, versus an array). That is
+harmless in itself and invisible in the measures, but it would mean this
+change could no longer claim detection is untouched -- which is what makes the
+grouping numbers above attributable. 15 lines over the handful of anchors that
+clear the confidence floor is not worth that.
+
+**Left alone: recall, 33% to 50% on some episodes.** Each episode has 4 to 8
+frames checked by eye, so the figure moves in steps of 12% to 25% and cannot
+steer a change. Reading the code, the likeliest cause is that
+`AnimeFaceDetector.detect` applies `min_face_size` to the box *after* clamping
+it to the frame, so a character whose face runs off the edge is dropped for
+being small -- live action's `_map_detection` instead rejects only a box that
+collapses entirely. Changing it adds faces at the frame edges, which is its
+own measurement.
+
+### Kept scans
+
+`SCAN_FORMAT` is unchanged, as in §52's and §60's precedent. It does not need
+to move for the ceiling: `cooccurrence_similarity_ceiling` is part of
+`cache_key`, so every animation scan is re-keyed and rescanned once by the
+change itself, and live-action scans keep their key. The refusal and
+`split_track` fixes do not re-key, so an animation scan kept from before this
+keeps its answer until the video is scanned again -- which, because the
+ceiling re-keys it, is the first time it is opened.
+
+### One thing the measurement could not pin
+
+In `test_3`'s record, two leftover label groups of 26 faces each -- neither on
+any card -- swapped places in `evaluation/baseline.json`. Every number is
+identical. Nothing in this change can reach it: live action refuses nothing
+(margin 0.0), so clustering and consolidation are bit-identical, and the
+rescue cannot reorder `_rejected` without also moving a face off a card. Two
+runs today agree with each other, so the kept baseline looks to have been
+recorded under conditions this Mac no longer reproduces -- plausibly live
+mode's Core ML embedder, whose vectors §47 notes are *not* bit-identical to
+the CPU's. Recorded here rather than tidied away.
+
