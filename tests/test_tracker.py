@@ -275,6 +275,53 @@ def test_a_track_is_left_whole_when_it_stays_one_person_or_no_threshold_is_set()
         assert len(tracker.finish()) == 1
 
 
+def test_a_broken_embedding_does_not_cut_a_track_at_every_frame():
+    """A zero-length embedding cannot be compared with anything. Dividing by
+    its length made every similarity involving it NaN, and NaN loses every
+    comparison below the threshold, so one such face no longer looked like
+    the worst cut in the track -- it looked like the worst cut everywhere,
+    and the track came apart a frame at a time."""
+    faces = _turning([0, 2, 4, 6, 8, 10])
+    faces[3] = make_observation([0.0, 0.0, 0.0], (0, 0, 100, 100),
+                                timestamp=1.5, frame_index=3)
+    # The floor would veto a link to a face it cannot compare; this is about
+    # what happens to the track once it is made.
+    tracker = FaceTracker(contradiction_floor=-1.0, split_threshold=0.66)
+    for i, face in enumerate(faces):
+        tracker.add_frame(i, [face])
+
+    tracks = tracker.finish()
+
+    assert len(tracks) == 1
+    assert tracks[0].size == 6
+
+
+def test_a_broken_embedding_does_not_hide_a_track_that_turns_into_someone_else():
+    """The faces that can be compared still have their say."""
+    faces = _turning([0, 3, 6, 9, 30, 67, 70, 73, 76])
+    faces[1] = make_observation([0.0, 0.0, 0.0], (0, 0, 100, 100),
+                                timestamp=0.5, frame_index=1)
+    tracker = FaceTracker(contradiction_floor=-1.0, split_threshold=0.66)
+    for i, face in enumerate(faces):
+        tracker.add_frame(i, [face])
+
+    assert len(tracker.finish()) == 2
+
+
+def test_a_track_that_turns_all_the_way_through_is_cut_at_every_frame():
+    """Nine faces, each pair across any cut unalike: every cut is made, and
+    the pieces are found from one matrix rather than by recursing once per
+    cut."""
+    faces = _turning([0, 90, 180, 270, 0, 90, 180, 270, 0])
+    tracker = FaceTracker(contradiction_floor=-1.0, split_threshold=0.66)
+    for i, face in enumerate(faces):
+        tracker.add_frame(i, [face])
+
+    tracks = tracker.finish()
+
+    assert [track.observations for track in tracks] == [[face] for face in faces]
+
+
 def test_only_animation_splits_tracks():
     from app.modes import ANIMATION, LIVE, get_mode
 

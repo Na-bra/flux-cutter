@@ -7,6 +7,7 @@ clone without them still gets a green, honest run.
 
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 
@@ -60,6 +61,52 @@ def test_a_clear_error_when_the_runtime_is_missing(monkeypatch):
 def test_a_missing_weights_file_is_reported_clearly():
     with pytest.raises(FileNotFoundError, match="not found"):
         anime._resolve(Path("/nowhere/anime.onnx"), "anime_detector")
+
+
+def _scaled_pair(scale: int):
+    """One pattern twice, the second `scale` times the size of the first.
+
+    The crops are the same picture at two sizes, which is what makes a
+    focus measure that depends on crop size visible: the only difference
+    between them is how many pixels it is drawn with.
+    """
+    from app.faces.quality import sharpness
+
+    base = np.random.default_rng(7).integers(0, 255, (120, 120, 3), dtype=np.uint8)
+    big = cv2.resize(base, (120 * scale, 120 * scale), interpolation=cv2.INTER_NEAREST)
+    frame = np.zeros((120 * scale, 120 + 120 * scale, 3), dtype=np.uint8)
+    frame[:120, :120] = base
+    frame[:, 120:] = big
+
+    embedder = anime.AnimeFaceEmbedder.__new__(anime.AnimeFaceEmbedder)
+    embedder.settings = anime.AnimeEmbedderSettings()
+    small_crop = embedder.crop(
+        frame, FaceDetection(box=BoundingBox(x_min=40, y_min=40, x_max=80, y_max=80), confidence=0.9)
+    )
+    big_crop = embedder.crop(
+        frame,
+        FaceDetection(
+            box=BoundingBox(
+                x_min=120 + 40 * scale, y_min=40 * scale,
+                x_max=120 + 80 * scale, y_max=80 * scale,
+            ),
+            confidence=0.9,
+        ),
+    )
+    return (
+        (sharpness(small_crop), sharpness(big_crop)),
+        (sharpness(embedder.fitted(small_crop)), sharpness(embedder.fitted(big_crop))),
+    )
+
+
+def test_focus_is_measured_at_the_size_the_model_sees():
+    """Laplacian variance scales with resolution, so measuring the raw crop
+    said mostly how big the face was. These crops run from 24 px to most of
+    the frame; live mode has always measured its aligned 112x112."""
+    raw, fitted = _scaled_pair(scale=3)
+
+    assert max(raw) > 2 * min(raw), "the raw crops should disagree, or this proves nothing"
+    assert max(fitted) < 2 * min(fitted), f"raw {raw}, fitted {fitted}"
 
 
 def test_letterboxing_preserves_aspect_ratio():

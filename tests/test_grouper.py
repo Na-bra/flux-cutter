@@ -5,6 +5,7 @@ from app.faces.detector import BoundingBox, FaceDetection, FaceLandmarks
 from app.faces.grouper import (
     FaceObservation,
     IdentityGrouper,
+    _Refusals,
     auto_min_detections,
     cosine_similarity,
     eye_span_ratio,
@@ -461,6 +462,93 @@ def test_a_card_over_the_minimum_still_takes_its_profile_faces():
         grouper.add(observation)
 
     assert [group.size for group in grouper.groups] == [20]
+
+
+def test_a_rejected_group_of_a_few_faces_does_not_clear_the_neighbour_count():
+    """Three faces beside a card are three neighbours, not six.
+
+    Each has a frame on either side of it, so counting every overlap let
+    three faces cast the five votes ATTACH_MIN_NEIGHBOURS asks for -- and
+    the number is named for faces.
+    """
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+    lead = [make_observation([1.0, 0.0, 0.0], eye_span=0.35, frame_index=f)
+            for f in range(0, 20, 2)]
+    profile = [make_observation([0.0, 1.0, 0.0], eye_span=0.05, frame_index=f)
+               for f in (3, 7, 11)]
+    for observation in lead + profile:
+        grouper.add(observation)
+
+    assert [group.size for group in grouper.groups] == [10]
+    assert len(grouper.unassigned) == 3
+
+
+def test_five_faces_beside_a_card_do_join_it():
+    grouper = IdentityGrouper(similarity_threshold=0.5, min_group_eye_span=0.15)
+    lead = [make_observation([1.0, 0.0, 0.0], eye_span=0.35, frame_index=f)
+            for f in range(0, 20, 2)]
+    profile = [make_observation([0.0, 1.0, 0.0], eye_span=0.05, frame_index=f)
+               for f in (3, 7, 11, 15, 19)]
+    for observation in lead + profile:
+        grouper.add(observation)
+
+    assert [group.size for group in grouper.groups] == [15]
+    assert grouper.unassigned == []
+
+
+def test_a_refusal_is_dropped_when_what_it_rests_on_merges():
+    """The bookkeeping on its own: a refusal rests on the competitor that
+    made the pair a coin flip, and does not outlive it."""
+    refusals = _Refusals()
+    refusals.refuse(0, 1, competitor=2)
+
+    assert refusals.blocked == {0: {1}, 1: {0}}
+    assert refusals.reconsider(3) == set(), "an unrelated merge changes nothing"
+    assert refusals.pairs() == [(0, 1)]
+
+    assert refusals.reconsider(2) == {0, 1}
+    assert refusals.pairs() == []
+    assert not any(refusals.blocked.values())
+
+
+def _at(towards: float, azimuth_degrees: float) -> list[float]:
+    """A unit vector whose similarity with (1, 0, 0) is `towards`."""
+    away = float(np.sqrt(1.0 - towards**2))
+    azimuth = np.radians(azimuth_degrees)
+    return [towards, away * np.cos(azimuth), away * np.sin(azimuth)]
+
+
+def test_a_merge_refused_as_a_coin_flip_is_offered_again_when_the_coin_goes():
+    """Four units. A and B are the best pair, and refused because C is
+    almost as good a partner for A and cannot be B. Then C merges with D,
+    which moves it away from A -- so A and B are no longer a coin flip, and
+    the refusal that rested on C goes with it. Without that, A, B and C-D
+    came out as three cards and A kept nobody.
+    """
+    units = [
+        make_observation(_at(1.0, 0.0), frame_index=0),
+        make_observation(_at(0.80, 180.0), frame_index=1),
+        make_observation(_at(0.79, 0.0), frame_index=2),
+        make_observation(_at(0.755, 62.86), frame_index=3),
+    ]
+    a, b, c, d = units
+    # The geometry the sequence above depends on, stated rather than trusted.
+    assert cosine_similarity(a.embedding, b.embedding) == pytest.approx(0.80, abs=5e-4)
+    assert cosine_similarity(a.embedding, c.embedding) == pytest.approx(0.79, abs=5e-4)
+    assert cosine_similarity(c.embedding, d.embedding) == pytest.approx(0.78, abs=5e-4)
+    assert cosine_similarity(a.embedding, d.embedding) == pytest.approx(0.755, abs=5e-4)
+    assert cosine_similarity(b.embedding, c.embedding) < 0.75
+    assert cosine_similarity(b.embedding, d.embedding) < 0.75
+
+    grouper = IdentityGrouper(
+        similarity_threshold=0.75, margin_threshold=0.02, consolidation_threshold=1.0
+    )
+    for unit in units:
+        grouper.add(unit)
+
+    assert len(grouper.groups) == 2
+    assert group_containing(grouper, a) is group_containing(grouper, b)
+    assert group_containing(grouper, c) is group_containing(grouper, d)
 
 
 def test_auto_min_detections_scales_with_sampling_interval():

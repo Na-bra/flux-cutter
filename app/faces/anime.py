@@ -324,6 +324,20 @@ class AnimeFaceEmbedder:
             return None
         return crop
 
+    @staticmethod
+    def fitted(crop: np.ndarray) -> np.ndarray:
+        """The crop at the size the model takes it.
+
+        Its own step because it is also the size the crop's focus is
+        measured at, and the two must stay the same size for that to mean
+        anything (see `embed_batch`).
+        """
+        return cv2.resize(
+            crop,
+            (EMBEDDER_INPUT_SIZE, EMBEDDER_INPUT_SIZE),
+            interpolation=cv2.INTER_AREA,
+        )
+
     def embed_batch(
         self, frame: np.ndarray, detections: list[FaceDetection]
     ) -> list[EmbeddedFace | None]:
@@ -340,45 +354,37 @@ class AnimeFaceEmbedder:
         if not detections:
             return []
 
-        results: list[EmbeddedFace | None] = [None] * len(detections)
-        crops, positions = [], []
-        for position, detection in enumerate(detections):
-            crop = self.crop(frame, detection)
-            if crop is not None:
-                crops.append(crop)
-                positions.append(position)
-        if not crops:
-            return results
-
-        batch = np.stack(
-            [
-                (
-                    cv2.resize(
-                        crop, (EMBEDDER_INPUT_SIZE, EMBEDDER_INPUT_SIZE),
-                        interpolation=cv2.INTER_AREA,
-                    ).astype(np.float32)
-                    / 255.0
-                    - _IMAGENET_MEAN
-                )
-                / _IMAGENET_STD
-                for crop in crops
-            ]
-        ).transpose(0, 3, 1, 2)
-
         # One face at a time: the session's batch is fixed at 1 (see
         # _open_session), and on the CPU four at once was no faster anyway
-        # (266 ms a face against 249).
-        vectors = np.concatenate(
-            [self._session.run(None, {self._input: batch[i : i + 1]})[0] for i in range(len(batch))]
-        )
-        for row, position in enumerate(positions):
-            vector = vectors[row].astype(np.float32)
+        # (266 ms a face against 249). So nothing is gained by stacking the
+        # whole frame's crops into one array first, and it cost the peak
+        # memory of every crop at model size at once.
+        results: list[EmbeddedFace | None] = [None] * len(detections)
+        for position, detection in enumerate(detections):
+            crop = self.crop(frame, detection)
+            if crop is None:
+                continue
+            fitted = self.fitted(crop)
+            blob = (
+                ((fitted.astype(np.float32) / 255.0 - _IMAGENET_MEAN) / _IMAGENET_STD)
+                .transpose(2, 0, 1)[None]
+            )
+            vector = self._session.run(None, {self._input: blob})[0][0].astype(np.float32)
             norm = float(np.linalg.norm(vector))
             if norm == 0.0:
                 continue
             results[position] = EmbeddedFace(
                 embedding=vector / norm,
-                sharpness=crop_sharpness(crops[row]),
+                # Measured on the crop at model size, not the raw one.
+                # Laplacian variance scales with resolution (see
+                # faces.quality.sharpness), and these crops run from 24 px
+                # to most of the frame, so on the raw crop the number said
+                # mostly how big the face was: every face above about 150 px
+                # saturated the card-picture score's sharpness term, which
+                # is the term that exists to keep blurred faces off cards.
+                # Live mode has always measured its aligned 112x112 crop;
+                # this is the same thing at the size this model sees.
+                sharpness=crop_sharpness(fitted),
                 embedding_space=ANIME_EMBEDDING_SPACE,
             )
         return results

@@ -17,6 +17,21 @@ class BoundingBox:
     y_max: int
 
 
+# How much two boxes in neighbouring sampled frames must overlap before
+# they are read as the same face in the same place. 0.3 is the conventional
+# tracking-by-detection value and held up on the real test footage: faces
+# move far enough between samples that anything stricter breaks tracks
+# mid-shot, while anything looser starts linking across neighbouring faces
+# in two-shots.
+#
+# It lives here, beside the measure itself, because two stages ask the same
+# question of it: the tracker links frame to frame by it, and the grouper's
+# profile rescue decides by it which card a rejected group sits beside
+# (grouper.ATTACH_MIN_NEIGHBOURS). The second used to spell 0.3 out as a
+# literal, so the two could drift apart silently.
+DEFAULT_IOU_THRESHOLD = 0.3
+
+
 def intersection_over_union(box_a: BoundingBox, box_b: BoundingBox) -> float:
     """Overlap ratio between two boxes, in [0.0, 1.0].
 
