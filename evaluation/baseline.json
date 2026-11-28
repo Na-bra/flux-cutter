@@ -69,10 +69,10 @@
   "coverage": 1.0,
   "precision": 0.9767,
   "recall": 0.7143,
-  "contamination": 0.0162,
-  "contaminated_cards": 2,
-  "cards": 8,
-  "splits": 2,
+  "contamination": 0.0098,
+  "contaminated_cards": 3,
+  "cards": 9,
+  "splits": 3,
   "people": {
    "gwen": {
     "faces": 117,
@@ -91,9 +91,9 @@
    "max": {
     "faces": 48,
     "completeness": 0.8542,
-    "timing": 0.7907,
-    "reel_purity": 0.6219,
-    "reel_shows_others": 9.08
+    "timing": 0.8391,
+    "reel_purity": 0.702,
+    "reel_shows_others": 7.0
    },
    "goggles": {
     "faces": 18,
@@ -111,9 +111,9 @@
    },
    "bull": {
     "faces": 11,
-    "completeness": 1.0,
-    "timing": 1.0,
-    "reel_purity": 0.8344,
+    "completeness": 0.5455,
+    "timing": 0.6026,
+    "reel_purity": 0.7518,
     "reel_shows_others": 0
    },
    "blue-shirt": {
@@ -125,17 +125,17 @@
    },
    "extra-2": {
     "faces": 2,
-    "completeness": 1.0,
-    "timing": 0.0448,
-    "reel_purity": 0.0295,
-    "reel_shows_others": 29.85
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
    },
    "extra-1": {
     "faces": 1,
     "completeness": 1.0,
-    "timing": 0.0217,
-    "reel_purity": 0.0143,
-    "reel_shows_others": 30.38
+    "timing": 0.0232,
+    "reel_purity": 0.0161,
+    "reel_shows_others": 28.3
    },
    "extra-3": {
     "faces": 1,
@@ -550,14 +550,14 @@
     "reel_purity": 0.7311,
     "reel_shows_others": 4.91
    },
-   "x14": {
+   "x11": {
     "faces": 26,
     "completeness": 0.0,
     "timing": 0.0,
     "reel_purity": 0.0,
     "reel_shows_others": 0.0
    },
-   "x11": {
+   "x14": {
     "faces": 26,
     "completeness": 0.0,
     "timing": 0.0,
@@ -1644,10 +1644,10 @@
   "coverage": 1.0,
   "precision": 0.9769,
   "recall": 0.75,
-  "contamination": 0.0476,
+  "contamination": 0.0256,
   "contaminated_cards": 1,
   "cards": 11,
-  "splits": 4,
+  "splits": 3,
   "people": {
    "blond_boy": {
     "faces": 355,
@@ -1680,8 +1680,8 @@
    "smoking_man": {
     "faces": 40,
     "completeness": 0.9,
-    "timing": 0.8981,
-    "reel_purity": 0.8241,
+    "timing": 0.7812,
+    "reel_purity": 0.7132,
     "reel_shows_others": 2.46
    },
    "pink_haired_girl": {
@@ -1693,10 +1693,10 @@
    },
    "retro_brown_haired_man": {
     "faces": 16,
-    "completeness": 1.0,
-    "timing": 0.2708,
-    "reel_purity": 0.176,
-    "reel_shows_others": 15.51
+    "completeness": 0.6875,
+    "timing": 0.2852,
+    "reel_purity": 0.224,
+    "reel_shows_others": 5.5
    },
    "dark_skinned_gunman": {
     "faces": 14,
@@ -1708,23 +1708,23 @@
    "bald_dark_skinned_man": {
     "faces": 10,
     "completeness": 1.0,
-    "timing": 0.1707,
-    "reel_purity": 0.1109,
-    "reel_shows_others": 18.47
+    "timing": 0.2648,
+    "reel_purity": 0.1506,
+    "reel_shows_others": 7.96
    },
    "red_haired_woman": {
     "faces": 6,
-    "completeness": 1.0,
-    "timing": 0.1016,
-    "reel_purity": 0.066,
-    "reel_shows_others": 20.51
+    "completeness": 0.0,
+    "timing": 0.0,
+    "reel_purity": 0.0,
+    "reel_shows_others": 0.0
    },
    "side_profile_man": {
     "faces": 5,
     "completeness": 1.0,
-    "timing": 0.0846,
-    "reel_purity": 0.055,
-    "reel_shows_others": 21.01
+    "timing": 0.1313,
+    "reel_purity": 0.0747,
+    "reel_shows_others": 10.51
    },
    "retro_glasses_blond_man": {
     "faces": 5,
@@ -1750,16 +1750,16 @@
    "glasses_mustache_man": {
     "faces": 3,
     "completeness": 1.0,
-    "timing": 0.0508,
-    "reel_purity": 0.033,
-    "reel_shows_others": 22.01
+    "timing": 0.0788,
+    "reel_purity": 0.0448,
+    "reel_shows_others": 11.51
    },
    "blonde_dark_skinned_woman": {
     "faces": 3,
     "completeness": 1.0,
-    "timing": 0.0508,
-    "reel_purity": 0.033,
-    "reel_shows_others": 22.01
+    "timing": 0.0788,
+    "reel_purity": 0.0448,
+    "reel_shows_others": 11.51
    },
    "masked_kimono_woman": {
     "faces": 3,
@@ -1784,10 +1784,10 @@
   "coverage": 1.0,
   "precision": 0.9954,
   "recall": 0.8,
-  "contamination": 0.0779,
+  "contamination": 0.0367,
   "contaminated_cards": 4,
-  "cards": 17,
-  "splits": 8,
+  "cards": 20,
+  "splits": 11,
   "people": {
    "blond_boy": {
     "faces": 559,
@@ -1813,8 +1813,8 @@
    "old_cyborg": {
     "faces": 109,
     "completeness": 0.5596,
-    "timing": 0.5924,
-    "reel_purity": 0.9179,
+    "timing": 0.5867,
+    "reel_purity": 0.8661,
     "reel_shows_others": 0.71
    },
    "green_haired_cap_girl": {
@@ -1889,10 +1889,10 @@
   "coverage": 1.0,
   "precision": 0.9892,
   "recall": 1.0,
-  "contamination": 0.0541,
+  "contamination": 0.0268,
   "contaminated_cards": 3,
-  "cards": 21,
-  "splits": 8,
+  "cards": 24,
+  "splits": 10,
   "people": {
    "blond_boy": {
     "faces": 314,
@@ -1938,10 +1938,10 @@
    },
    "visor_guard": {
     "faces": 87,
-    "completeness": 0.8046,
-    "timing": 0.215,
-    "reel_purity": 0.18,
-    "reel_shows_others": 34.27
+    "completeness": 0.3563,
+    "timing": 0.6453,
+    "reel_purity": 0.9687,
+    "reel_shows_others": 0.46
    },
    "red_marked_boy": {
     "faces": 84,
@@ -1966,10 +1966,10 @@
    },
    "glasses_old_man": {
     "faces": 40,
-    "completeness": 1.0,
-    "timing": 1.0,
-    "reel_purity": 0.9738,
-    "reel_shows_others": 0.25
+    "completeness": 0.925,
+    "timing": 0.9027,
+    "reel_purity": 0.8608,
+    "reel_shows_others": 2.25
    },
    "blue_haired_masked_man": {
     "faces": 29,
@@ -1994,17 +1994,17 @@
    },
    "middle_aged_man": {
     "faces": 12,
-    "completeness": 0.0,
-    "timing": 0.0,
-    "reel_purity": 0.0,
-    "reel_shows_others": 0.0
+    "completeness": 1.0,
+    "timing": 0.7059,
+    "reel_purity": 0.5455,
+    "reel_shows_others": 0.25
    },
    "shaggy_haired_grinner": {
     "faces": 11,
     "completeness": 0.4545,
-    "timing": 0.037,
-    "reel_purity": 0.0286,
-    "reel_shows_others": 47.29
+    "timing": 0.0534,
+    "reel_purity": 0.0413,
+    "reel_shows_others": 28.35
    },
    "bald_man": {
     "faces": 4,
@@ -2029,16 +2029,16 @@
   "coverage": 1.0,
   "precision": 0.9845,
   "recall": 0.5,
-  "contamination": 0.034,
+  "contamination": 0.043,
   "contaminated_cards": 2,
-  "cards": 11,
-  "splits": 1,
+  "cards": 12,
+  "splits": 2,
   "people": {
    "blond_boy": {
     "faces": 125,
-    "completeness": 0.728,
-    "timing": 0.7274,
-    "reel_purity": 0.7142,
+    "completeness": 0.744,
+    "timing": 0.7435,
+    "reel_purity": 0.6923,
     "reel_shows_others": 2.5
    },
    "freckled_goggles_girl": {
@@ -2107,9 +2107,9 @@
    "worried_tufted_man": {
     "faces": 10,
     "completeness": 0.5,
-    "timing": 0.3028,
-    "reel_purity": 0.1914,
-    "reel_shows_others": 5.67
+    "timing": 0.1512,
+    "reel_purity": 0.0981,
+    "reel_shows_others": 0.21
    },
    "smoking_man": {
     "faces": 10,
@@ -2121,9 +2121,9 @@
    "red_eyed_cyborg": {
     "faces": 2,
     "completeness": 1.0,
-    "timing": 0.1006,
-    "reel_purity": 0.0583,
-    "reel_shows_others": 9.0
+    "timing": 0.1716,
+    "reel_purity": 0.097,
+    "reel_shows_others": 5.54
    }
   }
  },
@@ -2134,7 +2134,7 @@
   "coverage": 1.0,
   "precision": 0.9889,
   "recall": 0.6667,
-  "contamination": 0.0341,
+  "contamination": 0.0345,
   "contaminated_cards": 2,
   "cards": 14,
   "splits": 5,
@@ -2162,9 +2162,9 @@
    },
    "pink_haired_girl": {
     "faces": 113,
-    "completeness": 0.8584,
-    "timing": 0.8577,
-    "reel_purity": 0.7263,
+    "completeness": 0.7434,
+    "timing": 0.7435,
+    "reel_purity": 0.7459,
     "reel_shows_others": 1.96
    },
    "orange_eyed_boy": {
@@ -2232,8 +2232,8 @@
   "coverage": 1.0,
   "precision": 0.9953,
   "recall": 0.7143,
-  "contamination": 0.0409,
-  "contaminated_cards": 4,
+  "contamination": 0.0451,
+  "contaminated_cards": 5,
   "cards": 16,
   "splits": 7,
   "people": {
@@ -2246,9 +2246,9 @@
    },
    "red_marked_boy": {
     "faces": 189,
-    "completeness": 0.7407,
-    "timing": 0.7346,
-    "reel_purity": 0.8065,
+    "completeness": 0.7143,
+    "timing": 0.7129,
+    "reel_purity": 0.8128,
     "reel_shows_others": 2.46
    },
    "pink_haired_girl": {
@@ -2288,10 +2288,10 @@
    },
    "smoking_man": {
     "faces": 34,
-    "completeness": 0.7647,
-    "timing": 0.7647,
-    "reel_purity": 0.6488,
-    "reel_shows_others": 1.72
+    "completeness": 0.9412,
+    "timing": 0.7805,
+    "reel_purity": 0.5121,
+    "reel_shows_others": 2.22
    },
    "visor_man": {
     "faces": 10,

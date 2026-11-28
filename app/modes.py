@@ -203,19 +203,19 @@ MODES: dict[str, ModeSpec] = {
             # nothing to measure. Set to zero to say that plainly rather
             # than leave a live-action number sitting inert.
             min_group_eye_span=0.0,
-            # Both of the next two are live action's numbers, kept after
-            # being measured rather than inherited by accident, which is
-            # what they were until this became a per-mode setting.
-            #
-            # The ceiling is inert here and cannot be fixed by moving it. At
-            # 0.50 on CCIP's scale it sits below where two *different*
-            # characters score, so it never blocks a merge: anything near
-            # the 0.75 floor is already above it. Raising it to 0.90, onto
-            # CCIP's scale, does not reach the merges it was expected to --
-            # the units involved never share a sampled frame -- and costs a
-            # wrong split (animation 2.48% -> 2.52% contamination, the bull
-            # creature cut in two). See Instructions.md 55.
-            cooccurrence_similarity_ceiling=0.50,
+            # On CCIP's scale, where two faces sharing a frame stop being
+            # evidence of two characters. This was live action's 0.50,
+            # which on this model's scale sits *below* animation's own 0.75
+            # similarity floor -- so every pair that could merge was
+            # already above it and the one piece of hard evidence in the
+            # pipeline never blocked anything. §55 measured 0.90 on two
+            # episodes and found it bought almost nothing; on the eight
+            # (#65) it is the largest single gain there is: contamination
+            # over them all 5.13% -> 3.62%, animation5's worst card from 76
+            # foreign faces to 20. It costs 6 extra cards across the eight,
+            # which a merge puts back. 0.85 was measured too and keeps less
+            # of the gain (4.20%) for 3 of those cards.
+            cooccurrence_similarity_ceiling=0.90,
             # The margin rule does reach them, at a price in the leads that
             # grows quickly with it. 0.02 is the smallest value that meets
             # #42's bar (animation 2.48% -> 1.62%, animation2 1.83% -> 1.39%
@@ -223,6 +223,13 @@ MODES: dict[str, ModeSpec] = {
             # their faces, moved to a second card of their own -- a merge
             # puts it back. 0.05 split Ben across 4 cards (98% -> 56% on his
             # main one). Chosen by the user over 0.0, Instructions.md 55.
+            #
+            # Re-measured against the ceiling above, since §55's reason for
+            # it was that co-occurrence could not reach those merges. It is
+            # still carrying its own weight: with the ceiling working,
+            # turning the margin off takes contamination over the eight
+            # episodes from 3.62% to 6.70% (animation9 4.51% -> 12.01%) for
+            # 21 fewer extra cards. 0.02 stays.
             margin_threshold=0.02,
             # Each link of a track passes the floor, but a track can still
             # run from one character into another a step at a time -- across

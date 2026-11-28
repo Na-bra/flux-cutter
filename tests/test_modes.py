@@ -79,18 +79,21 @@ def test_animation_thresholds_are_independent_of_live_action():
     assert animation.similarity_threshold > live.similarity_threshold
 
 
-def test_the_cooccurrence_rule_is_inert_in_animation():
-    """Pins a known hole rather than a feature, so nobody counts on the rule
-    here or re-measures it by accident.
+def test_the_cooccurrence_rule_can_fire_in_animation():
+    """The one piece of hard evidence in the pipeline has to be on the scale
+    of the model it is judging.
 
     A shared frame is read as two characters only while the two faces score
-    below the ceiling. Animation's ceiling sits below its own similarity
-    floor, so every pair that could merge is already above it: the rule can
-    never block a merge. Raising it onto CCIP's scale was measured and made
-    animation worse (Instructions.md 55), so it stays, documented.
+    below the ceiling. This was live action's 0.50, below animation's own
+    0.75 similarity floor, so every pair that could merge was already above
+    it and the rule could never block one -- which is what a ceiling sitting
+    under the floor means on any scale. Above both the floor and the
+    consolidation threshold, only a character a frame is showing twice
+    reaches it.
     """
     animation = modes.get_mode(modes.ANIMATION).grouping
-    assert animation.cooccurrence_similarity_ceiling < animation.similarity_threshold
+    assert animation.cooccurrence_similarity_ceiling > animation.similarity_threshold
+    assert animation.cooccurrence_similarity_ceiling > animation.consolidation_threshold
 
 
 def test_animation_does_not_ask_for_landmark_geometry():

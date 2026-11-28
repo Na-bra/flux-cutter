@@ -3,6 +3,7 @@
 One page per change, newest first: what it does, why, what it means for your
 videos and kept scans, the numbers before and after, and how to undo it.
 
+- [2026-11-28 — Animation cards hold fewer of the wrong characters](2026-11-28-animation-review.md)
 - [2026-11-26 — Choose the order videos are joined in](2026-11-26-join-order.md)
 - [2026-11-24 — The nightly run waits out a dropped connection](2026-11-24-nightly-survives-network.md)
 - [2026-11-24 — A queue of scans and exports](2026-11-24-job-queue.md)

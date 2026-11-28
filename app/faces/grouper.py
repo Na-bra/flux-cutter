@@ -2,7 +2,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from app.faces.detector import FaceDetection, intersection_over_union
+from app.faces.detector import (
+    DEFAULT_IOU_THRESHOLD,
+    FaceDetection,
+    intersection_over_union,
+)
 
 # Re-tuned when ArcFace (w600k_r50) replaced SFace as the embedder. The
 # previous 0.45 was fitted to SFace's similarity distribution and does not
@@ -111,11 +115,18 @@ DEFAULT_MIN_GROUP_EYE_SPAN = 0.15
 # sampled frame, that his card's faces left off.
 #
 # So a rejected group joins the card whose faces it sits beside -- the same
-# place (IoU >= 0.3, the tracker's own linking rule) in an adjacent sampled
-# frame -- when it does so at least ATTACH_MIN_NEIGHBOURS times and that
-# card holds at least ATTACH_MIN_SHARE of those neighbours. On test_3.mp4
-# the lead's profile group has 26 such neighbours, 23 of them his; a group
-# of backs of heads has 10 spread over eight cards and stays rejected.
+# place (DEFAULT_IOU_THRESHOLD, the tracker's own linking rule) in an
+# adjacent sampled frame -- when at least ATTACH_MIN_NEIGHBOURS of its faces
+# do so and that card holds at least ATTACH_MIN_SHARE of them. On the
+# test_3.mp4 of the time, the lead's profile group had 26 such neighbours, 23
+# of them his; a group of backs of heads had 10 spread over eight cards and
+# stayed rejected.
+#
+# Counted one face, one vote. A face has two adjacent frames and a card can
+# hold a face in each, so counting every overlap let three faces cast the
+# five votes asked for here -- the "at least five" this number is named for
+# was not five faces. The two counts differ only in how easily a small
+# group clears the bar, which is the thing the bar is for.
 #
 # Two rules keep this from inventing a person. A group that shares a frame
 # with the card is somebody else standing there, however close they stay
@@ -513,6 +524,66 @@ class _RowBest:
         self.refresh([first, *np.flatnonzero(stale).tolist(), *unblocked])
 
 
+class _Refusals:
+    """The merges the margin rule has turned down, and what each rests on.
+
+    A refusal is not a permanent fact about a pair. It says some third
+    cluster was nearly as good a partner for one of them, so choosing
+    between the two was a coin flip -- and that stops being true as soon as
+    any of the three becomes a different cluster. So a refusal is dropped
+    both when one of its own ends merges and when the cluster it rests on
+    does.
+
+    Only the first of those used to happen, and a refusal could outlive its
+    reason: the pair was never offered again, even after the competitor
+    that made it a coin flip had merged into somebody else and stopped
+    being a near-tie. In animation, where the margin is the one thing
+    deliberately splitting cards apart (modes.ANIMATION), that left
+    characters on extra cards for a reason that no longer held.
+
+    `blocked` is the map _RowBest reads, kept in step with the refusals:
+    row -> the rows it may not currently merge with.
+    """
+
+    def __init__(self):
+        self.blocked: dict[int, set[int]] = {}
+        self._over: dict[tuple[int, int], int] = {}
+
+    @staticmethod
+    def _pair(first: int, second: int) -> tuple[int, int]:
+        return (min(first, second), max(first, second))
+
+    def refuse(self, first: int, second: int, competitor: int) -> None:
+        """Records that `first` and `second` may not merge while `competitor` stands."""
+        self.blocked.setdefault(first, set()).add(second)
+        self.blocked.setdefault(second, set()).add(first)
+        self._over[self._pair(first, second)] = competitor
+
+    def pairs(self) -> list[tuple[int, int]]:
+        """Every pair currently refused."""
+        return list(self._over)
+
+    def reconsider(self, *clusters: int) -> set[int]:
+        """Drops every refusal these clusters are part of or rest on.
+
+        Returns:
+            The rows whose blocked set changed, so a fresh best partner can
+            be looked for in them.
+        """
+        stale = [pair for pair, over in self._over.items() if over in clusters]
+        for cluster in clusters:
+            stale += [self._pair(cluster, other) for other in self.blocked.get(cluster, ())]
+
+        changed: set[int] = set()
+        for pair in stale:
+            self._over.pop(pair, None)
+            for row, other in (pair, pair[::-1]):
+                if other in self.blocked.get(row, ()):
+                    self.blocked[row].discard(other)
+                    changed.add(row)
+        return changed
+
+
 class IdentityGrouper:
     """Groups embedded face observations into per-identity clusters.
 
@@ -737,10 +808,10 @@ class IdentityGrouper:
         similarity[conflict] = -np.inf
 
         members: list[list[int] | None] = [[i] for i in range(unit_count)]
-        # Pairs refused as ambiguous, so a blocked pair is not retried
-        # forever: unit -> the units it may not currently merge with.
-        blocked: dict[int, set[int]] = {}
-        best = _RowBest(similarity, blocked)
+        # Pairs refused as ambiguous, so a refused pair is not retried
+        # forever -- nor refused for ever.
+        refusals = _Refusals()
+        best = _RowBest(similarity, refusals.blocked)
 
         while True:
             candidate = best.pair(self.similarity_threshold)
@@ -748,11 +819,11 @@ class IdentityGrouper:
                 break
 
             first, second, best_similarity = candidate
-            if not self._merge_is_unambiguous(
+            competitor = self._competing_identity(
                 similarity, first, second, best_similarity, self.similarity_threshold
-            ):
-                blocked.setdefault(first, set()).add(second)
-                blocked.setdefault(second, set()).add(first)
+            )
+            if competitor is not None:
+                refusals.refuse(first, second, competitor)
                 best.refresh([first, second])
                 continue
 
@@ -780,12 +851,10 @@ class IdentityGrouper:
             sizes[first] = merged_size
 
             # A merged cluster is a different cluster: give its pairs a fresh
-            # chance. The rows that lose a block may now have a better pair.
-            unblocked = set()
-            for merged in (first, second):
-                for other in blocked.pop(merged, set()):
-                    blocked.get(other, set()).discard(merged)
-                    unblocked.add(other)
+            # chance, and with them the pairs refused over it. The rows that
+            # lose a refusal may now have a better partner.
+            unblocked = refusals.reconsider(first, second)
+            unblocked.discard(second)
             best.merged(first, second, unblocked)
 
         self._rejected = []
@@ -795,15 +864,15 @@ class IdentityGrouper:
         self._attach_or_reject(non_faces, groups)
         return self._renumber(groups)
 
-    def _merge_is_unambiguous(
+    def _competing_identity(
         self,
         similarity: np.ndarray,
         first: int,
         second: int,
         best_similarity: float,
         floor: float,
-    ) -> bool:
-        """Whether this merge is free of a genuinely competing alternative.
+    ) -> int | None:
+        """The other identity that makes this merge a coin flip, if one does.
 
         This carries the margin rule over from the previous nearest-centroid
         implementation, but it cannot be carried over literally. There,
@@ -818,9 +887,12 @@ class IdentityGrouper:
         other to be merged with it. That is the case where picking the
         better-by-a-hair option is a coin flip, and a coin flip is how a
         false merge gets in.
+
+        Which competitor it was is returned rather than just the verdict,
+        because the refusal rests on it: see `_Refusals`.
         """
         if self.margin_threshold <= 0.0:
-            return True
+            return None
 
         others = np.ones(similarity.shape[0], dtype=bool)
         others[[first, second]] = False
@@ -830,12 +902,20 @@ class IdentityGrouper:
                 best_similarity - competitors < self.margin_threshold
             )
             # Near-tie. Ambiguous only if the competitor is a different
-            # identity rather than another piece of the same one.
-            rivals = similarity[partner][near_tie]
-            if np.any(~np.isfinite(rivals) | (rivals < floor)):
-                return False
+            # identity rather than another piece of the same one. A
+            # competitor struck out to -inf counts, and counts as the
+            # clearest case: the footage proves it is not the partner, so a
+            # near-tie against it is a near-tie against somebody else.
+            # Reading it the other way -- hard evidence settles the pair,
+            # so there is no coin to flip -- was measured and is worse
+            # (animation contamination 0.98% -> 2.28%, animation6 2.68% ->
+            # 4.96%, for 3 fewer extra cards across the eight episodes).
+            rivals = similarity[partner]
+            different = near_tie & (~np.isfinite(rivals) | (rivals < floor))
+            if different.any():
+                return int(np.flatnonzero(different)[0])
 
-        return True
+        return None
 
     def _build_groups(self, members: list[list[int] | None]) -> list[FaceIdentityGroup]:
         """Materializes surviving clusters into FaceIdentityGroups, largest first."""
@@ -925,12 +1005,13 @@ class IdentityGrouper:
         )
         similarity[conflict] = -np.inf
 
-        # Pairs refused as ambiguous, so a blocked pair is not retried forever.
-        blocked: set[tuple[int, int]] = set()
+        # Pairs refused as ambiguous, so a refused pair is not retried
+        # forever -- nor refused for ever.
+        refusals = _Refusals()
 
         while True:
             workspace = similarity.copy()
-            for blocked_first, blocked_second in blocked:
+            for blocked_first, blocked_second in refusals.pairs():
                 workspace[blocked_first, blocked_second] = -np.inf
                 workspace[blocked_second, blocked_first] = -np.inf
 
@@ -942,10 +1023,11 @@ class IdentityGrouper:
             # The margin rule applies here too. Without it, consolidation would
             # quietly re-merge the very pairs clustering refused as a coin flip
             # between two identities, which is the opposite of what it is for.
-            if not self._merge_is_unambiguous(
+            competitor = self._competing_identity(
                 similarity, int(first), int(second), best, self.consolidation_threshold
-            ):
-                blocked.add((min(first, second), max(first, second)))
+            )
+            if competitor is not None:
+                refusals.refuse(int(first), int(second), competitor)
                 continue
 
             sums[first] = sums[first] + sums[second]
@@ -965,8 +1047,9 @@ class IdentityGrouper:
             row[conflict[first]] = -np.inf
             similarity[first, :] = row
             similarity[:, first] = row
-            # A merged group is a different group: give its pairs a fresh chance.
-            blocked = {pair for pair in blocked if first not in pair and second not in pair}
+            # A merged group is a different group: give its pairs a fresh
+            # chance, and with them the pairs refused over it.
+            refusals.reconsider(int(first), int(second))
 
         merged: list[FaceIdentityGroup] = []
         for member_groups in members:
@@ -1056,7 +1139,9 @@ class IdentityGrouper:
         """The card a rejected group continues, if one clearly does.
 
         See ATTACH_MIN_NEIGHBOURS. A neighbour is a card's face at the same
-        place in an adjacent sampled frame.
+        place in an adjacent sampled frame, and each of the group's faces
+        names one card at most -- whichever of its neighbours it overlaps
+        best.
         """
         by_frame: dict[int, list[tuple[FaceObservation, int]]] = {}
         for index, card in enumerate(cards):
@@ -1067,10 +1152,16 @@ class IdentityGrouper:
         for observation in group.observations:
             if observation.frame_index is None:
                 continue
+            closest, best_overlap = None, 0.0
             for frame in (observation.frame_index - 1, observation.frame_index + 1):
                 for other, index in by_frame.get(frame, ()):
-                    if intersection_over_union(observation.detection.box, other.detection.box) >= 0.3:
-                        votes[index] = votes.get(index, 0) + 1
+                    overlap = intersection_over_union(
+                        observation.detection.box, other.detection.box
+                    )
+                    if overlap >= DEFAULT_IOU_THRESHOLD and overlap > best_overlap:
+                        closest, best_overlap = index, overlap
+            if closest is not None:
+                votes[closest] = votes.get(closest, 0) + 1
         total = sum(votes.values())
         if total < ATTACH_MIN_NEIGHBOURS:
             return None
